@@ -1,0 +1,23 @@
+.venv/
+__pycache__/
+*.pyc
+models/
+checkpoints/
+*.pt
+*.pth
+*.onnx
+*.safetensors
+*.bin
+*.gguf
+*.wav
+*.mp3
+*.flac
+*.log
+.cache/
+tts/tts_base/.venv/
+tts/tts_base/.git/
+.claude/
+
+# Fetch upstream dependencies separately; keep this repository source only.
+tts/tts_base/
+**/upstream/

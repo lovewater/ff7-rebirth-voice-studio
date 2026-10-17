@@ -1,0 +1,14 @@
+{
+  "Servers": {
+    "1": {
+      "Name": "studio",
+      "Group": "Servers",
+      "Host": "db",
+      "Port": 5432,
+      "MaintenanceDB": "studio",
+      "Username": "ff7rb",
+      "SSLMode": "prefer",
+      "Favorite": true
+    }
+  }
+}

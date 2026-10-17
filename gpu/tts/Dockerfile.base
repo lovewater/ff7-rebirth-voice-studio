@@ -1,0 +1,21 @@
+ARG BASE_IMAGE=nvidia/cuda:12.8.1-runtime-ubuntu24.04
+FROM ${BASE_IMAGE}
+
+# 创建开发环境目录结构
+RUN mkdir -p /root/autodl-tmp/code
+
+# 复制应用代码到容器中对应位置
+COPY . /root/autodl-tmp/code
+
+# 设置工作目录
+WORKDIR /root/autodl-tmp/code
+
+# 设置Python路径环境变量
+ENV PYTHONPATH=/root/autodl-tmp/code:/root/autodl-tmp/code/tts_base
+ENV HOME=/root
+
+# 确保运行脚本有执行权限
+RUN chmod +x /root/autodl-tmp/code/run_api.sh
+
+# 启动命令
+CMD ["tail", "-f", "/dev/null"]

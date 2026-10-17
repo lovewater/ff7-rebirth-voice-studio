@@ -1,0 +1,121 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ff7rb
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?请在本地 .env 中配置数据库密码}
+      POSTGRES_DB: studio
+    volumes:
+      - ./db/data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "127.0.0.1:25432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ff7rb -d studio"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Official PostgreSQL GUI. Open http://<host>:8766
+  # 登录邮箱、密码由本地 .env 提供；server "studio" 自动预载。
+  pgadmin:
+    image: dpage/pgadmin4:9
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:?请配置管理员邮箱}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:?请配置管理员密码}
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
+      PGADMIN_CONFIG_CHECK_EMAIL_DELIVERABILITY: "False"
+      PGADMIN_DISABLE_POSTFIX: "true"
+    ports:
+      - "8766:80"
+    volumes:
+      - pgadmin-data:/var/lib/pgadmin
+      - ./db/pgadmin/servers.json:/pgadmin4/servers.json:ro
+    depends_on:
+      db:
+        condition: service_healthy
+
+  website:
+    build:
+      context: ./website
+      dockerfile: Dockerfile
+    ports:
+      - "8765:8765"
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?请配置容器可用的数据库连接串}
+      TTS_URL: ${TTS_URL:-}
+      TTS_URLS: "${TTS_URLS:-}"
+      MORA_URL: ${MORA_URL:-http://mora:8000}
+      REWRITE_LLM_URL: ${REWRITE_LLM_URL:-}
+      REWRITE_LLM_MODEL: ${REWRITE_LLM_MODEL:-glm-5.3}
+      REWRITE_LLM_KEY: ${REWRITE_LLM_KEY:-}
+      # 独立注册的自部署模型，业务仍默认使用primary；不按这里的配置自动改路由。
+      SELF_HOSTED_LLM_URL: ${SELF_HOSTED_LLM_URL:-}
+      SELF_HOSTED_LLM_MODEL: ${SELF_HOSTED_LLM_MODEL:-Qwen/Qwen3.8-27B-FP8}
+      SELF_HOSTED_LLM_KEY: ${SELF_HOSTED_LLM_KEY:-}
+      QWEN_ASR_URL: ${QWEN_ASR_URL:-}
+      SEEDASR_API_KEY: ${SEEDASR_API_KEY:-}
+      SEEDASR_RESOURCE_ID: ${SEEDASR_RESOURCE_ID:-volc.seedasr.auc}
+      AUTO_RUN_ORIGIN: ${AUTO_RUN_ORIGIN:-http://127.0.0.1:8765}
+    volumes:
+      - ./website/data:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
+      mora:
+        condition: service_healthy
+    profiles: ["full"]
+
+  mora:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile.mora
+    volumes:
+      - ./website/data:/app/data:ro
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?请配置容器可用的数据库连接串}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    profiles: ["full"]
+
+  speech-metrics:
+    image: studio-ff7-rb-mora
+    command: ["python", "-u", "speech_metrics_batch.py", "--watch"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?请配置容器可用的数据库连接串}
+      AUDIO_DATA_ROOT: /app/data
+    volumes:
+      - ./website/data:/app/data:ro
+    cpus: 1.0
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    profiles: ["full"]
+
+  worker:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?请配置容器可用的数据库连接串}
+    volumes:
+      - ./website/data:/app/data
+      - ./worker:/app/worker:ro
+      - ../programs:/programs:ro
+      - ../game:/game:ro
+      - ../work:/work
+    depends_on:
+      db:
+        condition: service_healthy
+    profiles: ["tools"]
+
+volumes:
+  pgadmin-data:

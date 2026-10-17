@@ -1,0 +1,37 @@
+# Retired. inference-host is not a TTS host. IndexTTS images and weights on this machine were deleted.
+# Historical stand-in for the 5080 official IndexTTS 2.0 API.
+# Same routes and 2.0 weights. FP16 autocast because Turing has no native BF16.
+# GPU1 was the 22GB card. Do not start this as the studio TTS target.
+
+services:
+  official-api:
+    image: ff7-gpu-tts:dev
+    container_name: ff7-indextts-official
+    restart: "no"
+    runtime: nvidia
+    command: ["python", "/app/main.py"]
+    ports:
+      - "8810:8810"
+    environment:
+      MODEL_DIR: /models/IndexTTS-2
+      DATA_DIR: /data
+      INDEXTTS_PRECISION: fp16
+      PYTHONPATH: /opt/index-tts
+      CUDA_VISIBLE_DEVICES: "0"
+      NVIDIA_VISIBLE_DEVICES: "1"
+      HF_ENDPOINT: https://hf-mirror.com
+      UPSTREAM_REVISION: ee40fa7d6c6b8a2c7f06105f9f1e65775b74868c
+      SEED_VC_URL: http://127.0.0.1:8811
+    volumes:
+      - /srv/models/IndexTeam/IndexTTS-2:/models/IndexTTS-2
+      - /srv/ff7-indextts-official/upstream:/opt/index-tts
+      - /srv/ff7-indextts-official/app:/app
+      - /srv/ff7-indextts-official/data:/data
+      - /srv/ff7-rebirth-voice-studio/gpu-lock:/gpu-lock
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["1"]
+              capabilities: [gpu]

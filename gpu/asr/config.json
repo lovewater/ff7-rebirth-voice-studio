@@ -1,0 +1,14 @@
+{
+  "python_port": 8001,
+  "devices": { "asr": ["cuda:0"] },
+  "asr_params": { "dtype": "float16", "attn_implementation": "sdpa" },
+  "file_utils": {
+    "quality": 90,
+    "cache_path": "/app/cache",
+    "file_expire_time": 3600,
+    "max_file_count": 1000
+  },
+  "r2_proxy": { "enable": false, "http": "", "ignore": ["localhost"] },
+  "s3": { "enable": false },
+  "report_server": []
+}

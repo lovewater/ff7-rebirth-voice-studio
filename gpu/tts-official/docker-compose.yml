@@ -1,0 +1,25 @@
+services:
+  official-api:
+    build:
+      context: .
+      args:
+        BASE_IMAGE: ${INDEXTTS_BASE_IMAGE:?配置含 CUDA 和 IndexTTS 依赖的基础镜像}
+    container_name: ff7-indextts-official
+    restart: unless-stopped
+    ports:
+      - "8810:8810"
+    environment:
+      MODEL_DIR: /models/IndexTTS-2
+      DATA_DIR: /data
+      CUDA_VISIBLE_DEVICES: "0"
+      SEED_VC_URL: ${SEED_VC_URL:-}
+      GPU_LOCK_PATH: /gpu-lock/inference.lock
+    volumes:
+      # Official IndexTTS creates hf_cache/ beside the main weights on first start.
+      - ./models:/models
+      - ./data:/data
+      - ${GPU_LOCK_DIR:?配置跨服务锁目录}:/gpu-lock
+    gpus:
+      - driver: nvidia
+        device_ids: ["1"]
+        capabilities: [gpu]

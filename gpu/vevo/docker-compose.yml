@@ -1,0 +1,15 @@
+services:
+  vevo:
+    build:
+      context: .
+      args:
+        BASE_IMAGE: ${INDEXTTS_BASE_IMAGE:?配置含推理依赖的基础镜像}
+    environment:
+      CUDA_VISIBLE_DEVICES: '0'
+    volumes:
+      - ./checkpoints:/checkpoints
+      - ./data:/data
+    gpus:
+      - driver: nvidia
+        device_ids: ['1']
+        capabilities: [gpu]

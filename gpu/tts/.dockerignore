@@ -1,0 +1,15 @@
+**/__pycache__
+**/*.pyc
+**/.venv
+**/.git
+tts_base/assets/*.mp4
+tts_base/archive
+tts_base/backends
+tts_base/cli_tests
+tts_base/tests
+tts_base/docs
+tts_base/examples
+tts_base/tools
+tts_base/.pytest_cache
+samples
+audio_cache/__pycache__

@@ -1,0 +1,12 @@
+node_modules
+.next
+git
+data
+.env
+.env.*
+*.wav
+*.uasset
+*.ucas
+*.utoc
+*.pak
+*.hca

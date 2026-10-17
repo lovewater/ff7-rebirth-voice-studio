@@ -1,0 +1,41 @@
+# ROCm 10 / gfx1201 test image for inference-host.  The NVIDIA image and compose
+# remain unchanged; this image reuses the ROCm PyTorch already validated on
+# the Radeon AI PRO R9700 test host.
+FROM vosr2-runtime:amd-v0.1.0
+
+USER root
+ENV PYTHONUNBUFFERED=1 \
+    HF_ENDPOINT=https://hf-mirror.com \
+    PYTHONPATH=/app/main:/app/tts_base \
+    INDEXTTS_UPSTREAM_COMMIT=ee40fa7d6c6b8a2c7f06105f9f1e65775b74868c \
+    INDEXTTS_MODEL_REVISION=c39ce5ba981572cb187443877ff559dfb246ce63 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTORCH_ROCM_ARCH=gfx1201
+
+LABEL org.opencontainers.image.source="https://github.com/index-tts/index-tts" \
+      org.opencontainers.image.revision="ee40fa7d6c6b8a2c7f06105f9f1e65775b74868c"
+
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+       build-essential ffmpeg libsndfile1 git \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY tts_base /app/tts_base
+COPY main /app/main
+COPY audio_cache /app/audio_cache
+COPY requirements-api.txt /app/requirements-api.txt
+COPY requirements-amd.txt /app/requirements-amd.txt
+COPY config.json /app/main/config.json
+
+# The gfx1201 base contains AMD's ROCm PyTorch build.  Installing the
+# upstream project with dependencies would replace it with a CUDA wheel, so
+# install the package itself without dependencies and add the runtime set
+# explicitly.
+RUN sed -i 's/requires-python = ">=3.10,<3.12"/requires-python = ">=3.10,<3.13"/' /app/tts_base/pyproject.toml \
+    && pip install --no-cache-dir --no-deps -e /app/tts_base \
+    && pip install --no-cache-dir -r /app/requirements-amd.txt -r /app/requirements-api.txt \
+       -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple
+
+EXPOSE 8000
+CMD ["python", "/app/main/main.py"]

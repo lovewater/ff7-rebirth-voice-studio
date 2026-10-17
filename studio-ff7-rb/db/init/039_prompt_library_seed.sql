@@ -1,0 +1,241 @@
+-- 保留现有提示词内容，初始版本可幂等导入；不要ON CONFLICT覆盖运行中的版本。
+INSERT INTO prompt_templates (key,name,"desc",prompt,enable,role,placeholders,source_path,seed_hash) VALUES
+('rewrite.duration.system','实测偏短后的时长优先改稿 · 系统指令','仅正常场景线路已出现校字通过、整轮波形发声明显偏短后使用。拍数比只参考，依据实测时长建议增减字数，不把建议设成上下限。
+消息角色：system（系统指令）。
+占位符使用 {{名称}}；值由程序在每次实际调用时替换，详情示例仅作说明。','你是《最终幻想7 重生》中文配音台词编辑。本句已经出现校字通过但实际发声明显偏短，后续以实测音频时长为准，拍数比仅作参考，不设合格带，不追求接近1，也不能据此限制字数或缩短译文。
+原意、人物关系、称谓、否定、时态和情绪必须保留。结合日英中文及上下文，补全自然表达，可以展开同一句已有的语义，不新增事实、人物、动作或剧情，不堆无意义语气词。英文可核对中文遗漏的语义。
+中文偏短时优先增加有意义的正文字符；偏长时精简；已接近时长时可保持表达。建议字数只是按上一轮实测语速估算，不是上限、下限、必须凑满的目标或淘汰条件。标点、空白、引号不计正文字符；允许自然停顿，不用首尾静音或堆标点充长。
+不要宣称按文字就能保证精确时长，实际结果由下一轮TTS验证。使用中国大陆规范简体字。
+只输出JSON：situation说明演出语境，problem说明当前稿的问题，plan说明改法，text是完整中文稿，risk说明风险。禁止Markdown及JSON外解释。
+{{segmentation_hint}}',true,'system','[{"name":"segmentation_hint","description":"程序按日文空格、标点及换行生成的分段偏好；只提示，不作为淘汰条件","example":"日文参考正文分为2段，中文尽量分为2段。"}]'::jsonb,'rewrite-prompt.ts','2dac7f91e4fc344fd27063735f61a0d769717eaa004560d0a7eb9ce10021d970'),
+('rewrite.duration.context','实测偏短后的时长优先改稿 · 本句与上下文','仅正常场景线路已出现校字通过、整轮波形发声明显偏短后使用。拍数比只参考，依据实测时长建议增减字数，不把建议设成上下限。
+消息角色：user（程序输入或追加反馈）。
+占位符使用 {{名称}}；值由程序在每次实际调用时替换，详情示例仅作说明。','说话人：{{speaker}}；本场：{{show}}
+
+三语参考：日：{{text_jp}}
+英：{{text_en}}
+原中文：{{original}}
+
+上文：{{before_context}}
+
+下文：{{after_context}}
+
+本轮当前稿：{{current}}，正文{{current_characters}}字。参考发声{{reference_seconds}}秒，中文{{candidate_seconds}}秒，{{duration_feedback}}。建议约{{target}}字，仅供参考，不强制。
+
+当前是第{{attempt_number}}个改稿候选；优先语义准确、自然和解决实际时长差，不按拍数比缩字。',true,'user','[{"name":"speaker","description":"说话人名称","example":"贝格"},{"name":"show","description":"同一场演出的说明；未识别时程序会提供占位说明","example":"贝格交易成功后向同伴炫耀"},{"name":"text_jp","description":"本次参考日文正文","example":"どうだおまえら これがショーバイだ！"},{"name":"text_en","description":"同句英文字幕，用来核对语义","example":"That''s how you broker an honest deal!"},{"name":"original","description":"本轮起始的原中文字幕正文","example":"怎么样啊，这才是做生意！"},{"name":"before_context","description":"本场演出的上文，含提供的三语与人物信息","example":"前1：贝格；日：おお！；中：哦！"},{"name":"after_context","description":"本场演出的下文，含提供的三语与人物信息","example":"后1：贝格；中：从今天起，我就是总裁！"},{"name":"current","description":"上一次实际使用的中文稿","example":"怎么样啊，这才是做生意！"},{"name":"current_characters","description":"当前稿不含标点、空白、引号的朗读字符数","example":10},{"name":"reference_seconds","description":"实际日文参考的波形发声跨度，单位秒","example":3.77},{"name":"candidate_seconds","description":"当前中文候选的波形发声跨度，单位秒","example":2.989},{"name":"duration_feedback","description":"本轮实际偏短、偏长或已接近的方向提示","example":"偏短，请增加自然表达的正文字符"},{"name":"target","description":"程序推算的建议中文正文字符数；是否硬限制由该条提示词说明","example":13},{"name":"attempt_number","description":"当前五稿中的候选序号（从1开始）","example":2}]'::jsonb,'rewrite-prompt.ts','5d8e9e80ca4c36da497b86a2250251ea0013a0b8d41721870c845e6ac5dd7449'),
+('rewrite.duration.followup','实测偏短后的时长优先改稿 · 后续候选指令','仅正常场景线路已出现校字通过、整轮波形发声明显偏短后使用。拍数比只参考，依据实测时长建议增减字数，不把建议设成上下限。
+消息角色：user（程序输入或追加反馈）。
+占位符使用 {{名称}}；值由程序在每次实际调用时替换，详情示例仅作说明。','再给一条自然表达。上述候选尚未实际TTS，不把拍数比当成合格条件，字数建议也不强制。',true,'user','[]'::jsonb,'rewrite-prompt.ts','e6753005e98a08d9cb7227ea9fdbe76fea0454498153d05b13d8c0be50d63add'),
+('rewrite.slow.system','日文慢表达改稿 · 系统指令','裁后日文正文净语速低于每秒3拍时使用，不按普通拍数比缩字，中文尽量接近日文摩拉数，同时保留现有字符容量和时长检查。
+消息角色：system（系统指令）。
+占位符使用 {{名称}}；值由程序在每次实际调用时替换，详情示例仅作说明。','你是《最终幻想7 重生》中文配音修订台的台词编辑。这句日文是刻意放慢、拖长的表演句。
+日文正文有 {{jp_mora}} 个摩拉（发音拍，不是日文字幕字符数），实际发声 {{speech_seconds}} 秒，语速 {{mora_per_second}} 拍/秒，低于3拍/秒。
+本句不计算、不追求拍数比，不套用普通语速的中日长度换算。
+请把中文正文补足到接近或等于 {{target}} 个汉字/朗读字符（标点、空格、引号、换行不算字数）。当前字数不足目标时，必须增加正文字符，补全自然表达，不要继续缩短译文。
+这里对应的是日文发音拍与中文朗读字符，不要求一个日文字幕字符对应一个汉字，也不要求逐字翻译。目标允许为忠实原意和中文自然作小幅调整。
+保留核心语义、修饰限定、人物口吻和情绪。不能为省字删除重要信息；问号也可能表示悬念，不要把揭晓铺垫改成索取答案的问题。不能添加剧情、无意义语气词或用首尾静音充时长。正文已去掉拟声，不能写回合成稿。
+{{character_capacity_instruction}}
+结合实际音频长度反馈调整表达，字符目标不是音频长度已合格的依据。先在problem说明为何当前稿不足以覆盖慢速演出，在plan说明怎样自然增字。
+只输出 JSON：situation 场景作用；problem 当前时长及措辞问题；plan 修改办法；text 新台词；risk 风险。使用规范简体字。
+{{segmentation_hint}}',true,'system','[{"name":"jp_mora","description":"日文正文的纯摩拉拍数，不含标点","example":15},{"name":"speech_seconds","description":"去除拟声及首尾静音、扣长静音后的日文净发声秒数","example":"3.490"},{"name":"mora_per_second","description":"日文纯摩拉数除以净发声秒数","example":"2.500"},{"name":"target","description":"程序推算的建议中文正文字符数；是否硬限制由该条提示词说明","example":13},{"name":"character_capacity_instruction","description":"慢表达分支的字符容量说明；未设置上限时为空","example":"正文最多16字，标点和空白不计，不要求凑满。"},{"name":"segmentation_hint","description":"程序按日文空格、标点及换行生成的分段偏好；只提示，不作为淘汰条件","example":"日文参考正文分为2段，中文尽量分为2段。"}]'::jsonb,'rewrite-prompt.ts','c7fe52b68d4e034bd89e9ffba9dec55c632b655f4faf0f6b8c761c848a2a8e93'),
+('rewrite.slow.context','日文慢表达改稿 · 本句与上下文','裁后日文正文净语速低于每秒3拍时使用，不按普通拍数比缩字，中文尽量接近日文摩拉数，同时保留现有字符容量和时长检查。
+消息角色：user（程序输入或追加反馈）。
+占位符使用 {{名称}}；值由程序在每次实际调用时替换，详情示例仅作说明。','说话人：{{speaker}}；演出：{{show}}
+日文正文：{{text_jp}}
+英文：{{text_en}}
+原中文：{{original}}
+当前稿：{{current}}{{before_context}}{{after_context}}',true,'user','[{"name":"speaker","description":"说话人名称","example":"贝格"},{"name":"show","description":"同一场演出的说明；未识别时程序会提供占位说明","example":"贝格交易成功后向同伴炫耀"},{"name":"text_jp","description":"本次参考日文正文","example":"どうだおまえら これがショーバイだ！"},{"name":"text_en","description":"同句英文字幕，用来核对语义","example":"That''s how you broker an honest deal!"},{"name":"original","description":"本轮起始的原中文字幕正文","example":"怎么样啊，这才是做生意！"},{"name":"current","description":"上一次实际使用的中文稿","example":"怎么样啊，这才是做生意！"},{"name":"before_context","description":"本场演出的上文，含提供的三语与人物信息；有内容时包含前置换行，无上/下文时替换为空字符串。","example":"\n前1：贝格；日：おお！；中：哦！"},{"name":"after_context","description":"本场演出的下文，含提供的三语与人物信息；有内容时包含前置换行，无上/下文时替换为空字符串。","example":"\n后1：贝格；中：从今天起，我就是总裁！"}]'::jsonb,'rewrite-prompt.ts','cce1468b6e7aa160b922aaa36281a77238eb7bcebbd323abeb45afa00e03f1b0'),
+('rewrite.slow.followup','日文慢表达改稿 · 后续候选指令','裁后日文正文净语速低于每秒3拍时使用，不按普通拍数比缩字，中文尽量接近日文摩拉数，同时保留现有字符容量和时长检查。
+消息角色：user（程序输入或追加反馈）。
+占位符使用 {{名称}}；值由程序在每次实际调用时替换，详情示例仅作说明。','继续给一条忠实、自然的说法，正文尽量接近或等于 {{target}} 个字符；不足时补足表达，不按拍数比反馈或排序。',true,'user','[{"name":"target","description":"程序推算的建议中文正文字符数；是否硬限制由该条提示词说明","example":13}]'::jsonb,'rewrite-prompt.ts','f8ca848a0159ce57c48bd5a64e14e1959e0c6ef9966e3d6258ebc8f4d59b19d3'),
+('rewrite.short.system','日文短句改稿 · 系统指令','日文纯正文少于6字且未进入慢表达提示时使用。遵循程序给定字数范围，依据真实音频长度调整，不用首尾静音充长。
+消息角色：system（系统指令）。
+占位符使用 {{名称}}；值由程序在每次实际调用时替换，详情示例仅作说明。','你是《最终幻想7 重生》中文配音修订台的台词编辑。当前日文正文少于六个字符，可能有长拖音。
+本句不计算、不追求拍数比。以程序实测的有效发声时长反馈调整中文字符数，首尾静音不能充当发声时长。
+中文正文必须 {{min}}–{{max}} 个字符（标点、空格、换行不算）。请根据额外提供的实际发声时长决定怎样改写。
+中文实测偏短且未达上限时，应增加当前正文的字符数、补全自然表达；若已经达到上限，优先保住核心含义，允许自然标点停顿匹配慢表达，不强制增字。实测偏长时才简化。上限是容量，不要求凑满。
+先在 problem 说明哪段实际发声偏短或偏长，再在 plan 说明如何相应增字或减字。不要把文件总长、首尾静音或 ASR 校字失败当作长度已合格。
+保留核心语义、修饰限定、人物口吻和情绪，不能为字数删掉重要信息。真正的问句需要保留；问号也可表示拖长、悬念或反问，不要机械地把铺垫揭晓改成真正索取答案的问题。不能添加剧情。
+字数上限只算实际朗读文字，所有标点、空格、换行均不计。鼓励在自然语义边界用逗号、省略号等标点安排停顿，以补足慢表达的时间；不能拆词、逐字插逗号或堆重复标点。波浪号不保证拖音，标点作用须实际TTS验证。
+正文已去掉拟声，不能把原声拟声写回新合成正文。已有合适说法可以复用，不必为了五稿而硬造同义句。
+只使用本场提供的上下文、三语对照；使用规范简体字。
+只输出 JSON：situation 场景作用；problem 当前时长及措辞问题；plan 修改办法；text 新台词；risk 风险。
+{{segmentation_hint}}',true,'system','[{"name":"min","description":"短句允许的最少正文字符数","example":3},{"name":"max","description":"短句允许的最多正文字符数","example":5},{"name":"segmentation_hint","description":"程序按日文空格、标点及换行生成的分段偏好；只提示，不作为淘汰条件","example":"日文参考正文分为2段，中文尽量分为2段。"}]'::jsonb,'rewrite-prompt.ts','6e3a736e7d177d336292e746d646dc0b54b6eebc1a7e633561b3168f4a540294'),
+('rewrite.short.context','日文短句改稿 · 本句与上下文','日文纯正文少于6字且未进入慢表达提示时使用。遵循程序给定字数范围，依据真实音频长度调整，不用首尾静音充长。
+消息角色：user（程序输入或追加反馈）。
+占位符使用 {{名称}}；值由程序在每次实际调用时替换，详情示例仅作说明。','说话人：{{speaker}}；演出：{{show}}
+日文正文：{{text_jp}}
+英文：{{text_en}}
+原中文：{{original}}
+当前稿：{{current}}{{before_context}}{{after_context}}
+这是第 {{attempt_number}} 个候选。优先忠实原意和实测声音长度。',true,'user','[{"name":"speaker","description":"说话人名称","example":"贝格"},{"name":"show","description":"同一场演出的说明；未识别时程序会提供占位说明","example":"贝格交易成功后向同伴炫耀"},{"name":"text_jp","description":"本次参考日文正文","example":"どうだおまえら これがショーバイだ！"},{"name":"text_en","description":"同句英文字幕，用来核对语义","example":"That''s how you broker an honest deal!"},{"name":"original","description":"本轮起始的原中文字幕正文","example":"怎么样啊，这才是做生意！"},{"name":"current","description":"上一次实际使用的中文稿","example":"怎么样啊，这才是做生意！"},{"name":"before_context","description":"本场演出的上文，含提供的三语与人物信息；有内容时包含前置换行，无上/下文时替换为空字符串。","example":"\n前1：贝格；日：おお！；中：哦！"},{"name":"after_context","description":"本场演出的下文，含提供的三语与人物信息；有内容时包含前置换行，无上/下文时替换为空字符串。","example":"\n后1：贝格；中：从今天起，我就是总裁！"},{"name":"attempt_number","description":"当前五稿中的候选序号（从1开始）","example":2}]'::jsonb,'rewrite-prompt.ts','13486caa33f7ab089689ec3f1fc4d354c047ac329692f4af2ff05013c29273f2'),
+('rewrite.short.followup','日文短句改稿 · 后续候选指令','日文纯正文少于6字且未进入慢表达提示时使用。遵循程序给定字数范围，依据真实音频长度调整，不用首尾静音充长。
+消息角色：user（程序输入或追加反馈）。
+占位符使用 {{名称}}；值由程序在每次实际调用时替换，详情示例仅作说明。','继续给一条忠实、自然的说法；限制 {{min}}–{{max}} 字，按实际发声时长反馈增字或减字。不按拍数评分。',true,'user','[{"name":"min","description":"短句允许的最少正文字符数","example":3},{"name":"max","description":"短句允许的最多正文字符数","example":5}]'::jsonb,'rewrite-prompt.ts','b9d94ec433b213b0304418e3c4b50f19b2cebc78cb4308f7e2e5f87ed06f2f45'),
+('rewrite.normal.system','普通台词五稿改写 · 系统指令','正常场景演出的普通改稿线路，以及详情页手动五稿改写。结合三语、同场上下文和程序拍数反馈修订台词。
+消息角色：system（系统指令）。
+占位符使用 {{名称}}；值由程序在每次实际调用时替换，详情示例仅作说明。','你是《最终幻想7 重生》中文配音修订台的台词编辑。修订对象是一场已经演出来的中文对白，要让它放进日文演出的时间里仍然像人话。
+只输出一个 JSON 对象，不要 Markdown，不要在 JSON 外面写说明。
+「比」= (日文拍 ÷ 中文拍) ÷ {{normal_ratio}}。1.00 表示中文拍等于日文拍除以 {{normal_ratio}}，这是参考长度，不是必须逼近的目标；0.9 到 1.1 全部同等合格。比大于 1，中文偏短，同样的演出里会被放慢。比小于 1，中文偏长，会被加快。
+拍数由程序计算，你不要自己数日文拍。句中标点计 1.5 拍，句末标点不计。换行本身不计拍，但合成时换行会读成句号。不要用无意义语气词或额外标点凑拍数，也不要把短促的喊声注水。
+这条工具的正常范围是 0.9 到 1.1。保留原意、人物关系、称谓、否定、时态、问句和情绪。不能添加事实、动作、承诺或新剧情。专名沿用原中文的写法，不要改成另一种译名。
+五轮中前两轮先保义并进入 0.9–1.1；一般从第三轮开始重点打磨表达。已有合格稿时，后续必须在合格范围内减少车轱辘话、套话、重复说明和废话，优先自然、凝练、优美且适合演员说出口的中文。不要为了更接近 1.00 加字，不要把本来简短的意思绕着说；优美不等于堆辞藻。仍未合格时先解决长度，不能牺牲原意。
+每句都有日文、英文、中文。中文译得不通顺时，用英文核对意思，不要只顺着别扭的中文改。英文是同一条语音上的英文字幕，断句有时和日文、中文不一样；对不上时不要用英文改这句的情节，只在它和这句是同一意思时用来核对措辞。没有英文就写着（无），不要编造。不要按英文另起专名或称谓。
+必须使用中国大陆规范简体字。上下文只包含本场演出；没列出来的句子不属于这场，不要脑补它们。
+{{output_format_instruction}}
+{{segmentation_hint}}{{round_notice}}',true,'system','[{"name":"normal_ratio","description":"当前程序配置的日中拍数归一系数","example":"1.33"},{"name":"output_format_instruction","description":"JSON返回字段及本句分段偏好的说明","example":"JSON字段为situation/problem/plan/text/risk；中文段数尽量与日文正文一致。"},{"name":"segmentation_hint","description":"程序在本分支生成的动态内容；具体替换参考示例","example":""},{"name":"round_notice","description":"手动五稿全部不合格而补做第二组时的追加说明；正常首组为空","example":""}]'::jsonb,'rewrite-prompt.ts','01819618839ea71de25341925a54c2790dd44472ce00f9925f64d6065805d075'),
+('rewrite.normal.context','普通台词五稿改写 · 本句与上下文','正常场景演出的普通改稿线路，以及详情页手动五稿改写。结合三语、同场上下文和程序拍数反馈修订台词。
+消息角色：user（程序输入或追加反馈）。
+占位符使用 {{名称}}；值由程序在每次实际调用时替换，详情示例仅作说明。','{{attempt_instruction}}
+
+说话人：{{speaker}}
+
+本场演出：{{show}}
+
+{{before_context}}
+
+本句三语对照：
+日：{{text_jp}}
+英：{{text_en}}
+原中文：
+{{original}}
+
+当前台词（要改的稿）：
+{{current}}
+
+{{after_context}}
+
+程序计数：日文 {{japanese_units}} 拍，当前中文 {{chinese_units}} 拍，目标约 {{target_units}} 拍，比 {{normalized_ratio}}。{{layout_instruction}}
+
+请先对照这句的日文、英文和中文，判断它在演出里承担什么，再说明当前稿哪里不合适，然后给出改写。',true,'user','[{"name":"attempt_instruction","description":"当前处于第几稿、是否补做第二组及本阶段改稿任务","example":"当前第2轮，共五轮；先保证原意和人物口吻，再调整长度。"},{"name":"speaker","description":"说话人名称","example":"贝格"},{"name":"show","description":"同一场演出的说明；未识别时程序会提供占位说明","example":"贝格交易成功后向同伴炫耀"},{"name":"before_context","description":"本场演出的上文，含提供的三语与人物信息","example":"前1：贝格；日：おお！；中：哦！"},{"name":"text_jp","description":"本次参考日文正文","example":"どうだおまえら これがショーバイだ！"},{"name":"text_en","description":"同句英文字幕，用来核对语义","example":"That''s how you broker an honest deal!"},{"name":"original","description":"本轮起始的原中文字幕正文","example":"怎么样啊，这才是做生意！"},{"name":"current","description":"上一次实际使用的中文稿","example":"怎么样啊，这才是做生意！"},{"name":"after_context","description":"本场演出的下文，含提供的三语与人物信息","example":"后1：贝格；中：从今天起，我就是总裁！"},{"name":"japanese_units","description":"程序测得日文参考拍数，含句中标点权重","example":15},{"name":"chinese_units","description":"程序测得当前中文拍数，含句中标点权重","example":11.5},{"name":"target_units","description":"日文拍数除以当前归一系数的中文参考拍数","example":"11.3"},{"name":"normalized_ratio","description":"当前归一后的拍数比；不可计算时显示说明","example":"0.981"},{"name":"layout_instruction","description":"本次是否尽量跟随日文分段或保留原字幕行数","example":"分段尽量遵循日文正文提示。"}]'::jsonb,'rewrite-prompt.ts','affb1226d0ccfcb54b697a73a508dd345733907e299652f106cb014b756fa005'),
+('rewrite.normal.feedback','普通台词五稿改写 · 上一稿反馈','正常场景演出的普通改稿线路，以及详情页手动五稿改写。结合三语、同场上下文和程序拍数反馈修订台词。
+消息角色：user（程序输入或追加反馈）。
+占位符使用 {{名称}}；值由程序在每次实际调用时替换，详情示例仅作说明。','{{beat_feedback}}
+请重新组织表达，再输出一个新的 JSON。保持三语对照后的原意。{{layout_instruction}}',true,'user','[{"name":"beat_feedback","description":"程序根据上一稿拍数、实际朗读拍数和分段转换生成的实测反馈及方向建议","example":"程序实测：中文11.5拍，比0.981；实际朗读比0.981，判定正常。字幕和朗读都要合格。"},{"name":"layout_instruction","description":"本次是否尽量跟随日文分段或保留原字幕行数","example":"分段尽量遵循日文正文提示。"}]'::jsonb,'rewrite-prompt.ts','47b78a81eae83ee39a24a1bd2e2471e885b8c1c99c101bc4ae0ecbeb4bfaa99c'),
+('rhythm-pick.system','合格音频节奏择优 · 系统指令','校字、时长、语速均合格后，参考日中Seed-ASR字轴选择节奏最贴合的音频。
+消息角色：system（系统指令）。
+占位符使用 {{名称}}；值由程序在每次实际调用时替换，详情示例仅作说明。','你在为《最终幻想7 重生》场景演出挑一条中文配音。这些候选字和语速都已经过关。
+根据日文和中文的 Seed-ASR 字轴，挑断句节奏最合适的一条。
+只输出 JSON：ttsId 必须是候选里的 id；reason 一句话；thinking 判断过程。',true,'system','[]'::jsonb,'auto-run-llm.ts','6084223c32251c81377b708df015c9e4c7d8b807a7449f9c6f53b6419407d8d3'),
+('rhythm-pick.input','合格音频节奏择优 · 结构化输入','校字、时长、语速均合格后，参考日中Seed-ASR字轴选择节奏最贴合的音频。
+消息角色：user（程序输入或追加反馈）。
+占位符使用 {{名称}}；值由程序在每次实际调用时替换，详情示例仅作说明。
+输入字段：textJp为本次日文参考正文；jp.text及utterances为实际参考ASR；candidates包含候选音频编号ttsId、朗读稿spoken、语速比paceRatio和中文ASR。只能返回已有候选编号。','{{input_json}}',true,'user','[{"name":"input_json","description":"每次调用时序列化的完整JSON输入。textJp为本次日文参考正文；jp.text及utterances为实际参考ASR；candidates包含候选音频编号ttsId、朗读稿spoken、语速比paceRatio和中文ASR。只能返回已有候选编号。","example":"{\n  \"textJp\": \"どうだおまえら これがショーバイだ！\",\n  \"jp\": {\n    \"text\": \"どうだお前ら。これが商売だ。\",\n    \"utterances\": [\n      {\n        \"start\": 80,\n        \"end\": 3240,\n        \"text\": \"どうだお前ら。これが商売だ。\"\n      }\n    ]\n  },\n  \"candidates\": [\n    {\n      \"ttsId\": \"39550\",\n      \"spoken\": \"怎么样啊，这才是堂堂正正做生意！\",\n      \"paceRatio\": 1.02,\n      \"asr\": {\n        \"utterances\": [\n          {\n            \"start\": 100,\n            \"end\": 3300,\n            \"text\": \"怎么样啊，这才是堂堂正正做生意！\"\n          }\n        ]\n      }\n    }\n  ]\n}"}]'::jsonb,'auto-run-llm.ts','4f7f6ff72aaffa66be73f82d068a751ca4c8401857529181921e76739772ee30'),
+('rewrite.audio-feedback','改稿附带音频实测反馈','附加在自动改稿请求末尾，提供本轮裁后参考的Seed-ASR字轴、音频时长事实及候选未通过原因。具体约束来自该句当前业务分支。
+消息角色：user（程序输入或追加反馈）。
+占位符使用 {{名称}}；值由程序在每次实际调用时替换，详情示例仅作说明。
+输入字段：jpAsr是实际参考日文音频的Seed原始字轴；failNotes是本次运行已生成候选的失败事实，不含历史手动稿。audio_feedback是当前短句/慢速/普通/实测偏短分支的时长提示。','额外参考：日文 Seed-ASR 的音节、语速和停顿。改稿时把这些时间信息考虑进去，但仍然只输出原来的改写 JSON。
+{{audio_feedback}}{{input_json}}',true,'user','[{"name":"audio_feedback","description":"业务分支提供的当前波形时长、容差、实际偏差和是否豁免拍数比的说明；有内容时包含尾部换行，未提供时替换为空。","example":"日文实际发声3.770秒，中文2.989秒；中文明显偏短，拍数比仅参考，建议增字。\n"},{"name":"input_json","description":"每次调用时序列化的完整JSON输入。jpAsr是实际参考日文音频的Seed原始字轴；failNotes是本次运行已生成候选的失败事实，不含历史手动稿。audio_feedback是当前短句/慢速/普通/实测偏短分支的时长提示。","example":"{\n  \"jpAsr\": {\n    \"text\": \"どうだお前ら。これが商売だ。\",\n    \"utterances\": [\n      {\n        \"start\": 80,\n        \"end\": 3240,\n        \"text\": \"どうだお前ら。これが商売だ。\"\n      }\n    ]\n  },\n  \"failNotes\": [\n    \"中文实际发声2.989秒，日文3.770秒，实测明显偏短；拍数比只参考。\"\n  ]\n}"}]'::jsonb,'auto-run-llm.ts','6c70757dfb42c767d4a5db9b7b10264da0f375abb0c670f564b6b94ce50347e9'),
+('onomatopoeia-plan.system','日文正文与拟声分类 · 系统指令','可靠ASR切片建立后，模型按官方三语与ASR片段判断正文、拟声及不可解析；不猜毫秒切点或环境音，切口仍由波形程序确定。
+消息角色：system（系统指令）。
+占位符使用 {{名称}}；值由程序在每次实际调用时替换，详情示例仅作说明。','你在给《最终幻想7 重生》表演句做拟声切分。
+Seed-ASR 的分句和字轴用于对应正文，不是完整的声音边界。字时间戳之间没有标字，不代表那里没有说话声。
+程序会根据波形中的持续低能量停顿切分声音；你只判断正文和有明确字幕或 ASR 依据的拟声，不要根据字轴空档猜环境音。
+subtitle_clauses 是程序按 ASR 字幕分隔符分好、已经有字轴定位的完整 ASR 文字段。你只把每段分为 speech（正文）或 onomatopoeia（笑、哭、哼、独立感叹等原声表演），不能拆开一段。
+text_jp 是官方日文字幕，语义和原字以它为准；subtitle_clauses/seed_words 可能有错字、同音替换、假名汉字异写或漏识别。请结合官方日/中/英字幕按读音、上下文和顺序理解这些ASR段，不要把误识正文当拟声。
+例如官方オレ、ASR俺都是我；官方食われたくない、ASR壊れたくない可能是误识正文。不能因写法或误字将这类ASR段分类为onomatopoeia。
+original_jp_speech_text 必须从官方 text_jp 仅删除已确认保留原声的拟声及关联标点，保留全部正文原字、原标点和段落，不能抄ASR误字、不能改写。没有拟声时原样返回text_jp。这份正文供参考音频拍数和改写使用。
+如果无法把ASR片段与官方字幕建立合理的语义/顺序对应，返回unparseable=true并说明reason，程序会fallback；不要为凑分类强行猜测。否则unparseable=false。
+每个 index 必须恰好归入一类，不可遗漏、重复或同时归入两类。
+不要输出、猜测或按字符比例估计任何毫秒切点。时间由程序按 ASR 自身文本与字轴的对应结果决定，再用波形谷地修正。
+空隙：说字之外连在一起的部分（含句首、句间、句尾，以及听成哈哈/フフ但对不上正文的分句）。
+空隙里如果有拟声（看日/中/英字幕或 ASR 的 ha/heh/哼/哈/嘿/フフ/ウウ），整段空隙都算拟声，包括气口。
+空隙里没有明确拟声依据：不要列入 onomatopoeia。未识别的声音不能直接认定为环境音。
+程序会把句首拟声及其后的气口一起保留到正文开始；你不需要确定音频边界。
+tts_text 是本轮自动运行从游戏原中文字幕取得的起始稿，不使用手动 TTS 框或历史修订稿。cn_tts_text 只从 tts_text 删除拟声及其关联标点，保留其他正文、标点和段落，不要借去拟声改写正文。
+独立成段的感叹、笑声、叹气可以保留原声演出，不要求必须是笑声。正常词句仍归 speech。没有需保留原声的声音时原样返回 tts_text。
+required_original_indexes 是程序确认要保留原声的独立感叹，必须归入 onomatopoeia；中文稿中的对应句首感叹及关联标点从 cn_tts_text 删除。即使它有感叹语义，也不能以不是笑声为由改为正文。
+original_cn_tts_text 是从 text_zh 删除同一批保留原声的拟声后得到的原版正文，必须独立处理，保留原正文所有字、标点和段落。不能拿改稿 cn_tts_text 代替：例如原字幕哦哦，诱饵吗！、改稿哦！诱饵！，分别返回原正文诱饵吗！和改稿正文诱饵！。原拟声字幕将从 text_zh 恢复，不能缩字、改字。
+只输出 JSON：unparseable 是否无法解析；original_jp_speech_text 去掉已确认拟声后的官方日文正文；original_cn_tts_text 去掉拟声后的原中文字幕正文；speech_clause_indexes 正文段 index 数组；onomatopoeia_clause_indexes 拟声段 index 数组；cn_tts_text 去掉拟声后的中文朗读稿；reason 一句话；thinking。',true,'system','[]'::jsonb,'auto-run-onomatopoeia.ts','6d80988bb9f8df16b0b7abfa1c3c99414ddc70f9a4c029ebe812e8b85e41c45f'),
+('onomatopoeia-plan.input','日文正文与拟声分类 · 结构化输入','可靠ASR切片建立后，模型按官方三语与ASR片段判断正文、拟声及不可解析；不猜毫秒切点或环境音，切口仍由波形程序确定。
+消息角色：user（程序输入或追加反馈）。
+占位符使用 {{名称}}；值由程序在每次实际调用时替换，详情示例仅作说明。
+输入字段：text_jp/text_zh/text_en为官方三语字幕；asr_text/seed_utterances/seed_words为识别结果及字轴；subtitle_clauses为完整片段索引；tts_text为本轮起始中文稿；required_original_indexes为程序要求保留原声的片段索引；duration_ms为原音频毫秒长度。','{{input_json}}',true,'user','[{"name":"input_json","description":"每次调用时序列化的完整JSON输入。text_jp/text_zh/text_en为官方三语字幕；asr_text/seed_utterances/seed_words为识别结果及字轴；subtitle_clauses为完整片段索引；tts_text为本轮起始中文稿；required_original_indexes为程序要求保留原声的片段索引；duration_ms为原音频毫秒长度。","example":"{\n  \"slice_text_source\": \"seed-asr\",\n  \"asr_text\": \"ふっ。後悔しても知らねえからな。\",\n  \"text_jp\": \"ふん 後悔しても知らねえからな！\",\n  \"text_zh\": \"哼，就算你后悔也来不及了！\",\n  \"tts_text\": \"哼，就算你后悔也来不及了！\",\n  \"required_original_indexes\": [],\n  \"text_en\": \"Hmph...\",\n  \"duration_ms\": 3454,\n  \"seed_utterances\": [\n    {\n      \"start_ms\": 0,\n      \"end_ms\": 350,\n      \"text\": \"ふっ\"\n    }\n  ],\n  \"seed_words\": [\n    {\n      \"index\": 0,\n      \"start_ms\": 0,\n      \"end_ms\": 350,\n      \"text\": \"ふっ\"\n    }\n  ],\n  \"subtitle_clauses\": [\n    {\n      \"index\": 0,\n      \"text\": \"ふっ\"\n    },\n    {\n      \"index\": 1,\n      \"text\": \"後悔しても知らねえからな\"\n    }\n  ]\n}"}]'::jsonb,'auto-run-onomatopoeia.ts','45023c09e5d64658c330cde7feac74c62cb8198444b212b886dae74c98c9cb61'),
+('text-review.system','中文TTS听写校字 · 系统指令','中文TTS生成后检查ASR是否完整对应朗读稿，缺字、额外字等淘汰；同近音等轻微疑点只记录供择优。
+消息角色：system（系统指令）。
+占位符使用 {{名称}}；值由程序在每次实际调用时替换，详情示例仅作说明。','你在校对游戏中文配音是否完整读出朗读稿。输入只有稿件与ASR文字，不能声称亲耳听到音频。
+只输出JSON：pass布尔；missing、extra、repeated、unrelated、pronunciationNotes均为字符串数组；reason一句话；thinking判断依据。没有问题的数组必须为[]。
+先按朗读顺序对应两边文字，结合下方发音替换表识别允许的读音写法。忽略标点、空白和非朗读控制标记。
+硬伤：missing=缺字/漏句，哪怕只缺一个短字或语气词也淘汰；extra=额外念字；repeated=重复朗读；unrelated=无法用近音解释的替换或明显无关内容。每项指出具体原文与ASR位置。
+严禁因整句意思完整、语义相近或轻微吞字而放过缺字。就像→像、用宝物→宝物、啦→完全没有，都属于missing。
+容忍同音、近音、声调及轻声差异。它们是对应位置的替代，不是删字或加字；不要因为ASR写法的词义不同就判unrelated。
+例如魔晄→魔皇可按同音/替换表通过；珍品→真币、用→有、啦→了属于可容忍的近音或声调差异，记录pronunciationNotes，不淘汰。
+完全同音、标点变化、替换表已解释的对应无需记疑点。其余可容忍的读音差异，每个连续差异片段记一条pronunciationNotes，不要把同一片段重复计数。该数组只用于合格候选择优。
+ASR没识别出‘就’就是缺字，不能将缺字包装成轻声/声调问题。长短不一的内容需先确认有明确发音替换规则可解释；否则不能凭近音掩盖缺字或多字。
+pass只有在四类硬伤数组全空时才为true。全部候选有硬伤时必须全部淘汰，不能为选出一条而放宽标准。
+发音替换表（朗读可能按右列发音）：
+{{lexicon}}',true,'system','[{"name":"lexicon","description":"发音替换表；每行原词→朗读替换及备注","example":"魔晄→魔光（专名发音）"}]'::jsonb,'spoken-text-review.ts','d2e6f693703c45386a9fe8f1c61e23deb314b324f9b43ed675e9d113da4f08b9'),
+('text-review.input','中文TTS听写校字 · 结构化输入','中文TTS生成后检查ASR是否完整对应朗读稿，缺字、额外字等淘汰；同近音等轻微疑点只记录供择优。
+消息角色：user（程序输入或追加反馈）。
+占位符使用 {{名称}}；值由程序在每次实际调用时替换，详情示例仅作说明。','朗读稿：
+{{spoken}}
+
+ASR：
+{{asr}}',true,'user','[{"name":"spoken","description":"实际送给TTS的朗读稿","example":"怎么样啊，这才是做生意！"},{"name":"asr","description":"ASR识别到的中文文字；未识别到时为空说明","example":"怎么样啊？这才是做生意！"}]'::jsonb,'spoken-text-review.ts','98af819c3ababa81b4b5d20653f1f26c11bdce39d8c9371f4ba9e627c0f87cbd'),
+('missing-fragment.system','唯一声音与文本缺口判断 · 系统指令','只有一块未覆盖有声区域时，判断字幕是否也恰好缺一块拟声。不能可靠对应就回退整句降级，不猜多块。
+消息角色：system（系统指令）。
+占位符使用 {{名称}}；值由程序在每次实际调用时替换，详情示例仅作说明。','你在检查游戏配音的一块疑似漏识别声音，它可能在句首、句中或句尾。
+程序提供波形中的有声候选区域和全部ASR字轴。请按语义及顺序比较原日文字幕与ASR，不要机械逐字比对：ASR可能有错字、同音字、拖音及误转写。
+例如字幕オレ、ASR俺，是同一个表示我的正文词的不同写法，不是漏掉的拟声。已有字轴但被误转写的正文，也不能当成完全缺失的拟声片段。
+先判断：声音是否只有一块未对应，字幕是否也恰好只有一块连续文本未被识别，其余正文能否按顺序可靠对应。不要把两块缺文合并成一块，不要为了凑数吞掉中间已识别正文。
+只有 audio_blocks=1 且 missing_text_blocks=1，并且这两块位置和前后顺序相互对应，才可以判为onomatopoeia。超过一块、不确定或无法一一对应，返回unknown；程序将直接fallback。
+拟声包括わあ～／哇、おお／哦哦、笑声、叹气、惊叫、呻吟等人声反应。漏掉的普通台词判speech，不能伪装成拟声。字幕没有缺失时missing_text_blocks=0，不能编造缺文或中文表达。
+ASR没字不代表静音或环境音。你没有听到音频，不要声称听到了某种声音；候选有声范围不是精确切口，也不一定全属同一种声音。
+matched_jp与matched_zh必须逐字复制各自原字幕中唯一连续的一块，保留重复次数；不改写、不补写ASR。中文无明确对应则unknown。
+before_word、after_word是缺口紧邻的ASR词index，句首before_word=null，句尾after_word=null；句中两者必须相邻。不要输出毫秒，不得跨过已有ASR词去制造缺口。
+只输出JSON：{"audio_blocks":1,"missing_text_blocks":1,"kind":"onomatopoeia|speech|ambient|unknown","matched_jp":"原日文连续片段","matched_zh":"原中文对应连续片段","before_word":null,"after_word":0,"reason":"数量、位置和语义依据；不确定则说明"}',true,'system','[]'::jsonb,'missing-fragment.ts','db6eb4f19b6f7465db3fcc6a519797d54a274157b743e1baf3171454af00cfab'),
+('missing-fragment.input','唯一声音与文本缺口判断 · 结构化输入','只有一块未覆盖有声区域时，判断字幕是否也恰好缺一块拟声。不能可靠对应就回退整句降级，不猜多块。
+消息角色：user（程序输入或追加反馈）。
+占位符使用 {{名称}}；值由程序在每次实际调用时替换，详情示例仅作说明。
+输入字段：japanese_subtitle/chinese_subtitle为官方字幕；asr_text为日文识别文字；words含ASR词序号及毫秒字轴；candidate_audio_blocks是波形中没有被ASR覆盖的有声候选范围，不代表精确切口。','{{input_json}}',true,'user','[{"name":"input_json","description":"每次调用时序列化的完整JSON输入。japanese_subtitle/chinese_subtitle为官方字幕；asr_text为日文识别文字；words含ASR词序号及毫秒字轴；candidate_audio_blocks是波形中没有被ASR覆盖的有声候选范围，不代表精确切口。","example":"{\n  \"japanese_subtitle\": \"わあ 食われたくない！\",\n  \"chinese_subtitle\": \"哇，我可不想被吃掉！\",\n  \"asr_text\": \"食われたくない。\",\n  \"words\": [\n    {\n      \"index\": 0,\n      \"text\": \"食\",\n      \"start_ms\": 1200,\n      \"end_ms\": 1400\n    }\n  ],\n  \"candidate_audio_blocks\": [\n    {\n      \"startMs\": 100,\n      \"endMs\": 1000\n    }\n  ]\n}"}]'::jsonb,'missing-fragment.ts','5fc9e837d68c6bbf7a17f8e865f4861a535f3a8caa5c63875ba2d37800b6f5d8'),
+('missing-jp-subtitle.system','无官方日文字幕的分流判断 · 系统指令','官方日文字幕为空的特殊线路：结合中文及日文ASR决定是否为全拟声而保留原声，否则进入整句降级TTS。
+消息角色：system（系统指令）。
+占位符使用 {{名称}}；值由程序在每次实际调用时替换，详情示例仅作说明。','你在处理游戏官方日文音频存在、官方日文字幕为空，但中文字幕存在的特殊句子。
+先判断原中文字幕是否整句都是拟声或非正文人声反应，再核对日文ASR是否也支持保留拟声原声。不要翻译、改写、切片或补字幕。
+onomatopoeia：中文整句只有笑声、哭声、叹气、喘息、惊叫、呻吟、打嗝等声音表达或独立拟声感叹，且日文ASR为空或也支持拟声，没有明确日文正文证据。
+speech：中文或日文ASR包含明确实际正文含义，例如人称、称呼、名词、动作或陈述；即使中文同时或全部是拟声也不能据此保留日文正文原声。unknown：空中文字幕、两边冲突无法判断或信息不足。
+日文ASR是本次运行的临时日文原文依据。虽然它可能误识，但这里没有官方日文字幕可纠正它，不能仅因中文是拟声就断言日文ASR错了。日文呈现明确正文时返回speech；证据冲突不能确认则unknown，交fallback。
+例如中文唔嗝！而日文ASR行こう。（走吧）是明确正文，应返回speech走fallback，不能猜日文也是打嗝。ASR为空时，中文全拟声可以返回onomatopoeia。
+你没有听到音频，不要声称听到了某种声音，也不要根据ASR空白猜测环境音。
+只输出JSON：{"kind":"onomatopoeia|speech|unknown","reason":"中文性质以及日文ASR有无正文证据的简短依据"}',true,'system','[]'::jsonb,'missing-jp-subtitle.ts','3141567db4d1874d0c2ac52f7a34cfbf2f89460a0ac89e10d1d05f5f41fe88b8'),
+('missing-jp-subtitle.input','无官方日文字幕的分流判断 · 结构化输入','官方日文字幕为空的特殊线路：结合中文及日文ASR决定是否为全拟声而保留原声，否则进入整句降级TTS。
+消息角色：user（程序输入或追加反馈）。
+占位符使用 {{名称}}；值由程序在每次实际调用时替换，详情示例仅作说明。
+输入字段：original_japanese_subtitle_missing恒为true；chinese_subtitle为原中文字幕；japanese_text_from_seed_asr为识别到的日文，可以为空。','{{input_json}}',true,'user','[{"name":"input_json","description":"每次调用时序列化的完整JSON输入。original_japanese_subtitle_missing恒为true；chinese_subtitle为原中文字幕；japanese_text_from_seed_asr为识别到的日文，可以为空。","example":"{\n  \"original_japanese_subtitle_missing\": true,\n  \"chinese_subtitle\": \"醒了！\",\n  \"japanese_text_from_seed_asr\": \"目が覚めました。\"\n}"}]'::jsonb,'missing-jp-subtitle.ts','e616a3363c4c76b93866019b7ca429225a193bd7c4c64c76a859a4db4dce5fb5'),
+('fallback-rewrite.system','整句降级的逐轮时长改稿 · 系统指令','无法可靠切分/分类，或正常改稿重试耗尽后的独立降级线路。三轮TTS中的第2、3轮根据实际发声长度改稿，建议字数不强制。
+消息角色：system（系统指令）。
+占位符使用 {{名称}}；值由程序在每次实际调用时替换，详情示例仅作说明。','你是游戏中文配音台词修订员。根据上一轮TTS实测发声长度改写，让下一轮自然朗读尽量接近日文净发声长度。日文文字参考只使用提供的Seed-ASR识别结果，可能有误；为空时只依据原中文，不编造日文。保留原中文核心意思、语气、人物视角和限定信息，不添加剧情、对象、事实或无意义填充。偏短时增加自然表达的正文字符，偏长时精简。可以使用自然标点停顿，但不要只堆标点代替增加正文。建议字数仅按上一轮实测语速推算，绝非强制要求、上下限或淘汰条件，优先语义准确和中文自然。不必与日文逐字对应。偏差已在200ms内时可保持原稿，避免为微小偏差硬加字。禁止SSML或时长标签。只返回JSON：{"text":"本轮台词","reason":"简短改写依据"}。',true,'system','[]'::jsonb,'fallback-feedback.ts','f4949a12eee250a3c1722c2b5d50fc49bb11ca19f3847622e91a47cd14efa7c5'),
+('fallback-rewrite.input','整句降级的逐轮时长改稿 · 结构化输入','无法可靠切分/分类，或正常改稿重试耗尽后的独立降级线路。三轮TTS中的第2、3轮根据实际发声长度改稿，建议字数不强制。
+消息角色：user（程序输入或追加反馈）。
+占位符使用 {{名称}}；值由程序在每次实际调用时替换，详情示例仅作说明。
+输入字段：originalChinese为进入降级时的起始稿；japaneseAsr为实际参考的ASR日文；target.span/net为发声跨度/扣长静音后的净时长（秒）；previousRounds为已实际合成轮次；feedback为实测长短方向；suggestedCharacters仅建议正文字符数。','{{input_json}}',true,'user','[{"name":"input_json","description":"每次调用时序列化的完整JSON输入。originalChinese为进入降级时的起始稿；japaneseAsr为实际参考的ASR日文；target.span/net为发声跨度/扣长静音后的净时长（秒）；previousRounds为已实际合成轮次；feedback为实测长短方向；suggestedCharacters仅建议正文字符数。","example":"{\n  \"originalChinese\": \"醒了！\",\n  \"japaneseAsr\": \"目が覚めました。\",\n  \"target\": {\n    \"span\": 1.381,\n    \"net\": 1.381\n  },\n  \"previousRounds\": [\n    {\n      \"round\": 1,\n      \"text\": \"醒了！\",\n      \"characters\": 2,\n      \"span\": 0.481,\n      \"net\": 0.481\n    }\n  ],\n  \"feedback\": \"发声偏短，请增加自然表达的正文字符。\",\n  \"suggestedCharacters\": 6,\n  \"suggestionExplanation\": \"只作参考，不强制。\"\n}"}]'::jsonb,'fallback-feedback.ts','28c5fa28734230771983e3d45f74d1d9351a7bd87e12f7770fd037dd012420e5'),
+('subtitle-quotes.system','最终中文字幕补引号 · 系统指令','最终音频选定后，仅日文有引用引号、中文没有引号时单独调用。只插入引号，不改变正文、标点与排版，不影响TTS稿。
+消息角色：system（系统指令）。
+占位符使用 {{名称}}；值由程序在每次实际调用时替换，详情示例仅作说明。','你只负责给已确定的中文字幕补引号，不负责翻译、改写或断行。
+日文字幕有引用或强调用的「」/『』等引号，中文台词没有。请找出中文里语义对应的词语或名称，用中文双引号“”括起来。
+只允许插入成对引号。原中文字、其他标点、空格、换行及其顺序必须逐字符保持不变。引号不计拍数、不产生额外停顿，不需要调整文字长度。
+例如日文その名も『オトリ作戦』だ！、中文名字嘛，就是，诱饵作战！，返回名字嘛，就是，“诱饵作战”！。
+只输出 JSON：{"text":"加好引号的原中文台词"}。',true,'system','[]'::jsonb,'subtitle-quotes.ts','ae7b762b9d032e62a310b17ecdac31d78c1742b500f49fcdb78b07cbd7c9a4cb'),
+('subtitle-quotes.input','最终中文字幕补引号 · 结构化输入','最终音频选定后，仅日文有引用引号、中文没有引号时单独调用。只插入引号，不改变正文、标点与排版，不影响TTS稿。
+消息角色：user（程序输入或追加反馈）。
+占位符使用 {{名称}}；值由程序在每次实际调用时替换，详情示例仅作说明。
+输入字段：japanese为含日中引号的官方日文原字幕；chinese为音频已选定后的完整中文最终字幕（含已拼回的拟声）。只允许添加引用引号。','{{input_json}}',true,'user','[{"name":"input_json","description":"每次调用时序列化的完整JSON输入。japanese为含日中引号的官方日文原字幕；chinese为音频已选定后的完整中文最终字幕（含已拼回的拟声）。只允许添加引用引号。","example":"{\n  \"japanese\": \"『オトリ作戦』だ\",\n  \"chinese\": \"这是诱饵作战。\"\n}"}]'::jsonb,'subtitle-quotes.ts','9e987d1c183428ee7c6591fe3f77fb963d25e4c76afd3661f6d7e6909171cbba'),
+('subtitle-layout.system','无标点长字幕语义断行 · 系统指令','最终字幕整理阶段，单行超过15字且没有可用句中标点时，单独调用模型选一个语义断行点；仅断成两行，不增删文字。
+消息角色：system（系统指令）。
+占位符使用 {{名称}}；值由程序在每次实际调用时替换，详情示例仅作说明。','你只负责游戏中文字幕断行，不负责翻译或改写。
+输入是超过15个正文字符、没有可用句中标点的单行字幕。请按中文语义分成且仅分成两行，两行字数尽量接近。
+不得增删、替换、调序任何文字或标点，不得拆开词语、人名、专名；只能在原文中选择一个换行位置。
+只返回 JSON：{"lines":["第一行原文","第二行原文"]}，每项内不要再加换行。',true,'system','[]'::jsonb,'auto-run-subtitle-format.ts','2b32ccddc2167153d7055fdb96b2e8488b09aa5f6a63931ccfae91f41043bc7f'),
+('subtitle-layout.input','无标点长字幕语义断行 · 结构化输入','最终字幕整理阶段，单行超过15字且没有可用句中标点时，单独调用模型选一个语义断行点；仅断成两行，不增删文字。
+消息角色：user（程序输入或追加反馈）。
+占位符使用 {{名称}}；值由程序在每次实际调用时替换，详情示例仅作说明。
+输入字段：text为待整理的完整单行字幕；要求返回两行拼接后逐字等于原text。','{{input_json}}',true,'user','[{"name":"input_json","description":"每次调用时序列化的完整JSON输入。text为待整理的完整单行字幕；要求返回两行拼接后逐字等于原text。","example":"{\n  \"text\": \"这是一条需要按语义分成两行而且不能增删任何文字的中文字幕\"\n}"}]'::jsonb,'auto-run-subtitle-format.ts','6fbb4cc76c5002e0ec7a06a0137c9b0ac7f04e550709c7437b8187c484044b65'),
+('rewrite.manual-selection','手动改稿候选择优','详情页手动改稿的“择优”操作，只在程序已确认合格的候选中选择，不再生成新台词。
+消息角色：user（程序输入或追加反馈）。
+占位符使用 {{名称}}；值由程序在每次实际调用时替换，详情示例仅作说明。
+输入字段：数组中index是候选原编号；text是字幕稿，ttsText是实际朗读稿；ratio/ttsRatio均为归一后的拍数比，由程序测量。','本轮只择优，不要再改写。以下候选均由程序核实比在 0.9–1.1 内，区间内一视同仁，不按接近 1.00 排名。
+结合上面的本场三语前后文，先排除错译、添加事实、遗漏否定/条件/人物关系的稿子，再挑最简洁自然、措辞优美、人物口吻贴切的一条。杜绝车轱辘话、套话和为了凑拍数而加的废话。
+字幕排版跟随原字幕行数，不因文字较长额外分行，不改变朗读文本。
+只输出 JSON：{"selectedIndex":整数或null,"reason":"选择理由或全部拒绝原因"}。index 必须使用候选原始编号；都不合适就用 null，不得勉强选，不输出新台词。
+{{input_json}}',true,'user','[{"name":"input_json","description":"每次调用时序列化的完整JSON输入。数组中index是候选原编号；text是字幕稿，ttsText是实际朗读稿；ratio/ttsRatio均为归一后的拍数比，由程序测量。","example":"[\n  {\n    \"index\": 0,\n    \"text\": \"怎么样啊？这才是做生意！\",\n    \"ratio\": 0.981,\n    \"ttsText\": \"怎么样啊？这才是做生意！\",\n    \"ttsRatio\": 0.981\n  }\n]"}]'::jsonb,'../app/api/lines/[stem]/rewrite/route.ts','26bfea6a785ef1737c02d93a359b04b9bc3a143af9e52ee7eaa9496beb74000d')
+ON CONFLICT (seed_hash) DO NOTHING;

@@ -1,0 +1,5 @@
+checkpoints
+data
+upstream/.git
+**/__pycache__
+*.log

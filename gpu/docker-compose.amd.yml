@@ -1,0 +1,36 @@
+# Isolated ROCm test deployment for inference-host (Radeon AI PRO R9700/gfx1201).
+# Run with: docker compose -f docker-compose.amd.yml up -d --build
+services:
+  tts-amd:
+    build:
+      context: ./tts
+      dockerfile: Dockerfile.amd
+    image: ff7-gpu-tts:amd-test
+    container_name: ff7-gpu-tts-amd
+    ports:
+      - "8100:8000"
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    group_add:
+      - "44"
+      - "990"
+    environment:
+      HIP_VISIBLE_DEVICES: "0"
+      ROCR_VISIBLE_DEVICES: "0"
+      FF7_SPEAKER_DIR: /data/speakers
+      CONFIG_PATH: /app/main/config.json
+      HF_ENDPOINT: https://hf-mirror.com
+      PYTORCH_ROCM_ARCH: gfx1201
+      # Compatibility experiment only; the production service uses NVIDIA FP16.
+      INDEXTTS_PRECISION: bf16
+      INDEXTTS_ATTN_IMPLEMENTATION: eager
+      INDEXTTS_SDPA_BACKEND: math
+    volumes:
+      - ${MODELS_DIR:?配置模型目录}:/models:ro
+      - ./tts/config.json:/app/main/config.json:ro
+      - ${SPEAKERS_DIR:?配置说话人参考音频目录}:/data/speakers
+    ipc: host
+    security_opt:
+      - seccomp=unconfined
+    restart: unless-stopped

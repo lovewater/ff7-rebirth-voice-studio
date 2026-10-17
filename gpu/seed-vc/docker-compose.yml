@@ -1,0 +1,28 @@
+services:
+  seed-vc:
+    build:
+      context: .
+      args:
+        BASE_IMAGE: ${INDEXTTS_BASE_IMAGE:?配置含推理依赖的基础镜像}
+    restart: unless-stopped
+    ports:
+      - '8811:8811'
+    entrypoint: ['python', '/service/api.py']
+    environment:
+      CUDA_VISIBLE_DEVICES: '0'
+      GPU_LOCK_PATH: /gpu-lock/inference.lock
+      HF_ENDPOINT: https://hf-mirror.com
+      HF_HUB_DISABLE_XET: '1'
+      HF_HOME: /opt/seed-vc/checkpoints/hf
+      HUGGINGFACE_HUB_CACHE: /opt/seed-vc/checkpoints/hf
+    volumes:
+      - ./checkpoints:/opt/seed-vc/checkpoints
+      - ./weights:/opt/seed-vc/weights:ro
+      - ./data:/data
+      - ./service:/service:ro
+      - ${GPU_LOCK_DIR:?配置跨服务锁目录}:/gpu-lock
+      - ${MODEL_CACHE_DIR:?配置模型缓存目录}:/existing-models:ro
+    gpus:
+      - driver: nvidia
+        device_ids: ['1']
+        capabilities: [gpu]

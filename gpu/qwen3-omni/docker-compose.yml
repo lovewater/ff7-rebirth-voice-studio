@@ -1,0 +1,79 @@
+# Qwen3-Omni-30B-A3B-Instruct AWQ-4bit 听写/质检（thinker 出文字）
+# 只用 GPU1/GPU2（各 22GB，NVLink）。不要动 GPU0 的 ASR。
+# 不要 --omni：主线 vllm serve 才是这条 AWQ 的路径。
+# 不要加进仓库根 docker-compose.yml（开机只起 ASR）。GPU 空了再：
+#   cd /srv/ff7-rebirth-voice-studio/gpu/qwen3-omni && docker compose up -d
+#
+# 镜像：vllm/vllm-openai:v0.28.0-audio
+
+services:
+  qwen3-omni-instruct:
+    image: vllm/vllm-openai:v0.28.0-audio
+    container_name: ff7-gpu-qwen3-omni
+    runtime: nvidia
+    ipc: host
+    shm_size: "16gb"
+    ports:
+      - "8003:8003"
+    environment:
+      NVIDIA_VISIBLE_DEVICES: "1,2"
+      CUDA_VISIBLE_DEVICES: "0,1"
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      PYTHONUNBUFFERED: "1"
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      VLLM_WORKER_MULTIPROC_METHOD: spawn
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+      NCCL_IB_DISABLE: "1"
+      NCCL_P2P_DISABLE: "0"
+    volumes:
+      - ${QWEN_OMNI_MODEL_DIR:?配置 Qwen3 Omni 权重目录}:/models/cyankiwi/Qwen3-Omni-30B-A3B-Instruct-AWQ-4bit:ro
+    entrypoint: ["vllm", "serve"]
+    command:
+      - /models/cyankiwi/Qwen3-Omni-30B-A3B-Instruct-AWQ-4bit
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8003"
+      - --served-model-name
+      - qwen3-omni-instruct
+      - --dtype
+      - float16
+      - --kv-cache-dtype
+      - float16
+      - --tensor-parallel-size
+      - "2"
+      - --gpu-memory-utilization
+      - "0.85"
+      - --max-model-len
+      - "24576"
+      - --max-num-seqs
+      - "4"
+      - --max-num-batched-tokens
+      - "8192"
+      - --mm-processor-cache-gb
+      - "1"
+      - --limit-mm-per-prompt
+      - '{"audio":2,"image":0,"video":0}'
+      - --trust-remote-code
+      - --enforce-eager
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["1", "2"]
+              capabilities: [gpu]
+    restart: "no"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python3",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8003/v1/models', timeout=5).read()",
+        ]
+      interval: 15s
+      timeout: 8s
+      retries: 40
+      start_period: 300s

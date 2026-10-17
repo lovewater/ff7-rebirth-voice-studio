@@ -1,0 +1,12 @@
+FROM python:3.13-slim
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential cmake \
+    && rm -rf /var/lib/apt/lists/*
+COPY requirements-mora-service.txt ./
+RUN pip install --no-cache-dir -r requirements-mora-service.txt
+RUN python -c "import pyopenjtalk; pyopenjtalk.g2p('辞書を準備します', kana=True)"
+RUN pip install --no-cache-dir 'psycopg[binary]>=3.2,<4'
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+COPY mora_core.py mora_server.py mora_weights.py speech_activity.py speech_metrics_batch.py ./
+CMD ["python", "-u", "mora_server.py"]

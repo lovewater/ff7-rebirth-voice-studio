@@ -1,0 +1,14 @@
+{
+  "api": { "port": 8000, "host": "0.0.0.0" },
+  "model_path": "/models/IndexTeam/IndexTTS-2.5",
+  "audio_cache": {
+    "enabled": true,
+    "sample_size_limit": "1024MB",
+    "result_size_limit": "500MB"
+  },
+  "report_server": [],
+  "proxy": { "enable": false, "url": "" },
+  "tmp_folder": { "path": "/tmp/ff7-tts" },
+  "remote_devices": [],
+  "samples_dir": "/data/speakers"
+}
