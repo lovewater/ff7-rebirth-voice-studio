@@ -60,9 +60,9 @@ def seed(conn):
         for language, field in [('jp','text_jp'),('cn','text_zh')]:
             sources.append((f"{language}/{row['stem']}.mp3", language, row[field] or '', row['priority']))
     for row in conn.execute("""
-      SELECT stem,audio_path,raw_audio_path,tts_text,is_used,
+      SELECT stem,audio_path,raw_audio_path,tts_text,review_state,
         (voice_gpu_key='jp-lock' OR conversion_meta->>'pipeline'='jp-lock') AS jp_lock
-      FROM line_tts_versions WHERE status='ready' ORDER BY is_used DESC,id DESC
+      FROM line_tts_versions WHERE status='ready' ORDER BY (review_state='locked') DESC,id DESC
     """).fetchall():
         line = texts.get(row['stem'])
         if not line:
@@ -71,7 +71,7 @@ def seed(conn):
         text = (line['text_jp'] or '') if row['jp_lock'] else (row['tts_text'] or line['text_zh'] or '')
         for field in ('audio_path','raw_audio_path'):
             if row[field]:
-                sources.append((row[field], language, text, 20 if row['is_used'] else line['priority']))
+                sources.append((row[field], language, text, 20 if row['review_state']=='locked' else line['priority']))
     # Only enqueue changed/new inputs. Reading directory metadata is cheap;
     # periodic scans never decode already measured audio.
     known = {r['cache_key']: (r['file_version'],r['algorithm_version']) for r in

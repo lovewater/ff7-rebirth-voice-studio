@@ -2,7 +2,7 @@
 
 /** Native modal provides focus containment and Escape cancellation. Text is set
  * through DOM properties, never HTML, and real newlines remain editable. */
-function confirmSubtitle(text: string, original: string): Promise<string | null> {
+export function confirmSubtitle(text: string, original: string, preparationError?: string): Promise<string | null> {
   return new Promise((resolve) => {
     const previous = document.activeElement as HTMLElement | null;
     const dialog = document.createElement("dialog");
@@ -13,7 +13,7 @@ function confirmSubtitle(text: string, original: string): Promise<string | null>
     heading.textContent = "确认字幕并锁定";
     const note = document.createElement("p");
     note.className = "mt-2 text-sm text-zinc-400";
-    note.textContent = "TTS 文字与原字幕不同。请确认或修改下面的字幕，确认后将保存到“字幕改写”并锁定这条音频。";
+    note.textContent = `请核对下面的字幕及分行，必要时修改，确认后将保存到“字幕改写”并锁定这条音频。${preparationError ? ` ${preparationError}` : ""}`;
     const source = document.createElement("p");
     source.className = "mt-3 whitespace-pre-wrap text-sm text-zinc-500";
     source.textContent = `原字幕：${original}`;
@@ -31,12 +31,13 @@ function confirmSubtitle(text: string, original: string): Promise<string | null>
     confirm.type = "button";
     confirm.className = "inline-flex min-h-11 items-center rounded bg-sky-700 px-4 text-sm text-white disabled:opacity-40";
     confirm.textContent = "确认同步并锁定";
-    input.addEventListener("input", () => { confirm.disabled = !input.value.trim(); });
+    const allowEmpty = !text.trim() && !original.trim();
+    input.addEventListener("input", () => { confirm.disabled = !allowEmpty && !input.value.trim(); });
     const finish = (value: string | null) => {
       dialog.close(); dialog.remove(); previous?.focus(); resolve(value);
     };
     cancel.addEventListener("click", () => finish(null));
-    confirm.addEventListener("click", () => { if (input.value.trim()) finish(input.value.trim()); });
+    confirm.addEventListener("click", () => { if (allowEmpty || input.value.trim()) finish(input.value.trim()); });
     dialog.addEventListener("cancel", (event) => { event.preventDefault(); finish(null); });
     // Prevent Escape bubbling into an underlying editor dialog.
     dialog.addEventListener("keydown", (event) => { if (event.key === "Escape") event.stopPropagation(); });
@@ -56,10 +57,14 @@ export async function patchTtsWithConfirmation(stem: string, id: string | number
   const send = (payload: Record<string, unknown>) => fetch(`/api/lines/${encodeURIComponent(stem)}/tts/${id}`, {
     method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
   });
+  // 异常处理页每次锁定都必须核对字幕，不能因沿用原文或自动成品而跳过。
+  if (window.location.pathname === "/abnormal" && body.reviewState === "locked") {
+    body = { ...body, requireSubtitleConfirmation: true };
+  }
   let response = await send(body);
   let result = await response.json();
   if (response.status === 409 && result.code === "SUBTITLE_CONFIRMATION_REQUIRED") {
-    const subtitleText = await confirmSubtitle(result.subtitleText, result.originalText);
+    const subtitleText = await confirmSubtitle(result.subtitleText, result.originalText, result.subtitlePreparationError);
     if (subtitleText === null) return null;
     response = await send({ ...body, subtitleText });
     result = await response.json();

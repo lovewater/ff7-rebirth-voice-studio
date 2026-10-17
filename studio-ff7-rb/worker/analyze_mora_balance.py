@@ -63,7 +63,7 @@ def main() -> int:
         ) latest ON true
         LEFT JOIN LATERAL (
           SELECT tts_text, speech_s FROM line_tts_versions
-          WHERE stem = l.stem AND status = 'ready' AND is_used IS TRUE
+          WHERE stem = l.stem AND status = 'ready' AND review_state='locked'
           ORDER BY id DESC LIMIT 1
         ) active ON true
     """

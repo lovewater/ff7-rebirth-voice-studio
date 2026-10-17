@@ -1,3 +1,4 @@
+import { originalCnLockedExpr } from "@/lib/line-filters";
 import { NextRequest, NextResponse } from "next/server";
 import { sql } from "@/lib/db";
 import { healthFlagExpr } from "@/lib/line-filters";
@@ -10,7 +11,7 @@ function stemOk(stem: string) {
 
 export type TtsSnapshot = {
   id: string | null;
-  isUsed: boolean;
+  reviewState: "candidate" | "locked" | "abnormal";
   subtitle: string | null;
   ttsText: string | null;
   count: number;
@@ -38,7 +39,7 @@ export async function GET(req: NextRequest) {
     {
       stem: string;
       id: string;
-      is_used: boolean;
+      review_state: "candidate" | "locked" | "abnormal";
       subtitle_text: string | null;
       tts_text: string;
       jp_lock: boolean;
@@ -50,13 +51,13 @@ export async function GET(req: NextRequest) {
     }[]
   >`
     SELECT DISTINCT ON (stem)
-      stem, id::text AS id, (is_used IS TRUE) AS is_used, subtitle_text, tts_text,
+      stem, id::text AS id, review_state, subtitle_text, tts_text,
       (voice_gpu_key = 'jp-lock' OR conversion_meta->>'pipeline' = 'jp-lock') AS jp_lock,
       (heard_at IS NULL) AS is_new,
       start_s, end_s, dur_s, speech_s
     FROM line_tts_versions
     WHERE stem = ANY(${stems}) AND status = 'ready'
-    ORDER BY stem, is_used DESC, (parent_tts_id IS NULL) DESC, id DESC
+    ORDER BY stem, (review_state <> 'candidate') DESC, (parent_tts_id IS NULL) DESC, id DESC
   `;
   const counts = await sql<{ stem: string; n: number }[]>`
     SELECT stem, COUNT(*)::int AS n
@@ -66,7 +67,7 @@ export async function GET(req: NextRequest) {
   `;
   const nByStem = new Map(counts.map((row) => [row.stem, row.n]));
   const skips = await sql<{ stem: string; skip_timing: boolean; flag: string }[]>`
-    SELECT l.stem, COALESCE(m.skip_timing, false) AS skip_timing, (${healthFlagExpr()}) AS flag
+    SELECT l.stem, ${originalCnLockedExpr()} AS skip_timing, (${healthFlagExpr()}) AS flag
     FROM lines l LEFT JOIN line_meta m ON m.stem = l.stem
     WHERE l.stem = ANY(${stems})
   `;
@@ -76,7 +77,7 @@ export async function GET(req: NextRequest) {
   for (const stem of stems) {
     byStem[stem] = {
       id: null,
-      isUsed: false,
+      reviewState: "candidate",
       subtitle: null,
       ttsText: null,
       count: nByStem.get(stem) ?? 0,
@@ -90,7 +91,7 @@ export async function GET(req: NextRequest) {
   for (const row of latest) {
     byStem[row.stem] = {
       id: row.id,
-      isUsed: row.is_used === true,
+      reviewState: row.review_state,
       subtitle: row.subtitle_text,
       ttsText: row.tts_text,
       count: nByStem.get(row.stem) ?? 0,

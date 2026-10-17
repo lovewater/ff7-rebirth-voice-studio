@@ -16,11 +16,11 @@ function load(name){
 }
 for(const brokenMeasure of [false,true])test('five rewrites may select the 14-character manual answer despite ratio .728, including unavailable diagnostic beats: '+brokenMeasure,async()=>{
  const texts=['怎么样啊，这才是做生意！','怎么样啊，这才是堂堂正正做生意！','怎么样啊，这才是真正堂堂正正做生意！','看到了吧，这就叫做生意！','怎么样啊？这才是做生意！'];
- const originalFetch=global.fetch,oldUrl=process.env.REWRITE_LLM_URL,oldKey=process.env.REWRITE_LLM_KEY;let n=0;
- process.env.REWRITE_LLM_URL='http://test.invalid';process.env.REWRITE_LLM_KEY='test';
+ const originalFetch=global.fetch,oldUrl=process.env.VOLCENGINE_LLM_URL,oldKey=process.env.VOLCENGINE_LLM_KEY;let n=0;
+ process.env.VOLCENGINE_LLM_URL='http://test.invalid';process.env.VOLCENGINE_LLM_KEY='test';
  global.fetch=async(_url,opts)=>{const prompt=JSON.parse(opts.body).messages.map(m=>m.content).join('\n');assert.doesNotMatch(prompt,/正常范围是 0\.9|目标约.*拍|字幕拍数必须落在|后续必须在合格范围内/);assert.match(prompt,/建议约13字，仅供参考，不强制/);return new Response(JSON.stringify({choices:[{message:{content:JSON.stringify({text:texts[n++]})}}]}));};
  try{const beat={jp:{status:'ok',units:15},cn:{units:11.5},normalizedRatio:.981};
  const r=await load('./auto-run-llm').rewriteFive({speaker:'贝格',show:null,textJp:'どうだおまえら これがショーバイだ！',textEn:"That's how you broker an honest deal!",original:texts[0],current:texts[0],beats:beat,before:[],after:[],jpAsr:{raw:{}},failNotes:[],durationLine:durationRewritePolicy(texts[0],3.77,2.989),measure:async t=>{if(brokenMeasure)throw Error('拍数服务不可用');return{...beat,normalizedRatio:t===texts[1]?.728:.981};}});
  assert.equal(n,5);assert.equal(r.text,texts[1]);assert.equal(r.target,13);assert.equal(r.candidates[1].ratio,brokenMeasure?null:.728);
- }finally{global.fetch=originalFetch;if(oldUrl===undefined)delete process.env.REWRITE_LLM_URL;else process.env.REWRITE_LLM_URL=oldUrl;if(oldKey===undefined)delete process.env.REWRITE_LLM_KEY;else process.env.REWRITE_LLM_KEY=oldKey;}
+ }finally{global.fetch=originalFetch;if(oldUrl===undefined)delete process.env.VOLCENGINE_LLM_URL;else process.env.VOLCENGINE_LLM_URL=oldUrl;if(oldKey===undefined)delete process.env.VOLCENGINE_LLM_KEY;else process.env.VOLCENGINE_LLM_KEY=oldKey;}
 });

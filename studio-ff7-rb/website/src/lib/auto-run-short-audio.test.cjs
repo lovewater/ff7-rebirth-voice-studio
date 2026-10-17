@@ -21,7 +21,7 @@ function wav(samples, sampleRate = 1000) {
   b.write('data', 36); b.writeUInt32LE(samples.length * 2, 40);
   samples.forEach((v,i) => b.writeInt16LE(v,44+i*2)); return b;
 }
-test('short policy counts only cleaned Japanese body, counts non-quote punctuation for its cap, and excludes six-character lines', () => {
+test('short policy counts only cleaned Japanese body, counts non-quote punctuation for its cap, and includes six/seven-character lines and excludes eight-character lines', () => {
   const policy = shortPerformancePolicy('オトリか！', ratio);
   assert.deepEqual(policy, { jpCharacters: 4, min: 3, max: 5 });
   assert.equal(checkShortCharacters(policy, '诱饵！').pass, false);
@@ -29,9 +29,9 @@ test('short policy counts only cleaned Japanese body, counts non-quote punctuati
   assert.equal(checkShortCharacters(policy, '原来是诱饵！').pass, true);
   assert.equal(checkShortCharacters(policy, '这原来是诱饵！').pass, false);
   assert.equal(checkShortCharacters(policy, '诱[停顿=300]饵吗！').characters, 3);
-  assert.equal(shortPerformancePolicy('甲乙丙丁戊己', ratio), null);
+  assert.equal(shortPerformancePolicy('甲乙丙丁戊己庚辛', ratio), null);
   assert.equal(shortPerformancePolicy('？！', ratio), null);
-  for (let n=1;n<6;n++) {
+  for (let n=1;n<8;n++) {
     const p=shortPerformancePolicy('あ'.repeat(n),ratio);
     assert.ok(p.min>=1 && p.min<=p.max && p.max===n);
   }
@@ -90,7 +90,7 @@ test('five short rewrites select by allowed character length even when an invali
     return mod.exports;
   };
   const previousFetch=global.fetch;
-  const previousUrl=process.env.REWRITE_LLM_URL, previousKey=process.env.REWRITE_LLM_KEY;
+  const previousUrl=process.env.VOLCENGINE_LLM_URL, previousKey=process.env.VOLCENGINE_LLM_KEY;
   let index=0;
   const texts=['诱饵！','诱饵吗！','是诱饵吗！','原来是诱饵吗！','诱饵吗！'];
   global.fetch=async (_url, options)=>{
@@ -98,7 +98,7 @@ test('five short rewrites select by allowed character length even when an invali
     assert.doesNotMatch(prompt,/正常范围是 0\.9|目标约/);
     return new Response(JSON.stringify({choices:[{message:{content:JSON.stringify({text:texts[index++]})}}]}));
   };
-  process.env.REWRITE_LLM_URL='http://test.invalid'; process.env.REWRITE_LLM_KEY='test';
+  process.env.VOLCENGINE_LLM_URL='http://test.invalid'; process.env.VOLCENGINE_LLM_KEY='test';
   try {
     const measure=async text=>({jp:{units:null},cn:{units:[...text.replace(/\p{P}/gu,'')].length},normalizedRatio:text==='诱饵！'?1:9});
     const result=await loadTs('./auto-run-llm').rewriteFive({speaker:'',show:null,textJp:'オトリか！',textEn:'A decoy!',
@@ -109,8 +109,8 @@ test('five short rewrites select by allowed character length even when an invali
     assert.equal(index,5);
   } finally {
     global.fetch=previousFetch;
-    if(previousUrl===undefined) delete process.env.REWRITE_LLM_URL; else process.env.REWRITE_LLM_URL=previousUrl;
-    if(previousKey===undefined) delete process.env.REWRITE_LLM_KEY; else process.env.REWRITE_LLM_KEY=previousKey;
+    if(previousUrl===undefined) delete process.env.VOLCENGINE_LLM_URL; else process.env.VOLCENGINE_LLM_URL=previousUrl;
+    if(previousKey===undefined) delete process.env.VOLCENGINE_LLM_KEY; else process.env.VOLCENGINE_LLM_KEY=previousKey;
   }
 });
 

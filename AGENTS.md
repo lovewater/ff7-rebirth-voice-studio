@@ -53,10 +53,13 @@ programs/ff7sound status
 - **大于 1：中文偏短。** 放进同一段演出时间，语速容易被拖慢。
 - **小于 1：中文偏长。** 同样的时间里字偏多，听起来啰嗦、偏快。
 - 日文拍 = 摩拉 + 句中标点 × 1.5。中文拍 = 汉字数 + 句中标点 × 1.5。整句末尾标点不计；字幕换行不是句末，也不算拍。句中标点可以用来把「比」调进目标区间。
-- 日文去掉标点和空白后，正文 ≤5 字不计算「比」，不要为了凑比值把短句写长。
+- 日文去掉标点和空白后，正文少于8字不计算「比」，不要为了凑比值把短句写长。
 - 代码里 `normalizedRatio` 才是「比」。`ratio` 只是归一之前的日文拍 ÷ 中文拍。报警用的是「比」偏离 1.00：超过 10% 警告，超过 15% 异常。
 
 ## 管理台方针
+
+- 自动批处理按首页 `regions.sort_order, region` 的顺序，从用户确认的位置接续，保持4并发。只处理场景演出的警告/异常；`forceGenerate=false` 按稳定stem检查 `line_auto_runs`，任何自动运行历史（通过、待复核、失败、中断或进行中）均跳过，改名/重排后不得重复跑。仅界面手点 `forceGenerate=true` 可重跑，进行中仍拒绝重复启动。古代物质专项不自动移动主线接续位置。章节标题及排序以游戏CN/Resident_TxtRes章节标题和实际剧情核对，见fill_regions.py，不能按文件编号或开场人物推断。
+
 
 - 工作对象 = 中文包约 2.7 万条，不管游戏里多出来的 SE/BGM
 - 音频：`website/data/{jp,cn,ours}/`，已全量抽 JP/CN MP3；不进 git / Docker
@@ -84,7 +87,7 @@ cd studio-ff7-rb/website && git add -A --dry-run
 
 ## 锁和打 MOD
 
-列表页 `https://inference.example.invalid` 上，一条台词的「锁」是 `line_tts_versions.is_used`。同一条 stem 最多锁一个已经生成好的音频（改过的 TTS、音频编辑，或「锁日文原声」）。没锁的句子继续用现成中文包里的源中文。锁上的句子如果 `subtitle_text` 和 `lines.text_zh` 不一样，游戏字幕也要换成这句。
+列表页 `https://inference.example.invalid` 上，音频的人工状态是 `line_tts_versions.review_state`：`candidate`（未标记）、`locked`（锁定）、`abnormal`（人工异常）。同一条stem只能有一个锁定或异常，锁定或标异常任一音频会清除同句其他人工标记；取消选择回到全未标记。日文、原中文和生成音频都可选择。旧skip_timing已迁移为cn-original锁，旧列禁止再写true；首次人工选原中文才登记副本，不调用TTS。人工异常不因试听消失，自动流程不选它作为成品。没锁的句子继续用现成中文包里的源中文。锁上的句子如果 `subtitle_text` 和 `lines.text_zh` 不一样，游戏字幕也要换成这句。
 
 每句剧情语音是自己的 `.uasset`，chunk id 跟原中文包相同。修订会重写受影响的同名 `zzz_cn_voice_*` 包；包内其他章节的 chunk 原样保留。原来的九个中文包必须齐全，受影响的包用新版覆盖。战斗语音库是整份 `VO_*.uasset`，不在章节区域里。
 

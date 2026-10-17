@@ -97,7 +97,7 @@ export async function GET(
     SELECT id, parent_tts_id::text AS parent_tts_id, auto_run_id::text AS auto_run_id, voice_version_id, voice_gpu_key, tts_text, spoken_text,
            subtitle_text, duration_factor, emo_alpha, audio_path,
            audio_bytes, start_s, end_s, dur_s, speech_s,
-           is_used, used_at, heard_at, play_count, status, error,
+           review_state, used_at, heard_at, play_count, status, error,
            engine_precision, engine_device, conversion_meta, raw_audio_path, llm_tokens, llm_speed, created_at, completed_at
     FROM line_tts_versions
     WHERE stem = ${stem}

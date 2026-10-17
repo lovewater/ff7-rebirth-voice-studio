@@ -18,16 +18,30 @@ export function performanceSegmentationHint(textJp: string) {
 export const AUTO_BEAT_LOW = 0.85;
 export const AUTO_BEAT_HIGH = 1.15;
 
+/** 8～11个日文纯正文字符采用非对称合格带，允许中文稍展开但不能更短。
+ * 少于8字仍走既有短句豁免；字数来自日文而非中文，不能增删中文来切换门槛。
+ * 这里只改变自动修订的合格门槛，不改变“比”的定义或列表10%/15%提示颜色。
+ */
+export function compactPerformanceBeatBand(textJp: string | undefined) {
+  const characters = textJp == null ? 0 : spokenCharacters(textJp.replace(/\\r\\n|\\n/g, "\n"));
+  return characters >= 8 && characters <= 11 ? { low: 0.75, high: 1.10 } : null;
+}
+
+export function autoBeatBand(textJp?: string) {
+  return compactPerformanceBeatBand(textJp) ?? { low: AUTO_BEAT_LOW, high: AUTO_BEAT_HIGH };
+}
+
 /** 检查归一后的拍数“比”，与 CN/JP 音频跨度比是两项独立条件。
  * 短句本来就不算比；服务失败/读数缺失不能假装合格。边界含两端。
  */
-export function checkAutoBeat(result: { jp: { status: string }; normalizedRatio: number | null } | null) {
+export function checkAutoBeat(result: { jp: { status: string }; normalizedRatio: number | null } | null, textJp?: string) {
   const enabled = result?.jp.status !== "short";
   const ratio = result?.normalizedRatio ?? null;
   const known = ratio !== null && Number.isFinite(ratio) && ratio > 0;
+  const band = autoBeatBand(textJp);
   return {
     enabled, ratio,
-    pass: !enabled || (known && ratio! >= AUTO_BEAT_LOW && ratio! <= AUTO_BEAT_HIGH),
+    pass: !enabled || (known && ratio! >= band.low && ratio! <= band.high),
     deviation: !enabled ? 0 : known ? Math.abs(ratio! - 1) : null,
   };
 }
@@ -53,13 +67,13 @@ export function performanceCharacterLimit(textJp: string, speechSeconds: number 
   return { jpLimitCharacters, durationLimit, speechSeconds, max: Math.max(jpLimitCharacters, durationLimit ?? 0) };
 }
 
-/** 少于六个纯正文字符仍豁免拍数比；最低字数继续按原合格带推算。
+/** 少于八个纯正文字符仍豁免拍数比；最低字数继续按原合格带推算。
  * 只放宽上限为统一的净时长/日文含标点上限，不用汉字书写长度截断“正确答案”等核心信息。
  * 进入短句线路的判断不受标点数影响，堆标点不能让短句变成普通句。
  */
 export function shortPerformancePolicy(textJp: string, normalRatio: number, speechSeconds: number | null = null): ShortPerformancePolicy | null {
   const jpCharacters = spokenCharacters(textJp);
-  if (!jpCharacters || jpCharacters >= 6) return null;
+  if (!jpCharacters || jpCharacters >= 8) return null;
   return { jpCharacters, min: Math.min(jpCharacters, Math.max(1, Math.ceil(jpCharacters / (normalRatio * AUTO_BEAT_HIGH)))), max: performanceCharacterLimit(textJp, speechSeconds).max };
 }
 

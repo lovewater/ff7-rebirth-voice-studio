@@ -16,6 +16,8 @@ export async function POST(
   ctx: { params: Promise<{ stem: string }> },
 ) {
   const { stem } = await ctx.params;
+  const body = await _req.json().catch(() => ({}));
+  const confirmedSubtitle = typeof body?.subtitleText === "string" ? twoLineSubtitle(body.subtitleText) || null : undefined;
   if (!stemOk(stem)) return NextResponse.json({ error: "bad stem" }, { status: 400 });
   const line = (
     await sql<{
@@ -50,7 +52,7 @@ export async function POST(
         duration_factor, emo_alpha
       ) VALUES (
         ${stem}, ${line.speaker}, NULL, ${"jp-lock"},
-        ${label}, ${label}, ${line.text_zh == null ? null : twoLineSubtitle(line.text_zh)},
+        ${label}, ${label}, ${confirmedSubtitle !== undefined ? confirmedSubtitle : line.text_zh == null ? null : twoLineSubtitle(line.text_zh)},
         ${line.text_jp}, ${line.text_zh},
         ${1}, ${0}
       )
@@ -64,10 +66,11 @@ export async function POST(
   const fileStat = await stat(absolutePath);
   const conversion = { pipeline: "jp-lock", stem };
   await sql.begin(async (tx) => {
+    await tx`SELECT stem FROM lines WHERE stem=${stem} FOR UPDATE`;
     await tx`
       UPDATE line_tts_versions
-      SET is_used = false, used_at = NULL
-      WHERE stem = ${stem} AND is_used
+      SET review_state = 'candidate', used_at = NULL
+      WHERE stem = ${stem} AND review_state IN ('locked', 'abnormal')
     `;
     await tx`
       UPDATE line_tts_versions SET
@@ -79,7 +82,7 @@ export async function POST(
         dur_s = ${line.jp_dur_s},
         speech_s = ${line.jp_speech_s},
         conversion_meta = ${sql.json(conversion)},
-        is_used = true,
+        review_state = 'locked',
         used_at = now(),
         completed_at = now(),
         error = NULL

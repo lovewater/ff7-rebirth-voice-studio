@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist } from "next/font/google";
 import "./globals.css";
 import { Nav } from "./nav";
@@ -12,6 +12,8 @@ export const metadata: Metadata = {
   title: "FF7 Rebirth 中文配音修订台",
   description: "修订现成中文语音包",
 };
+
+export const viewport: Viewport = { colorScheme: "dark", themeColor: "#09090b" };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (

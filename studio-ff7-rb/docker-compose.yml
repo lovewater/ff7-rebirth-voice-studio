@@ -49,7 +49,11 @@ services:
       REWRITE_LLM_URL: ${REWRITE_LLM_URL:-}
       REWRITE_LLM_MODEL: ${REWRITE_LLM_MODEL:-glm-5.3}
       REWRITE_LLM_KEY: ${REWRITE_LLM_KEY:-}
-      # 独立注册的自部署模型，业务仍默认使用primary；不按这里的配置自动改路由。
+      # 台词改写专用火山套餐连接，与原模型和ASR凭据独立。
+      VOLCENGINE_LLM_URL: ${VOLCENGINE_LLM_URL:-}
+      VOLCENGINE_LLM_MODEL: ${VOLCENGINE_LLM_MODEL:-doubao-seed-2.1-pro}
+      VOLCENGINE_LLM_KEY: ${VOLCENGINE_LLM_KEY:-}
+      # 自部署模型独立注册，仅显式选择时使用；台词改写走火山，判断类走原模型。
       SELF_HOSTED_LLM_URL: ${SELF_HOSTED_LLM_URL:-}
       SELF_HOSTED_LLM_MODEL: ${SELF_HOSTED_LLM_MODEL:-Qwen/Qwen3.8-27B-FP8}
       SELF_HOSTED_LLM_KEY: ${SELF_HOSTED_LLM_KEY:-}

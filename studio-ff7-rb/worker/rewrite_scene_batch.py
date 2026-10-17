@@ -132,7 +132,7 @@ class Database:
                 "NOT COALESCE(m.skip_timing,false)",
                 "COALESCE(l.text_jp,'')<>''",
                 "COALESCE(l.text_zh,'')<>''",
-                "NOT EXISTS (SELECT 1 FROM line_tts_versions t WHERE t.stem=l.stem AND t.is_used)",
+                "NOT EXISTS (SELECT 1 FROM line_tts_versions t WHERE t.stem=l.stem AND t.review_state='locked')",
             ]
             args = []
             if regions:
@@ -159,30 +159,30 @@ class Database:
             line = conn.execute("""
               SELECT l.id, l.stem, l.text_jp, l.text_zh, l.kind, l.subtitle_italic,
                      m.skip_timing, m.dialogue_mode,
-                     EXISTS(SELECT 1 FROM line_tts_versions t WHERE t.stem=l.stem AND t.is_used) AS locked
+                     EXISTS(SELECT 1 FROM line_tts_versions t WHERE t.stem=l.stem AND t.review_state='locked') AS locked
               FROM lines l JOIN line_meta m ON m.stem=l.stem WHERE l.stem=%s
             """, (stem,)).fetchone()
             versions = conn.execute("""
-              SELECT id::text, status, is_used, heard_at, tts_text, subtitle_text,
+              SELECT id::text, status, review_state, heard_at, tts_text, subtitle_text,
                      audio_path, start_s, end_s, dur_s, speech_s
               FROM line_tts_versions WHERE stem=%s ORDER BY id
             """, (stem,)).fetchall()
         return line, versions
 
     def subtitle(self, stem, ids, text, tts_text, previous_text=None):
-        # Protect user edits after the request was submitted. Never set is_used,
+        # Protect user edits after the request was submitted. Never set review_state,
         # heard_at, skip_timing, or the official subtitle.
         with self.connect() as conn:
             versions = conn.execute("""
-              SELECT id::text, is_used, heard_at, status, tts_text, subtitle_text
+              SELECT id::text, review_state, heard_at, status, tts_text, subtitle_text
               FROM line_tts_versions WHERE stem=%s ORDER BY id FOR UPDATE
             """, (stem,)).fetchall()
             meta = conn.execute("SELECT skip_timing FROM line_meta WHERE stem=%s FOR UPDATE", (stem,)).fetchone()
-            if (meta and meta["skip_timing"]) or any(v["is_used"] for v in versions):
+            if (meta and meta["skip_timing"]) or any(v["review_state"] == "locked" for v in versions):
                 return False
             for id_ in ids:
                 target = next((v for v in versions if v["id"] == id_), None)
-                if not target or target["is_used"] or target["heard_at"] is not None or target["status"] != "ready":
+                if not target or target["review_state"] != "candidate" or target["heard_at"] is not None or target["status"] != "ready":
                     return False
                 if target["tts_text"] != tts_text or target["subtitle_text"] not in (None, "", text, previous_text):
                     return False
@@ -310,7 +310,7 @@ def rewrite(db, api, job, bounds):
     reading_uncertain = beat["jp"]["status"] == "review_reading"
     if not eligible(beat, **bounds) or beat["jp"]["status"] not in ("ok", "review_reading"):
         return {"state": "skipped", "reason": "重新计数后不再满足筛选条件"}
-    old_ids = [v["id"] for v in versions if v["status"] == "ready" and not v["is_used"] and v["heard_at"] is None]
+    old_ids = [v["id"] for v in versions if v["status"] == "ready" and v["review_state"] == "candidate" and v["heard_at"] is None]
     candidates, errors = [], []
 
     def in_band(item):

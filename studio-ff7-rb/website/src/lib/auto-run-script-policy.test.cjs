@@ -8,7 +8,7 @@ const Module = require('node:module');
 const ts = require('typescript');
 // Load the actual prompt builder under Node; the app's bundler normally resolves extensionless TS imports.
 const promptModule = new Module(__filename);
-promptModule.require = (id) => require(id === './beats' ? './beats.ts' : id);
+promptModule.require = (id) => require(id === './beats' ? './beats.ts' : id === './auto-run-script-policy' ? './auto-run-script-policy.ts' : id);
 promptModule._compile(ts.transpileModule(readFileSync(`${__dirname}/rewrite-prompt.ts`, 'utf8'), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
 }).outputText, `${__dirname}/rewrite-prompt.ts`);
@@ -96,4 +96,28 @@ test('slow rewrite prompts ask for near one Chinese character per mora and never
  assert.match(prompt,/低于3拍/);assert.match(prompt,/接近或等于 12/);assert.match(prompt,/必须增加正文字符/);
  assert.match(prompt,/标点、空格、引号、换行不算/);
  assert.doesNotMatch(prompt,/目标约|0\.85|1\.15|67\.6|90 拍/);
+});
+
+test('8–11 JP body characters use inclusive .75–1.10; punctuation cannot change the band',()=>{
+ const {autoBeatBand,compactPerformanceBeatBand}=require('./auto-run-script-policy.ts');
+ for(const text of ['甲乙丙丁戊己庚辛','甲乙丙丁戊己庚辛壬癸子','「甲乙丙丁，戊己！庚辛」']){
+  assert.deepEqual(autoBeatBand(text),{low:.75,high:1.10});
+  for(const ratio of [.75,.8,1,1.10])assert.equal(checkAutoBeat(result(ratio),text).pass,true);
+  for(const ratio of [.749,1.101])assert.equal(checkAutoBeat(result(ratio),text).pass,false);
+  assert.equal(checkAutoBeat(result(null),text).pass,false);
+ }
+ for(const text of ['甲乙丙丁戊己庚','甲乙丙丁戊己庚辛壬癸子丑',''])assert.equal(compactPerformanceBeatBand(text),null);
+ assert.equal(checkAutoBeat(result(.8),'甲乙丙丁戊己庚辛壬癸子丑').pass,false);
+ assert.equal(checkAutoBeat(result(null,'short'),'甲乙丙丁戊己庚').enabled,false);
+});
+test('compact rewrites use the same band in first turn, second round and feedback',()=>{
+ const input={speaker:'',show:null,textJp:'甲乙丙丁戊己庚辛',textEn:'',original:'原中文',current:'当前稿',beats:{jp:{units:10},cn:{units:10}},before:[],after:[],previous:[{raw:'{}',units:10,spokenUnits:10}]};
+ for(const attempt of [0,2,5]){
+  const messages=rewriteMessages({...input,attempt});
+  const text=messages.filter(m=>m.role!=='assistant').map(m=>m.content).join('\n');
+  assert.match(text,/0.75[ 到–]+1.1/);assert.doesNotMatch(text,/0.9[ 到–]+1.1/);
+  for(const m of messages.filter(m=>m.promptKey)){assert.equal(m.promptValues.beat_min,.75);assert.equal(m.promptValues.beat_max,1.1);}
+ }
+ assert.equal(promptModule.exports.rewritePace(.8,input.textJp),'正常');
+ assert.equal(promptModule.exports.rewritePace(.8,'甲乙丙丁戊己庚辛壬癸子丑'),'偏快');
 });

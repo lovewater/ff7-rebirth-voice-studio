@@ -121,7 +121,7 @@ for(const emptySeed of ['', '  \n '])test('empty Japanese Seed directly preserve
  assert.ok(insert.values.includes(text));assert.ok(insert.values.includes('jp-lock'));
  const update=s.calls.queries.find(q=>q.query.includes('UPDATE line_tts_versions'));
  assert.equal(update.values.find(v=>v?.workflow)?.workflow,'seed-empty-original');
- assert.doesNotMatch(update.query,/is_used\s*=/);
+ assert.doesNotMatch(update.query,/review_state\s*=/);
  assert.deepEqual(s.calls.finish,[['run','passed',null,'original-1',{preserveSubtitle:true}]]);
 });
 

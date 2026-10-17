@@ -21,7 +21,7 @@ export function DetailPlay(
     beatTexts?: { jp: string | null; cn: string | null; modified?: string | null };
     modified?: {
       id: string;
-      isUsed: boolean;
+      reviewState: "candidate" | "locked" | "abnormal";
       timing: Timing;
       jpLock?: boolean;
       isNew?: boolean;

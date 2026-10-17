@@ -66,7 +66,7 @@ function RewriteDialog({ stem, text, onSelect, onClose }: {
   // All acceptable ratios have equal priority; preserve their conversation order.
   const distance = (slot: Slot) => {
     const ratio = slot.result?.beats.normalizedRatio;
-    return ratio != null && Number.isFinite(ratio) ? (rewritePace(ratio) === "正常" ? 0 : Math.abs(ratio - 1)) : Infinity;
+    return ratio != null && Number.isFinite(ratio) ? (rewritePace(ratio, slot.result?.referenceTextJp) === "正常" ? 0 : Math.abs(ratio - 1)) : Infinity;
   };
   const sortedSlots = slots.map((slot, index) => ({ slot, index }))
     .sort((a, b) => distance(a.slot) - distance(b.slot) || a.index - b.index);

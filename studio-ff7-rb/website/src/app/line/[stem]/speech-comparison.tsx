@@ -11,7 +11,7 @@ function seconds(value: number | null | undefined) {
 export function SpeechComparisonPanel({ stem, versions, initial }: {
   stem: string;
   initial?: SpeechComparison;
-  versions: { id: string; is_used: boolean }[];
+  versions: { id: string; review_state: "candidate" | "locked" | "abnormal" }[];
 }) {
   const [selected, setSelected] = useState<string | null>(null);
   const id = selected !== null && versions.some((v) => v.id === selected) ? selected : versions[0]?.id;
@@ -62,7 +62,7 @@ export function SpeechComparisonPanel({ stem, versions, initial }: {
       {versions.length > 0 && <select aria-label="选择对照音频版本" value={id ?? ""}
         onChange={(event) => setSelected(event.target.value)}
         className="min-h-9 rounded border border-zinc-700 bg-zinc-900 px-2 text-xs text-zinc-300">
-        {versions.map((v) => <option key={v.id} value={v.id}>版本 #{v.id}{v.is_used ? " · 已锁定" : ""}</option>)}
+        {versions.map((v) => <option key={v.id} value={v.id}>版本 #{v.id}{v.review_state === "locked" ? " · 已锁定" : ""}</option>)}
       </select>}
       <button type="button" onClick={() => setRevision((n) => n + 1)}
         className="min-h-9 px-2 text-xs text-sky-300">刷新对照</button>

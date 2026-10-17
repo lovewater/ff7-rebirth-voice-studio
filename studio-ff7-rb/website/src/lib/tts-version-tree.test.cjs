@@ -29,8 +29,8 @@ test('cycles, self references and legacy rows remain visible', () => {
 });
 test('default subtitle/edit target is final output even if a child has a newer ID; explicit locks still win', () => {
   const { preferredTtsVersion } = require('./tts-version-tree.ts');
-  const rows = [row('30','28'),row('29','28'),row('28')].map((r) => ({...r,status:'ready',is_used:false}));
+  const rows = [row('30','28'),row('29','28'),row('28')].map((r) => ({...r,status:'ready',review_state:"candidate"}));
   assert.equal(preferredTtsVersion(rows).id,'28');
-  rows[0].is_used=true;
+  rows[0].review_state="locked";
   assert.equal(preferredTtsVersion(rows).id,'30');
 });

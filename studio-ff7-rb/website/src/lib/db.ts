@@ -49,7 +49,7 @@ export type LineRow = {
   flag: "ok" | "warn" | "err" | "pending";
   has_voice: boolean;
   tts_record_id: string | null;
-  tts_record_is_used: boolean | null;
+  tts_record_review_state: "candidate" | "locked" | "abnormal" | null;
   tts_record_subtitle: string | null;
   tts_record_text?: string | null;
   tts_record_start_s: number | null;

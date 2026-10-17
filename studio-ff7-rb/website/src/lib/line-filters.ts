@@ -33,13 +33,18 @@ export function healthFlagExpr() {
     AND m.beat_cn_hash = md5(COALESCE(l.text_zh, ''))`;
   return sql`
     CASE
+      -- 人工异常优先于自动时长/拍数、旁白豁免和旧的人工时间确认。
+      -- 同句只有一个人工结论；异常使整句异常，改锁另一条会清除此异常。
+      WHEN (SELECT tv.review_state FROM line_tts_versions tv
+        WHERE tv.stem=l.stem AND tv.status='ready'
+        ORDER BY (tv.review_state<>'candidate') DESC, (tv.parent_tts_id IS NULL) DESC, tv.id DESC
+        LIMIT 1) = 'abnormal' THEN 'err'
       WHEN l.kind IS NULL OR l.kind NOT IN ('对话', 'talk')
         OR m.dialogue_mode IS DISTINCT FROM 'scene'
         OR COALESCE(l.subtitle_italic, false) THEN 'ok'
-      WHEN COALESCE(m.skip_timing, false) THEN 'ok'
       WHEN EXISTS (
         SELECT 1 FROM line_tts_versions tv
-        WHERE tv.stem = l.stem AND tv.status = 'ready' AND tv.is_used
+        WHERE tv.stem = l.stem AND tv.status = 'ready' AND tv.review_state = 'locked'
       ) THEN 'ok'
       WHEN m.jp_start_s IS NULL AND m.cn_start_s IS NULL
        AND m.jp_end_s IS NULL AND m.cn_end_s IS NULL
@@ -83,7 +88,7 @@ export async function countFilteredHealth(f: LineFilter): Promise<HealthStats> {
     FROM (
       SELECT (${flagExpr}) AS flag,
         CASE
-          WHEN tv.id IS NULL AND COALESCE(m.skip_timing, false) THEN 'confirmed'
+          WHEN tv.voice_gpu_key = 'cn-original' THEN 'confirmed'
           WHEN tv.id IS NULL THEN NULL
           WHEN NULLIF(BTRIM(tv.subtitle_text), '') IS NOT NULL
             AND BTRIM(tv.subtitle_text) <> BTRIM(COALESCE(l.text_zh, ''))
@@ -105,7 +110,7 @@ export async function countFilteredHealth(f: LineFilter): Promise<HealthStats> {
       LEFT JOIN LATERAL (
         SELECT id, subtitle_text, voice_gpu_key, conversion_meta
         FROM line_tts_versions
-        WHERE stem = l.stem AND status = 'ready' AND is_used
+        WHERE stem = l.stem AND status = 'ready' AND review_state = 'locked'
         LIMIT 1
       ) tv ON true
       WHERE (${f.region} = '' OR l.region = ${f.region})
@@ -115,10 +120,10 @@ export async function countFilteredHealth(f: LineFilter): Promise<HealthStats> {
         AND (
           ${f.flag} = ''
           OR (${f.flag} = 'fixed' AND (
-            COALESCE(m.skip_timing, false)
+            ${originalCnLockedExpr()}
             OR EXISTS (
               SELECT 1 FROM line_tts_versions tf
-              WHERE tf.stem = l.stem AND tf.status = 'ready' AND tf.is_used
+              WHERE tf.stem = l.stem AND tf.status = 'ready' AND tf.review_state = 'locked'
             )
           ))
           OR (${f.flag} <> '' AND ${f.flag} <> 'fixed' AND (${flagExpr}) = ${f.flag})
@@ -144,4 +149,10 @@ export async function countFilteredHealth(f: LineFilter): Promise<HealthStats> {
     confirmed_n: 0, audio_modified_n: 0, subtitle_modified_n: 0,
     audio_edited_n: 0, jp_original_n: 0, other_fixed_n: 0,
   };
+}
+
+/** 旧skipTiming响应/props暂作兼容别名，只表达“原中文已锁”，不再读取旧豁免列。 */
+export function originalCnLockedExpr() {
+  return sql`EXISTS (SELECT 1 FROM line_tts_versions original_cn WHERE original_cn.stem=l.stem
+    AND original_cn.status='ready' AND original_cn.review_state='locked' AND original_cn.voice_gpu_key='cn-original')`;
 }

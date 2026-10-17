@@ -7,7 +7,7 @@ the first mounted copy is kept, so both aa_ and zzzz_ were ignored.
 Subtitle edits are a separate aa_cn_voice_edit_P because those chunk ids are
 not in the voice packs.
 
-Locked lines (line_tts_versions.is_used) are repacked from the locked audio.
+Locked lines (line_tts_versions.review_state='locked') are repacked from the locked audio.
 Every other line in the selected chapters keeps the source-Chinese uasset.
 Subtitle edits on a locked line are written into the official CN TxtRes that
 contains that stem; the rest of that TxtRes is left unchanged.
@@ -666,7 +666,7 @@ def load_lines(regions: list[str] | None) -> list[dict]:
                t.id, t.audio_path, t.subtitle_text, t.voice_gpu_key
         FROM lines l
         LEFT JOIN line_tts_versions t
-          ON t.stem = l.stem AND t.status = 'ready' AND t.is_used
+          ON t.stem = l.stem AND t.status = 'ready' AND t.review_state='locked'
         {where}
         ORDER BY l.region, l.stem
     """
@@ -692,7 +692,7 @@ def load_added_lines(regions: list[str] | None) -> list[dict]:
                m.extra
         FROM lines l
         JOIN line_tts_versions t
-          ON t.stem = l.stem AND t.status = 'ready' AND t.is_used
+          ON t.stem = l.stem AND t.status = 'ready' AND t.review_state='locked'
         LEFT JOIN line_meta m ON m.stem = l.stem
         {where}
         ORDER BY l.stem
@@ -1117,6 +1117,11 @@ def main() -> int:
     (BUILD_ROOT / "tmp").mkdir(parents=True, exist_ok=True)
     tasks = []
     for r in locked:
+        # 原中文锁只表示人工确认，已有中文包中的原始chunk直接保留。
+        # data里的MP3仅用于网站试听，不要把它重新编码回HCA而损失原包音质。
+        # 字幕改写仍由上面的sub_rows独立收集，不因省略音频重建而漏掉。
+        if r.get("voice_gpu_key") == "cn-original":
+            continue
         tasks.append((r["stem"], int(r["id"]), r["audio_path"], originals[r["stem"]].hex()))
     rebuilt: dict[str, bytes] = {}
     if tasks:

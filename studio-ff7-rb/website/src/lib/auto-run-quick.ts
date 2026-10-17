@@ -1,6 +1,8 @@
 import type { PromptMessage } from "./prompt-template";
 import { timingMarks, type Timing } from "./timing";
 import { parseSpokenReview, fewestPronunciationIssues } from "./spoken-text-review";
+import { checkAutoBeat, shortPerformancePolicy, slowPerformancePolicy, performanceCharacterLimit, checkShortCharacters } from "./auto-run-script-policy";
+import { NORMAL_JP_CN_RATIO, type BeatResult } from "./beats";
 
 export type QuickCandidate = { ttsId: string; spoken: string; asr: string; timing: Timing; score: number | null };
 
@@ -13,6 +15,26 @@ export function quickTimingPass(jp: Timing, candidate: Timing, field: boolean) {
   if (Object.values(candidate).some(value => value == null || !Number.isFinite(value))) return false;
   if (field) return true; // 自然语速对白不要求与日文对时，仍需模型校字。
   return Object.values(timingMarks(jp, candidate, undefined)).every(mark => mark === "ok");
+}
+
+/** 快速生成和已有成品复用共用的“比”门槛，不能只因时长对齐就认定通过。
+ * 比取实际朗读稿；短句/慢速复用完整线路规则，标点和静音不能制造慢速豁免。
+ * speechSeconds来自日文波形净发声（扣除首尾和句内长静音），不是文件总长或首末跨度。
+ * 没有可靠读音或净发声时长时不猜慢速；测拍失败不能让普通长句变成合格。
+ * 完整线路动态“实测偏短”豁免不在这里推断，必须由完整流程的逐轮实测建立。
+ */
+export function quickBeatPass(input: { textJp: string; spoken: string; beats: BeatResult | null; speechSeconds: number | null }) {
+  const short = shortPerformancePolicy(input.textJp, NORMAL_JP_CN_RATIO, input.speechSeconds);
+  const reading = input.beats?.jpSpeech ?? input.beats?.jp;
+  const slow = slowPerformancePolicy(reading?.status === "ok" ? reading.mora : null, input.speechSeconds);
+  const limit = performanceCharacterLimit(input.textJp, input.speechSeconds);
+  const characters = slow ? checkShortCharacters({ jpCharacters: limit.jpLimitCharacters, min: 1, max: limit.max }, input.spoken)
+    : short ? checkShortCharacters(short, input.spoken) : null;
+  const beat = checkAutoBeat(input.beats, input.textJp);
+  const exemption = slow ? "slow" : short ? "short" : null;
+  return { pass: !!input.textJp.trim() && !!input.spoken.trim() && (exemption !== null || beat.pass) && (!characters || characters.pass),
+    ratio: input.beats?.normalizedRatio ?? null, exemption, characters,
+    speechSeconds: input.speechSeconds, moraPerSecond: slow?.moraPerSecond ?? null };
 }
 
 export const QUICK_PICK_SYSTEM = [

@@ -30,14 +30,23 @@ class BeatRules(unittest.TestCase):
         with patch("mora_core.japanese_reading", return_value=("おとりか", 4, "おとり", 3, [])):
             self.assertEqual(japanese_speech_reading("オトリか！")["status"], "review_reading")
 
-    def test_six_characters_are_calculated(self):
-        with patch("mora_core.japanese_reading", return_value=("あいうえおか", 6, "あいうえおか", 6, [])):
-            result = analyze_pair("あいうえおか。", "你好，朋友。")
-        self.assertEqual(result["jp"]["units"], 6)
-        self.assertEqual(result["jp"]["weightedMora"], 6)
+    def test_six_and_seven_characters_are_exempt_including_real_case(self):
+        for text in ["これでよしと", "あいうえおかき", "「これでよしと」，！？"]:
+            with self.subTest(text=text), patch("mora_core.japanese_reading") as reader:
+                result = analyze_pair(text, "这样就可以了")
+            reader.assert_not_called()
+            self.assertEqual(result["jp"]["status"], "short")
+            self.assertIsNone(result["normalizedRatio"])
+            self.assertIsNone(result["mark"])
+
+    def test_eight_characters_are_calculated(self):
+        with patch("mora_core.japanese_reading", return_value=("あいうえおかきく", 8, "あいうえおかきく", 8, [])):
+            result = analyze_pair("あいうえおかきく。", "你好，朋友。")
+        self.assertEqual(result["jp"]["units"], 8)
+        self.assertEqual(result["jp"]["weightedMora"], 8)
         self.assertEqual(result["jp"]["weightStatus"], "uncalibrated")
         self.assertEqual(result["cn"]["units"], 5.5)
-        self.assertAlmostEqual(result["ratio"], 6 / 5.5)
+        self.assertAlmostEqual(result["ratio"], 8 / 5.5)
 
     def test_all_terminal_punctuation_is_free(self):
         for text in ["你好。", "你好……！？」  ", "你好～", "你好。\n"]:
@@ -63,9 +72,9 @@ class BeatRules(unittest.TestCase):
         self.assertEqual(punctuation_estimate('“等等！”他说'), 1.5)
 
     def test_quote_only_change_keeps_beats_and_ratio_identical(self):
-        with patch("mora_core.japanese_reading", return_value=("あいうえおか", 6, "あいうえおか", 6, [])):
-            a = analyze_pair('あいうえおか', '名叫诱饵作战哦')
-            b = analyze_pair('あいう『えお』か', '名叫“诱饵作战”哦')
+        with patch("mora_core.japanese_reading", return_value=("あいうえおかきく", 8, "あいうえおかきく", 8, [])):
+            a = analyze_pair('あいうえおかきく', '名叫诱饵作战哦')
+            b = analyze_pair('あいう『えお』かきく', '名叫“诱饵作战”哦')
         self.assertEqual(a['jp']['units'], b['jp']['units'])
         self.assertEqual(a['cn']['units'], b['cn']['units'])
         self.assertEqual(a['normalizedRatio'], b['normalizedRatio'])

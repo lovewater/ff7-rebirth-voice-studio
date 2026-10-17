@@ -82,7 +82,7 @@ export async function GET(
     LEFT JOIN speakers s ON s.code = l.speaker
     LEFT JOIN LATERAL (
       SELECT id FROM line_tts_versions
-      WHERE stem = l.stem AND status = 'ready' AND is_used IS TRUE
+      WHERE stem = l.stem AND status = 'ready' AND review_state = 'locked'
       LIMIT 1
     ) tv ON true
     WHERE l.id = ANY(${ids})

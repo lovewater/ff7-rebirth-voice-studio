@@ -10,13 +10,13 @@ import { normalizeScript } from "./tts-gpu";
 import { spokenReviewMessages, parseSpokenReview, type SpokenReviewInput } from "./spoken-text-review";
 import type { SeedAsrResult } from "./seed-asr";
 
-export { loggedChatFetch, roundLlmInputText, CHAT_MODELS } from "./llm-chat-client";
+export { loggedChatFetch, roundLlmInputText, CHAT_MODELS, chatModelForTask, chatModelConfigured } from "./llm-chat-client";
 
-/** 业务模板入口保持兼容；新增可选参数供通用模型选择，默认仍用原模型。 */
+/** 业务模板入口：按任务选择模型；可选参数只用于显式覆盖，模板和访问日志始终统一处理。 */
 export async function rewriteChat(messages: PromptMessage[], temperature = 0.2, task = "unspecified", httpTries = 3,
-  options: { modelId?: ChatModelId; signal?: AbortSignal } = {}) {
+  options: { modelId?: ChatModelId; signal?: AbortSignal; stem?: string } = {}) {
   return callChatCompletion({ messages: await resolvePromptMessages(messages), temperature, task,
-    attempts: httpTries, modelId: options.modelId, signal: options.signal,
+    attempts: httpTries, modelId: options.modelId, signal: options.signal, stem: options.stem,
     promptKeys: [...new Set(messages.flatMap(message => message.promptKey ? [message.promptKey] : []))] });
 }
 
@@ -195,9 +195,9 @@ export async function rewriteFive(input: {
     ? checkShortCharacters(shortLine, row.text).pass && checkShortCharacters(shortLine, normalizeScript(row.text, input.original).ttsText).pass
     : (
     row.beats?.normalizedRatio != null
-    && rewritePace(row.beats?.normalizedRatio) === "正常"
+    && rewritePace(row.beats?.normalizedRatio, input.textJp) === "正常"
     && row.spoken?.normalizedRatio != null
-    && rewritePace(row.spoken?.normalizedRatio) === "正常"
+    && rewritePace(row.spoken?.normalizedRatio, input.textJp) === "正常"
   ));
   const pool = inBand.length ? inBand : drafts;
   const chosen = pool.reduce((best, row) => {

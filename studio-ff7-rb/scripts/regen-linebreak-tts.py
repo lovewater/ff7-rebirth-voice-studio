@@ -25,7 +25,7 @@ JOIN line_tts_versions v ON v.stem = l.stem
 WHERE l.text_zh LIKE '%' || chr(10) || '%'
   AND v.status = 'ready'
   AND v.heard_at IS NULL
-  AND NOT v.is_used
+  AND v.review_state='candidate'
   AND v.voice_gpu_key LIKE 'zeroshot-%'
 ORDER BY 1
 """
@@ -86,7 +86,7 @@ def delete_unheard(stem: str, keep_text: str) -> int:
     rows = psql(
         "SELECT id, COALESCE(audio_path,''), COALESCE(raw_audio_path,''), COALESCE(manifest_path,'') "
         "FROM line_tts_versions "
-        f"WHERE stem = '{stem}' AND heard_at IS NULL AND NOT is_used "
+        f"WHERE stem = '{stem}' AND heard_at IS NULL AND review_state='candidate' "
         "AND voice_gpu_key LIKE 'zeroshot-%' AND status <> 'building' "
         f"AND tts_text IS DISTINCT FROM '{keep}'"
     )

@@ -20,6 +20,17 @@ test('actual wording changes and restored repeated reactions cannot disappear as
  assert.equal(finalize('哦，诱饵吗！','哦哦，诱饵吗！'),'哦，诱饵吗！');
  assert.equal(finalize('我，\n不要被吃啊！','我不想被吃掉啊！'),'我，不要被吃啊！');
 });
+test('existing long two-line drafts remove only commas and full stops at the surviving line break',()=>{
+ const first='在过去的训练数据中',second='确认到了相应的序号。难道说，你是塔……';
+ for(const mark of ['，',',','。','．','.']){
+  assert.equal(finalize(`${first}${mark}\n${second}`,'原字幕'),`${first}\n${second}`);
+ }
+ for(const mark of ['！','？','；','：','……','...','”']){
+  const draft=`${first}${mark}\n${second}`;
+  assert.equal(finalize(draft,'原字幕'),draft);
+ }
+ assert.equal(finalize(`${first}，\n${second}`,`${first}${second}`),null);
+});
 
 const fs=require('node:fs'),Module=require('node:module'),ts=require('typescript');
 function finishHarness({draft,original,quote=false,preserve=false}){
@@ -55,4 +66,12 @@ test('actual workflow finalizes only selected subtitle and preserves real wordin
 test('direct-original route explicitly preserving subtitles skips final rewrite cleanup',async()=>{
  const s=finishHarness({draft:'我，\n不要被吃啊！',original:'我不要被吃啊！',preserve:true});await s.run();
  assert.equal(s.writes.length,0);assert.equal(s.state.subtitle,'我，\n不要被吃啊！');
+});
+test('workflow cleans an existing line-break comma only in the selected final subtitle',async()=>{
+ const s=finishHarness({draft:'在过去的训练数据中，\n确认到了相应的序号。难道说，你是塔……',original:'原字幕'});
+ await s.run();
+ assert.equal(s.state.subtitle,'在过去的训练数据中\n确认到了相应的序号。难道说，你是塔……');
+ assert.equal(s.writes.length,1);
+ assert.equal(s.state.tts,'我，\n不要被吃啊！');
+ assert.equal(s.state.spoken,'我，不要被吃啊！');
 });

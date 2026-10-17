@@ -21,6 +21,7 @@ loaded.paths = module.paths;
 loaded.require = (name) => {
   if (name === '@/lib/db') return {sql};
   if (name === '@/lib/timing') return {};
+  if (name.startsWith('@/lib/')) return {};
   if (name === 'next/server') return {NextResponse: {json: (body, options) => ({body, status: options?.status ?? 200})}};
   if (name === 'node:fs/promises') return {rm: async (name) => files.push(name)};
   return require(name);
@@ -29,17 +30,18 @@ loaded._compile(ts.transpileModule(fs.readFileSync(file, 'utf8'), {
   compilerOptions: {target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, esModuleInterop: true},
 }).outputText, file);
 async function run(override = {}, lineConfirmed = false, additional = []) {
-  versions = [{id: '10', is_used: false, heard_at: null, status: 'ready', ...override}, ...additional];
+  versions = [{id: '10', review_state: "candidate", heard_at: null, status: 'ready', ...override}, ...additional];
   confirmed = lineConfirmed; removed = 0; files = [];
   return loaded.exports.DELETE({nextUrl: new URL('http://local/tts/10?onlyUnreviewed=1')}, {params: Promise.resolve({stem: 'line', id: '10'})});
 }
 (async () => {
   for (const [override, confirmed, additional] of [
     [{heard_at: '2026-10-08'}, false, []],
-    [{is_used: true}, false, []],
+    [{review_state: "locked"}, false, []],
+    [{review_state: "abnormal"}, false, []],
     [{status: 'building'}, false, []],
     [{}, true, []],
-    [{}, false, [{id: '11', is_used: true, status: 'ready', heard_at: null}]],
+    [{}, false, [{id: '11', review_state: "locked", status: 'ready', heard_at: null}]],
   ]) {
     assert.equal((await run(override, confirmed, additional)).status, 409);
     assert.equal(removed, 0);

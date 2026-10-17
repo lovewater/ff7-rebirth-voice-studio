@@ -1,10 +1,14 @@
 "use client";
 
+import { AudioPlayButton as MiniPlay } from "@/components/audio-play-button";
+
 import { reportTtsPlayback } from "@/lib/tts-play-count";
+import type { TtsReviewState } from "@/lib/tts-review-state";
+import { TtsReviewAction } from "@/components/tts-review-action";
 
 import { patchTtsWithConfirmation } from "@/lib/tts-lock-client";
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { healthCaption, timingMarks, type Mark, type Timing } from "@/lib/timing";
 import { isLockedFlag, useTtsSnapshot } from "./tts-snapshot";
 import { BeatRatio, beatHealth, useBeats } from "./beat-count";
@@ -21,7 +25,7 @@ function markClass(m: Mark) {
   return "text-zinc-400";
 }
 
-const playBtn = "inline-flex h-11 w-11 shrink-0 items-center justify-center rounded text-sm md:h-auto md:w-8 md:px-1 md:py-0.5 md:text-xs";
+
 const extraBtn = "inline-flex min-h-11 items-center rounded px-3 text-sm md:min-h-0 md:px-1.5 md:py-0.5 md:text-[11px]";
 
 function Part({
@@ -42,7 +46,6 @@ function Part({
   );
 }
 
-let current: HTMLAudioElement | null = null;
 
 function LangPlay({
   label,
@@ -63,54 +66,10 @@ function LangPlay({
   extra?: ReactNode;
   ratio?: ReactNode;
 }) {
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const [playing, setPlaying] = useState(false);
-
-  useEffect(() => {
-    return () => {
-      const a = audioRef.current;
-      if (a) {
-        a.pause();
-        if (current === a) current = null;
-      }
-    };
-  }, []);
-
-  function toggle() {
-    let a = audioRef.current;
-    if (!a) {
-      a = new Audio(src);
-      a.preload = "none";
-      a.addEventListener("ended", () => setPlaying(false));
-      audioRef.current = a;
-    }
-    if (playing) {
-      a.pause();
-      a.load();
-      setPlaying(false);
-      if (current === a) current = null;
-      return;
-    }
-    if (current && current !== a) {
-      current.pause();
-      current.currentTime = 0;
-    }
-    current = a;
-    void a.play().then(() => setPlaying(true)).catch(() => setPlaying(false));
-  }
-
   return (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
       <span className="w-4 text-zinc-500">{label}</span>
-      <button
-        type="button"
-        onClick={toggle}
-        className={`${playBtn} ${
-          playing ? "bg-zinc-100 text-zinc-900" : "bg-zinc-800 text-zinc-200 hover:bg-zinc-700"
-        }`}
-      >
-        {playing ? "停" : "播"}
-      </button>
+      <MiniPlay src={src} />
       <span className="min-w-0 basis-full font-mono leading-5 md:basis-auto">
         <Part name="起" value={timing.start} mark={marks.start} hint="实际开始，日/中差 >100ms 黄，>150ms 红" />
         <span className="text-zinc-600"> · </span>
@@ -143,8 +102,8 @@ function LangPlay({
 
 function IgnoreTag() {
   return (
-    <span className="inline-block rounded bg-emerald-950 px-1.5 py-0.5 font-mono text-[11px] text-emerald-300" title="已忽略对时">
-      忽略
+    <span className="inline-block rounded bg-emerald-950 px-1.5 py-0.5 font-mono text-[11px] text-emerald-300" title="已锁原中文">
+      原中文已锁
     </span>
   );
 }
@@ -160,76 +119,6 @@ function pingTtsChanged() {
   }
 }
 
-function MiniPlay({
-  src,
-  accent,
-  onPlayRequest,
-}: {
-  src: string;
-  accent?: boolean;
-  onPlayRequest?: () => void;
-}) {
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const [playing, setPlaying] = useState(false);
-
-  useEffect(() => {
-    return () => {
-      const audio = audioRef.current;
-      if (audio) {
-        audio.pause();
-        if (current === audio) current = null;
-      }
-    };
-  }, []);
-
-  function toggle() {
-    let audio = audioRef.current;
-    if (!audio) {
-      audio = new Audio(src);
-      audio.preload = "none";
-      audio.addEventListener("ended", () => setPlaying(false));
-      audioRef.current = audio;
-    }
-    if (playing) {
-      audio.pause();
-      audio.load();
-      setPlaying(false);
-      if (current === audio) current = null;
-      return;
-    }
-    if (current && current !== audio) {
-      current.pause();
-      current.currentTime = 0;
-    }
-    current = audio;
-    onPlayRequest?.();
-    void audio
-      .play()
-      .then(() => {
-        setPlaying(true);
-      })
-      .catch(() => setPlaying(false));
-  }
-
-  return (
-    <button
-      type="button"
-      onClick={toggle}
-      className={`${playBtn} ${
-        playing
-          ? accent
-            ? "bg-sky-100 text-sky-950"
-            : "bg-zinc-100 text-zinc-900"
-          : accent
-            ? "bg-sky-950 text-sky-200 hover:bg-sky-900"
-            : "bg-zinc-800 text-zinc-200 hover:bg-zinc-700"
-      }`}
-    >
-      {playing ? "停" : "播"}
-    </button>
-  );
-}
-
 export function ModifiedPlay({
   stem,
   id,
@@ -243,6 +132,7 @@ export function ModifiedPlay({
   warn,
   err,
   locked = false,
+  reviewState = locked ? "locked" : "candidate",
   lockReplacesEdit = false,
   jpLock = false,
   ignored = false,
@@ -264,6 +154,7 @@ export function ModifiedPlay({
   warn: number;
   err: number;
   locked?: boolean;
+  reviewState?: TtsReviewState;
   lockReplacesEdit?: boolean;
   jpLock?: boolean;
   ignored?: boolean;
@@ -276,29 +167,34 @@ export function ModifiedPlay({
   const [fresh, setFresh] = useState(isNew);
   const [locking, setLocking] = useState(false);
   const [adopted, setAdopted] = useState(locked);
+  const [review, setReview] = useState(reviewState);
   useEffect(() => {
+    setReview(reviewState);
     if (locked) {
       setAdopted(true);
       return;
     }
     setAdopted(false);
     setFresh(isNew);
-  }, [isNew, id, locked]);
+  }, [isNew, id, locked, reviewState]);
 
-  const approved = timingExempt || locked || ignored;
+  const manualAbnormal = review === "abnormal";
+  const isLocked = review === "locked" || adopted;
+  const approved = timingExempt || isLocked || ignored;
   const { current: beats } = useBeats(jpText, ttsText, beatsEnabled && !jpLock);
   const marks = timingMarks(jp, timing, kind ?? undefined, warn, err, approved);
-  const health = beatHealth(healthCaption(jp, timing, kind ?? undefined, warn, err, approved), beats?.result, approved);
+  const health = manualAbnormal ? { flag: "err" as const, text: "异常（人工）" }
+    : beatHealth(healthCaption(jp, timing, kind ?? undefined, warn, err, approved), beats?.result, approved);
   const tag =
     health.flag === "err"
       ? "inline-block min-w-14 rounded bg-red-950 px-1.5 py-0.5 font-mono text-[11px] text-red-200"
       : health.flag === "warn"
         ? "inline-block min-w-14 rounded bg-amber-950 px-1.5 py-0.5 font-mono text-[11px] text-amber-200"
         : "inline-block min-w-14 rounded bg-emerald-950 px-1.5 py-0.5 font-mono text-[11px] text-emerald-300";
-  const shownLocked = (locked || adopted) && (lockReplacesEdit || jpLock);
-  const pendingAuto = autoRunPassed && !shownLocked && !jpLock;
+  const shownLocked = isLocked && (lockReplacesEdit || jpLock);
+  const pendingAuto = autoRunPassed && !shownLocked && !jpLock && !manualAbnormal;
   // 异常仅替换未试听候选的“新”；已试听后恢复“改”，失败日志仍保留。
-  const mark = shownLocked ? "锁" : pendingAuto || !fresh ? "改" : autoRunFailed ? "异" : "新";
+  const mark = shownLocked ? "锁" : manualAbnormal ? "异" : pendingAuto || !fresh ? "改" : autoRunFailed ? "异" : "新";
   const markClass = shownLocked
     ? "w-4 font-medium text-emerald-400"
     : mark === "异" ? "w-4 font-medium text-red-400"
@@ -307,7 +203,7 @@ export function ModifiedPlay({
 
   function lockNow() {
     setLocking(true);
-    void patchTtsWithConfirmation(stem, id, { isUsed: true })
+    void patchTtsWithConfirmation(stem, id, { reviewState: "locked" })
       .then((result) => {
         if (!result) return;
         setAdopted(true);
@@ -360,7 +256,7 @@ export function ModifiedPlay({
         {ignored ? <IgnoreTag /> : null}
         <span className="font-mono text-[11px] text-zinc-600">#{id}</span>
         {/* 列表始终提供锁定入口，是否新音频/已试听/自动运行通过都不影响可锁性。 */}
-        {lockReplacesEdit && !locked && !adopted ? (
+        {lockReplacesEdit && !isLocked ? (
           <button
             type="button"
             disabled={locking}
@@ -370,8 +266,10 @@ export function ModifiedPlay({
             {locking ? "…" : "锁定"}
           </button>
         ) : null}
-        {locked && !lockReplacesEdit ? <span className="text-[11px] text-sky-400">锁</span> : null}
-        {locked && lockReplacesEdit ? null : actions}
+        {isLocked && !lockReplacesEdit ? <span className="text-[11px] text-sky-400">锁</span> : null}
+        {isLocked && lockReplacesEdit ? null : actions}
+        <TtsReviewAction stem={stem} id={id} state={isLocked ? "locked" : review}
+          onChanged={(state) => { setReview(state); setAdopted(false); }} />
     </div>
   );
 }
@@ -399,7 +297,7 @@ export function PlayCell({
   cn: Timing;
   en?: Timing | null;
   kind?: string | null;
-  modified?: { id: string; isUsed: boolean; timing: Timing; jpLock?: boolean; isNew?: boolean } | null;
+  modified?: { id: string; reviewState: "candidate" | "locked" | "abnormal"; timing: Timing; jpLock?: boolean; isNew?: boolean } | null;
   warn?: number;
   err?: number;
   lockReplacesEdit?: boolean;
@@ -418,12 +316,12 @@ export function PlayCell({
   const shown =
     live === undefined
       ? modified
-        ? { ...modified, isUsed: isLockedFlag(modified.isUsed) }
+        ? { ...modified, reviewState: modified.reviewState }
         : null
       : live.id == null || live.timing == null
         ? null
-        : { id: live.id, isUsed: isLockedFlag(live.isUsed), timing: live.timing, jpLock: live.jpLock, isNew: live.isNew };
-  const locked = Boolean(shown?.isUsed);
+        : { id: live.id, reviewState: live.reviewState, timing: live.timing, jpLock: live.jpLock, isNew: live.isNew };
+  const locked = isLockedFlag(shown?.reviewState);
   const exempt = skip || timingExempt || locked;
   const { current: beats } = useBeats(beatTexts?.jp, beatTexts?.cn, beatsEnabled);
   const marks = timingMarks(jp, cn, kind ?? undefined, warn, err, exempt);
@@ -498,7 +396,7 @@ export function PlayCell({
                 onClick={() => void skipTimingNow()}
                 className={`${extraBtn} bg-zinc-800 text-zinc-200 hover:bg-zinc-700 disabled:opacity-40`}
               >
-                {busy === "skip" ? "…" : "忽略对时"}
+                {busy === "skip" ? "…" : "锁原中文"}
               </button>
             ) : null}
             {cnExtra}
@@ -519,10 +417,11 @@ export function PlayCell({
           beatsEnabled={beatsEnabled}
           warn={warn}
           err={err}
-          locked={shown.isUsed}
+          locked={shown.reviewState === "locked"}
+          reviewState={shown.reviewState}
           lockReplacesEdit={lockReplacesEdit}
           jpLock={Boolean(shown.jpLock)}
-          isNew={Boolean(shown.isNew) && !shown.isUsed}
+          isNew={Boolean(shown.isNew) && shown.reviewState !== "locked"}
           ignored={skip && locked}
           autoRunPassed={autoRunPassed}
           autoRunFailed={shown.id === autoRunFailedTtsId}

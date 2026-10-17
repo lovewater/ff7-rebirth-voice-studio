@@ -1,3 +1,4 @@
+import { originalCnLockedExpr } from "@/lib/line-filters";
 import { readdirSync } from "node:fs";
 import path from "node:path";
 import Link from "next/link";
@@ -15,9 +16,9 @@ export default async function Home() {
            COUNT(DISTINCT l.speaker)::int AS speakers,
            COUNT(*) FILTER (WHERE (${flagExpr}) = 'warn')::int AS warn_n,
            COUNT(*) FILTER (WHERE (${flagExpr}) = 'err')::int AS err_n,
-           COUNT(*) FILTER (WHERE COALESCE(m.skip_timing, false) OR EXISTS (
+           COUNT(*) FILTER (WHERE ${originalCnLockedExpr()} OR EXISTS (
              SELECT 1 FROM line_tts_versions tv
-             WHERE tv.stem = l.stem AND tv.status = 'ready' AND tv.is_used
+             WHERE tv.stem = l.stem AND tv.status = 'ready' AND tv.review_state = 'locked'
            ))::int AS fixed_n
     FROM lines l
     LEFT JOIN regions r ON r.code = l.region

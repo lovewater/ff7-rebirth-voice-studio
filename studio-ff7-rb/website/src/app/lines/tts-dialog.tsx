@@ -1,5 +1,7 @@
 "use client";
 
+import { TtsReviewAction } from "@/components/tts-review-action";
+
 import { reportTtsPlayback } from "@/lib/tts-play-count";
 
 import { effectiveTtsSubtitle, ttsSubtitleDisplay } from "@/lib/tts-subtitle-display";
@@ -65,7 +67,7 @@ type History = {
   end_s: number | null;
   dur_s: number | null;
   speech_s: number | null;
-  is_used: boolean;
+  review_state: "candidate" | "locked" | "abnormal";
   status: "building" | "ready" | "failed";
   error: string | null;
   engine_precision: string | null;
@@ -323,7 +325,7 @@ export function TtsPanel({ stem }: { stem: string }) {
     setBusy(true);
     setError("");
     try {
-      const result = await patchTtsWithConfirmation(stem, record.id, { isUsed: checked });
+      const result = await patchTtsWithConfirmation(stem, record.id, { reviewState: checked ? "locked" : "candidate" });
       if (!result) return;
       notifyTtsChanged();
       await load();
@@ -356,7 +358,7 @@ export function TtsPanel({ stem }: { stem: string }) {
       notifyTtsChanged();
       await load();
       router.refresh();
-      setSavedNote(target.is_used ? `已写入锁定的 #${target.id}` : `没有锁定版本，已写入最新的 #${target.id}`);
+      setSavedNote(target.review_state === "locked" ? `已写入锁定的 #${target.id}` : `没有锁定版本，已写入最新的 #${target.id}`);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -724,16 +726,19 @@ export function TtsPanel({ stem }: { stem: string }) {
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="flex flex-wrap items-center gap-2 text-xs">
                           <strong className="text-zinc-200">#{record.id}</strong>
+                          {record.review_state === "abnormal" ? <span className="text-red-400">异常（人工）</span> : null}
                           <span className="text-zinc-500">音色 #{record.voice_version_id ?? "已删除"}</span>
                           <span className="text-zinc-500">{record.engine_precision || "未知精度"}</span>
                           <span className="text-zinc-600">{dateText(record.created_at)}</span>
                           {record.status === "failed" ? <span className="rounded bg-red-950 px-1.5 py-0.5 text-red-300">失败</span> : null}
                         </div>
                         <div className="flex items-center gap-2">
+                          <TtsReviewAction stem={stem} id={String(record.id)} state={record.review_state}
+                            disabled={busy || record.status !== "ready"} />
                           <label className="flex min-h-11 items-center gap-2 text-sm text-zinc-300">
                             <input
                               type="checkbox"
-                              checked={record.is_used}
+                              checked={record.review_state === "locked"}
                               disabled={busy || record.status !== "ready"}
                               onChange={(event) => void setUsed(record, event.target.checked)}
                               className="h-4 w-4 accent-sky-500"

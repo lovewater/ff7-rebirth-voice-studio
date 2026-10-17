@@ -44,11 +44,11 @@ type HistoryRow = {
   dur_s: number | null;
   start_s: number | null;
   duration_factor: number | null;
-  is_used: boolean | null;
+  review_state: "candidate" | "locked" | "abnormal" | null;
   status: string;
 };
 
-let playing: HTMLAudioElement | null = null;
+import { AudioPlayButton } from "@/components/audio-play-button";
 
 function compact(text: string) {
   return text.replace(/[\s\p{P}]+/gu, "");
@@ -67,19 +67,6 @@ function deltaClass(delta: number | null) {
   if (delta == null) return "text-zinc-500";
   const abs = Math.abs(delta);
   return abs <= 0.2 ? "text-emerald-300" : abs <= 0.4 ? "text-amber-300" : "text-red-400";
-}
-
-function play(src: string) {
-  const url = new URL(src, location.href).href;
-  if (playing && playing.src === url && !playing.paused) {
-    playing.pause();
-    return;
-  }
-  playing?.pause();
-  const audio = new Audio(src);
-  playing = audio;
-  reportTtsPlaybackSource(src);
-  void audio.play();
 }
 
 function WavePair({
@@ -208,7 +195,7 @@ function LineCard({
     setLocking(true);
     setLockError("");
     try {
-      const result = await patchTtsWithConfirmation(line.stem, audio.id, { isUsed: true });
+      const result = await patchTtsWithConfirmation(line.stem, audio.id, { reviewState: "locked" });
       if (result) {
         onAudio({ ...audio, used: true });
         setLocked({ id: audio.id, text: audio.text, speech: audio.speech, factor: audio.factor });
@@ -255,10 +242,10 @@ function LineCard({
       {lockedThis ? <p className="mt-1 text-xs text-emerald-300">这版新稿已经锁定。</p> : null}
       {error || lockError ? <p className="mt-1 text-xs text-red-400">{error || lockError}</p> : null}
       <div className="mt-3 flex flex-wrap gap-2">
-        <button type="button" onClick={() => play(`/api/audio/jp/${line.stem}`)} className="min-h-11 rounded bg-zinc-800 px-3 text-sm md:min-h-0 md:py-1 md:text-xs">日文</button>
-        <button type="button" onClick={() => play(`/api/audio/cn/${line.stem}`)} className="min-h-11 rounded bg-zinc-800 px-3 text-sm md:min-h-0 md:py-1 md:text-xs">原中文</button>
-        <button type="button" disabled={!locked} onClick={() => locked && play(`/api/lines/${line.stem}/tts/${locked.id}/audio`)} className="min-h-11 rounded bg-zinc-800 px-3 text-sm disabled:opacity-40 md:min-h-0 md:py-1 md:text-xs">锁定稿</button>
-        <button type="button" disabled={!matched} onClick={() => matched && play(`/api/lines/${line.stem}/tts/${audio.id}/audio`)} className="min-h-11 rounded bg-zinc-800 px-3 text-sm disabled:opacity-40 md:min-h-0 md:py-1 md:text-xs">新稿</button>
+        <AudioPlayButton src={`/api/audio/jp/${line.stem}`} label="日文" onPlayRequest={() => reportTtsPlaybackSource(`/api/audio/jp/${line.stem}`)} className="inline-flex min-h-11 items-center justify-center rounded px-3 text-sm md:min-h-0 md:py-1 md:text-xs" />
+        <AudioPlayButton src={`/api/audio/cn/${line.stem}`} label="原中文" onPlayRequest={() => reportTtsPlaybackSource(`/api/audio/cn/${line.stem}`)} className="inline-flex min-h-11 items-center justify-center rounded px-3 text-sm md:min-h-0 md:py-1 md:text-xs" />
+        <AudioPlayButton disabled={!locked} src={`/api/lines/${line.stem}/tts/${locked?.id ?? ""}/audio`} label="锁定稿" onPlayRequest={() => reportTtsPlaybackSource(`/api/lines/${line.stem}/tts/${locked?.id ?? ""}/audio`)} className="inline-flex min-h-11 items-center justify-center rounded px-3 text-sm md:min-h-0 md:py-1 md:text-xs" />
+        <AudioPlayButton disabled={!matched} src={`/api/lines/${line.stem}/tts/${audio?.id ?? ""}/audio`} label="新稿" onPlayRequest={() => reportTtsPlaybackSource(`/api/lines/${line.stem}/tts/${audio?.id ?? ""}/audio`)} className="inline-flex min-h-11 items-center justify-center rounded px-3 text-sm md:min-h-0 md:py-1 md:text-xs" />
         <button type="button" disabled={busy || !text.trim()} onClick={onGenerate} className="min-h-11 rounded bg-sky-800 px-3 text-sm text-white disabled:opacity-40 md:min-h-0 md:py-1 md:text-xs">{busy ? "生成中" : "生成"}</button>
         <button type="button" disabled={!matched || audio?.used || locking} onClick={() => void lock()} className="min-h-11 rounded bg-emerald-900 px-3 text-sm text-emerald-100 disabled:opacity-40 md:min-h-0 md:py-1 md:text-xs">{locking ? "锁定中" : "锁定"}</button>
         <button type="button" onClick={() => setWave((open) => !open)} className="min-h-11 rounded bg-zinc-800 px-3 text-sm md:min-h-0 md:py-1 md:text-xs">{wave ? "收起波形" : "波形"}</button>
@@ -266,7 +253,7 @@ function LineCard({
       {wave ? (
         <WavePair
           jpSrc={`/api/audio/jp/${line.stem}`}
-          ttsSrc={matched ? `/api/lines/${line.stem}/tts/${audio.id}/audio` : null}
+          ttsSrc={matched ? `/api/lines/${line.stem}/tts/${audio?.id ?? ""}/audio` : null}
           jpStart={line.jpStart}
           jpSpeech={line.jpSpeech}
           jpDur={line.jpDur}
@@ -320,7 +307,7 @@ export function Board({ lines }: { lines: TopicLine[] }) {
       dur: row.dur_s,
       start: row.start_s,
       factor: row.duration_factor,
-      used: row.is_used === true,
+      used: row.review_state === "locked",
     };
     setAudios((old) => ({ ...old, [stem]: audio }));
     if (compact(audio.text) !== compact(text)) setTexts((old) => ({ ...old, [stem]: audio.text }));

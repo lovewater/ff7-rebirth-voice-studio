@@ -8,7 +8,7 @@ import { ttsSubtitleDisplay } from "@/lib/tts-subtitle-display";
 const TTS_CHANNEL = "ff7-tts-changed";
 
 export function isLockedFlag(value: unknown) {
-  return value === true || value === 1 || value === "t" || value === "true";
+  return value === "locked";
 }
 
 export type HealthStats = {
@@ -27,7 +27,7 @@ export type HealthStats = {
 
 export type TtsSnapshot = {
   id: string | null;
-  isUsed: boolean;
+  reviewState: "candidate" | "locked" | "abnormal";
   subtitle: string | null;
   ttsText?: string | null;
   count: number;
@@ -51,7 +51,7 @@ function fingerprint(row: TtsSnapshot) {
   const t = row.timing;
   return [
     row.id ?? "",
-    Number(isLockedFlag(row.isUsed)),
+    row.reviewState,
     row.subtitle ?? "",
     row.ttsText ?? "",
     row.count,
@@ -143,7 +143,7 @@ export function useTtsSnapshot(stem: string): TtsSnapshot | undefined {
 export function LiveTtsBeats({ stem, jp }: { stem: string; jp: string | null }) {
   const live = useTtsSnapshot(stem);
   if (!live?.ttsText || live.jpLock) return null;
-  return <BeatCount jp={jp} cn={live.ttsText} label={`${isLockedFlag(live.isUsed) ? "锁定" : "候选"} #${live.id} 拍数`} />;
+  return <BeatCount jp={jp} cn={live.ttsText} label={`${isLockedFlag(live.reviewState) ? "锁定" : "候选"} #${live.id} 拍数`} />;
 }
 
 export function LiveTtsSubtitle({
@@ -157,7 +157,7 @@ export function LiveTtsSubtitle({
 }) {
   const live = useTtsSnapshot(stem);
   const subtitle = live ? live.subtitle : initial;
-  const locked = live ? isLockedFlag(live.isUsed) : false;
+  const locked = live ? isLockedFlag(live.reviewState) : false;
   // 日文原声锁只决定使用哪份音频；明确保存的中文字幕覆盖仍须展示。
   const text = ttsSubtitleDisplay({ subtitle, original });
   if (!text) return null;
@@ -179,7 +179,7 @@ export function LiveTtsCount({ stem, initial }: { stem: string; initial: number 
 }
 
 function toneBg(flag: string, healthy: boolean) {
-  // Green = explicitly approved by locking OR ignoring timing.
+  // Green = explicitly approved by locking a source or generated audio.
   // Red/amber = unresolved issue. Unmodified normal/ordinary dialogue stays neutral.
   if (healthy) return "bg-emerald-950/35";
   if (flag === "err") return "bg-red-950/40";
@@ -188,9 +188,10 @@ function toneBg(flag: string, healthy: boolean) {
 }
 
 function lineSurface(live: TtsSnapshot | undefined, flag: string) {
-  // Locking or ignoring timing is an explicit override, so the row stays green
+  if (live?.reviewState === "abnormal") return toneBg("err", false);
+  // Locking is an explicit approval, so the row stays green
   // even when the measured timing still differs from Japanese.
-  const locked = isLockedFlag(live?.isUsed);
+  const locked = isLockedFlag(live?.reviewState);
   const healthy = locked || live?.skipTiming === true;
   const tone = healthy ? "ok" : live?.flag ?? flag;
   return toneBg(tone, healthy);
@@ -323,7 +324,7 @@ export function FilterStatsBar({
       </div>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
         <span className="text-zinc-600">已修复 =</span>
-        <span className="text-zinc-300" title="保留原作者中文配音，人工确认并忽略对时">确认 {stats.confirmed_n}</span>
+        <span className="text-zinc-300" title="已锁定原始中文配音">确认 {stats.confirmed_n}</span>
         <span className="text-zinc-600">+</span>
         <span className="text-zinc-300" title="使用新生成的 TTS 配音">音频修改 {stats.audio_modified_n}</span>
         <span className="text-zinc-600">+</span>

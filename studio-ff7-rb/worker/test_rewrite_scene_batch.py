@@ -26,7 +26,7 @@ class FakeDB:
         row = job()
         row.update(stem=stem, kind="对话", subtitle_italic=False, skip_timing=self.reviewed,
                    dialogue_mode="scene", locked=False)
-        return row, [{"id": "10", "status": "ready", "heard_at": None, "is_used": False}]
+        return row, [{"id": "10", "status": "ready", "heard_at": None, "review_state": "candidate"}]
 
 
 class FakeApi:
@@ -62,7 +62,7 @@ class BatchTests(unittest.TestCase):
     def test_reviewed_line_never_calls_model(self):
         db = FakeDB()
         db.reviewed = True
-        result = batch.rewrite(db, FakeApi(), job())
+        result = batch.rewrite(db, FakeApi(), job(), {"low": .7, "high": 1.3, "min_chars": 7})
         self.assertEqual(result["state"], "skipped")
 
     def test_missing_new_audio_never_deletes_old_candidate(self):
@@ -77,7 +77,7 @@ class BatchTests(unittest.TestCase):
             self.addCleanup(journal.conn.close)
             journal.save(job(state="tts_submitted"))
             with patch.object(batch, "generate") as generate, contextlib.redirect_stdout(io.StringIO()):
-                self.assertEqual(batch.run(FakeDB(), FakeApi(), journal, 2, 1), 2)
+                self.assertEqual(batch.run(FakeDB(), FakeApi(), journal, 2, 1, {"low": .7, "high": 1.3, "min_chars": 7}), 2)
                 generate.assert_not_called()
             self.assertEqual(journal.jobs()[0]["state"], "uncertain")
 
@@ -89,7 +89,7 @@ class BatchTests(unittest.TestCase):
             entry["new_ids"] = ["99"]
             journal.save(entry)
             with patch.object(batch, "generate") as generate, patch.object(batch, "finish", return_value={"state": "done"}), contextlib.redirect_stdout(io.StringIO()):
-                self.assertEqual(batch.run(FakeDB(), FakeApi(), journal, 2, 1), 0)
+                self.assertEqual(batch.run(FakeDB(), FakeApi(), journal, 2, 1, {"low": .7, "high": 1.3, "min_chars": 7}), 0)
                 generate.assert_not_called()
 
     def test_pipeline_reports_each_100_actual_completions(self):
@@ -98,13 +98,13 @@ class BatchTests(unittest.TestCase):
             self.addCleanup(journal.conn.close)
             for i in range(1, 104):
                 journal.save(job(i))
-            def rewrite(db, api, entry):
+            def rewrite(db, api, entry, bounds):
                 if entry["id"] <= 2:
                     return {"state": "skipped"}
                 return {"state": "selected"}
             out = io.StringIO()
             with patch.object(batch, "rewrite", side_effect=rewrite), patch.object(batch, "generate", return_value={"ids": ["99"]}), patch.object(batch, "finish", return_value={"state": "done"}), contextlib.redirect_stdout(out):
-                self.assertEqual(batch.run(FakeDB(), FakeApi(), journal, 2, 1), 0)
+                self.assertEqual(batch.run(FakeDB(), FakeApi(), journal, 2, 1, {"low": .7, "high": 1.3, "min_chars": 7}), 0)
             self.assertIn('"label": "completed_100"', out.getvalue())
             with contextlib.redirect_stdout(io.StringIO()):
                 summary = journal.report("test")
@@ -119,7 +119,7 @@ class BatchTests(unittest.TestCase):
             for i in range(20):
                 journal.save(job(i))
             with patch.object(batch, "rewrite", side_effect=RuntimeError("service unavailable")) as rewrite, contextlib.redirect_stdout(io.StringIO()):
-                self.assertEqual(batch.run(FakeDB(), FakeApi(), journal, 2, 1), 2)
+                self.assertEqual(batch.run(FakeDB(), FakeApi(), journal, 2, 1, {"low": .7, "high": 1.3, "min_chars": 7}), 2)
             self.assertLessEqual(rewrite.call_count, 4)
             self.assertTrue(any(j["state"] == "pending" for j in journal.jobs()))
 

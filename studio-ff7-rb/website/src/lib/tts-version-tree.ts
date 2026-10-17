@@ -24,7 +24,7 @@ export function ttsVersionForest<T extends VersionRelation>(rows: T[]): VersionN
 }
 
 /** 默认编辑/字幕目标优先已锁定版本，其次顶层最终产物，不误选编号更新的中间候选。 */
-export function preferredTtsVersion<T extends VersionRelation & { is_used: boolean; status: string }>(rows: T[]) {
-  const ready = rows.filter((row) => row.status === "ready");
-  return ready.find((row) => row.is_used) ?? ttsVersionForest(ready)[0]?.record;
+export function preferredTtsVersion<T extends VersionRelation & { review_state: "candidate" | "locked" | "abnormal"; status: string }>(rows: T[]) {
+  const ready = rows.filter((row) => row.status === "ready" && row.review_state !== "abnormal");
+  return ready.find((row) => row.review_state === "locked") ?? ttsVersionForest(ready)[0]?.record;
 }

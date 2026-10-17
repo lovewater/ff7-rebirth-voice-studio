@@ -1,5 +1,6 @@
 "use client";
 
+import { nextTtsReviewState, isTtsReviewState } from "@/lib/tts-review-state";
 import { patchTtsWithConfirmation } from "@/lib/tts-lock-client";
 
 import { useEffect, useState } from "react";
@@ -15,7 +16,7 @@ export const TTS_SUBTITLE_AUTOFILLED = "ff7-tts-subtitle-autofilled";
 export type LineTtsVersion = {
   id: string;
   parent_tts_id?: string | null;
-  is_used: boolean;
+  review_state: "candidate" | "locked" | "abnormal";
   subtitle_text: string | null;
   start_s: number | null;
   end_s: number | null;
@@ -64,7 +65,7 @@ export function LineVersions({
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [editing, setEditing] = useState<string | null>(null);
-  const stamp = initial.map((v) => `${v.id}:${v.parent_tts_id ?? ""}:${Number(v.is_used)}:${v.subtitle_text ?? ""}`).join("|");
+  const stamp = initial.map((v) => `${v.id}:${v.parent_tts_id ?? ""}:${v.review_state}:${v.subtitle_text ?? ""}`).join("|");
 
   useEffect(() => {
     setRows(initial);
@@ -78,7 +79,7 @@ export function LineVersions({
         history?: {
           id: string | number;
           parent_tts_id?: string | number | null;
-          is_used: boolean;
+          review_state: "candidate" | "locked" | "abnormal";
           subtitle_text: string | null;
           start_s: number | null;
           end_s: number | null;
@@ -96,7 +97,7 @@ export function LineVersions({
         .map((row) => ({
           id: String(row.id),
           parent_tts_id: row.parent_tts_id == null ? null : String(row.parent_tts_id),
-          is_used: Boolean(row.is_used),
+          review_state: row.review_state,
           subtitle_text: row.subtitle_text,
           start_s: row.start_s,
           end_s: row.end_s,
@@ -105,7 +106,7 @@ export function LineVersions({
           jp_lock: row.voice_gpu_key === "jp-lock" || row.conversion_meta?.pipeline === "jp-lock",
           is_new: row.heard_at == null,
         }))
-        .sort((a, b) => Number(b.is_used) - Number(a.is_used) || Number(b.id) - Number(a.id));
+        .sort((a, b) => Number(b.review_state === "locked") - Number(a.review_state === "locked") || Number(b.id) - Number(a.id));
       setRows(next);
       router.refresh();
     }
@@ -127,12 +128,12 @@ export function LineVersions({
     try {
       const result = await patchTtsWithConfirmation(stem, id, body);
       if (!result) return;
-      if (typeof body.isUsed === "boolean") {
-        const nextUsed = body.isUsed;
+      if (isTtsReviewState(body.reviewState)) {
+        const nextState = body.reviewState;
         setRows((cur) =>
           cur.map((row) => ({
             ...row,
-            is_used: row.id === id ? nextUsed : nextUsed ? false : Boolean(row.is_used),
+            review_state: nextTtsReviewState(row.review_state, row.id === id, nextState),
           })),
         );
       }
@@ -177,7 +178,7 @@ export function LineVersions({
             <div
               key={row.id}
               className={
-                row.is_used
+                row.review_state === "locked"
                   ? "rounded-lg border border-sky-900 bg-sky-950/20 px-2 py-1.5"
                   : "rounded-lg border border-zinc-800 px-2 py-1.5"
               }
@@ -195,10 +196,11 @@ export function LineVersions({
                 kind={kind}
                 warn={warn}
                 err={err}
-                locked={row.is_used}
+                locked={row.review_state === "locked"}
+                reviewState={row.review_state}
                 jpLock={Boolean(row.jp_lock)}
-                isNew={Boolean(row.is_new) && !row.is_used}
-                ignored={skipTiming && row.is_used}
+                isNew={Boolean(row.is_new) && row.review_state !== "locked"}
+                ignored={skipTiming && row.review_state === "locked"}
                 actions={
                   <>
                     <button
@@ -212,14 +214,14 @@ export function LineVersions({
                     <button
                       type="button"
                       disabled={busy != null}
-                      onClick={() => void patch(row.id, { isUsed: !row.is_used })}
+                      onClick={() => void patch(row.id, { reviewState: row.review_state === "locked" ? "candidate" : "locked" })}
                       className={
-                        row.is_used
+                        row.review_state === "locked"
                           ? "inline-flex min-h-11 items-center rounded bg-sky-800 px-3 text-sm text-sky-100 hover:bg-sky-700 disabled:opacity-40 md:min-h-0 md:px-1.5 md:py-0.5 md:text-[11px]"
                           : "inline-flex min-h-11 items-center rounded bg-zinc-800 px-3 text-sm text-zinc-300 hover:bg-zinc-700 disabled:opacity-40 md:min-h-0 md:px-1.5 md:py-0.5 md:text-[11px]"
                       }
                     >
-                      {row.is_used ? "解锁" : "锁定"}
+                      {row.review_state === "locked" ? "解锁" : "锁定"}
                     </button>
                     <button
                       type="button"

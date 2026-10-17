@@ -1,8 +1,11 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* 修订台固定深色；同时让原生输入框、选择器、弹窗和滚动条采用深色配色。 */
+  color-scheme: dark;
+  --background: #0a0a0a;
+  --foreground: #ededed;
+  background: #09090b;
 }
 
 @theme inline {
@@ -10,13 +13,6 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
 }
 
 body {
@@ -39,4 +35,25 @@ body {
     min-height: 44px;
     height: auto;
   }
+}
+
+/* 播放是手机上高频操作：扩大真实按钮热区，不能只放大文字或使用遮住邻居的伪元素。
+ * coarse覆盖横屏/桌面模式手机，窄屏也生效；桌面鼠标继续使用紧凑按钮。
+ */
+@media (pointer: coarse), (max-width: 767px) {
+  .audio-play-button {
+    min-width: 64px;
+    min-height: 48px;
+    padding: 10px 16px;
+    font-size: 16px;
+    line-height: 1.25;
+    -webkit-tap-highlight-color: rgba(125, 211, 252, 0.25);
+  }
+}
+
+/* 手机审核页只有正文卡片滚动，底栏占自己的布局空间，避免覆盖播放热区。 */
+body:has([data-mobile-review]) {
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
 }

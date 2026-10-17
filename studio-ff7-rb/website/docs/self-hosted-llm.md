@@ -1,6 +1,6 @@
 # 自部署开源模型调用
 
-统一入口是 `src/lib/llm-chat-client.ts` 的 `callChatCompletion`。已注册 `primary` 和 `self-hosted` 两个模型；不指定时仍用现有云端模型。本次没有改任何业务任务的默认路由。
+统一入口是 `src/lib/llm-chat-client.ts` 的 `callChatCompletion`。已注册 `primary`、`volcengine` 和 `self-hosted` 三套连接：台词改写默认走火山，其余默认走原云端模型；自部署模型仍须显式选择。详见 [大模型连接与台词改写路由](llm-providers.md)。
 
 ```ts
 import { callChatCompletion } from "@/lib/llm-chat-client";

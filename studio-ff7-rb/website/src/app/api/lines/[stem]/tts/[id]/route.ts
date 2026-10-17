@@ -1,10 +1,12 @@
 import { rm } from "node:fs/promises";
 import path from "node:path";
 import { NextRequest, NextResponse } from "next/server";
+import { isTtsReviewState } from "@/lib/tts-review-state";
 import { needsLockSubtitleConfirmation } from "@/lib/tts-lock-subtitle";
 import { twoLineSubtitle } from "@/lib/auto-run-subtitle";
+import { createAutoRunSubtitleFormatter } from "@/lib/auto-run-subtitle-format";
+import { finalizeAutoSubtitle } from "@/lib/final-auto-subtitle";
 import { sql } from "@/lib/db";
-import { healthCaption } from "@/lib/timing";
 
 export const dynamic = "force-dynamic";
 
@@ -23,15 +25,22 @@ export async function PATCH(
   const { stem, id } = await ctx.params;
   if (!valid(stem, id)) return NextResponse.json({ error: "bad request" }, { status: 400 });
   const body = (await req.json().catch(() => ({}))) as {
-    isUsed?: boolean;
+    reviewState?: "candidate" | "locked" | "abnormal";
     subtitleText?: string | null;
+    requireSubtitleConfirmation?: boolean;
   };
-  const hasUsed = typeof body.isUsed === "boolean";
-  const hasSub = Object.prototype.hasOwnProperty.call(body, "subtitleText");
-  if (!hasUsed && !hasSub) {
-    return NextResponse.json({ error: "缺少 isUsed 或 subtitleText" }, { status: 400 });
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return NextResponse.json({ error: "无效的音频更新请求" }, { status: 400 });
   }
-  const isUsed = hasUsed ? body.isUsed : undefined;
+  const hasState = Object.prototype.hasOwnProperty.call(body, "reviewState");
+  if (hasState && !isTtsReviewState(body.reviewState)) {
+    return NextResponse.json({ error: "reviewState 必须为 candidate、locked 或 abnormal" }, { status: 400 });
+  }
+  const hasSub = Object.prototype.hasOwnProperty.call(body, "subtitleText");
+  if (!hasState && !hasSub) {
+    return NextResponse.json({ error: "缺少 reviewState 或 subtitleText" }, { status: 400 });
+  }
+  const reviewState = hasState ? body.reviewState : undefined;
   const subtitleText =
     hasSub && typeof body.subtitleText === "string" && body.subtitleText.trim()
       ? twoLineSubtitle(body.subtitleText)
@@ -39,19 +48,21 @@ export async function PATCH(
         ? null
         : undefined;
   // Explicit subtitle text on a lock request is the user-confirmed draft.
-  const subtitleAutoFilled = isUsed === true && hasSub;
+  const subtitleAutoFilled = reviewState === "locked" && hasSub;
   try {
     const updatedRows = await sql.begin(async (tx) => {
+      // 同一句的状态切换串行，保证锁定/异常的互斥切换原子完成。
+      await tx`SELECT stem FROM lines WHERE stem = ${stem} FOR UPDATE`;
       const target = (
         await tx<{
           id: number;
           tts_text: string;
           subtitle_text: string | null;
-          is_used: boolean;
+          review_state: "candidate" | "locked" | "abnormal";
           is_jp_lock: boolean;
           is_auto_final: boolean;
         }[]>`
-          SELECT id, tts_text, subtitle_text, is_used,
+          SELECT id, tts_text, subtitle_text, review_state,
                  (voice_gpu_key = 'jp-lock' OR conversion_meta->>'pipeline' = 'jp-lock') AS is_jp_lock,
                  EXISTS (SELECT 1 FROM line_auto_runs ar
                    WHERE ar.id = line_tts_versions.auto_run_id
@@ -62,9 +73,21 @@ export async function PATCH(
           FOR UPDATE
         `
       )[0];
-      if (!target) return [] as { id: number; is_used: boolean; subtitle_text: string | null }[];
+      if (!target) return [] as { id: number; review_state: "candidate" | "locked" | "abnormal"; subtitle_text: string | null }[];
 
-      const newlyLocked = isUsed === true && !target.is_used;
+      // 异常修订必须人工核对：优先当前覆盖字幕，否则沿用完整原字幕，
+      // 不从去掉拟声词的TTS朗读稿推导，取消弹窗前不写入任何锁/字幕。
+      if (reviewState === "locked" && body.requireSubtitleConfirmation === true && !hasSub) {
+        const [line] = await tx<{ text_zh: string | null }[]>`SELECT text_zh FROM lines WHERE stem = ${stem}`;
+        const original = (line?.text_zh ?? "").replace(/\\n/g, "\n");
+        const manualProposal = needsLockSubtitleConfirmation({ isAutoFinal: target.is_auto_final,
+          isJapaneseOriginal: target.is_jp_lock, subtitle: target.subtitle_text,
+          ttsText: target.tts_text, original });
+        const proposal = target.subtitle_text?.trim() ? target.subtitle_text : manualProposal
+          ? twoLineSubtitle(target.tts_text.replace(/\[停顿=\d{1,4}\]/g, "")) || original : original;
+        throw new SubtitleConfirmationRequired(proposal, original);
+      }
+      const newlyLocked = reviewState === "locked" && target.review_state !== "locked";
       if (
         newlyLocked &&
         !hasSub &&
@@ -80,90 +103,62 @@ export async function PATCH(
           isJapaneseOriginal: target.is_jp_lock, subtitle: target.subtitle_text,
           ttsText: target.tts_text, original })) {
           // Abort the transaction BEFORE any lock/subtitle write. The client
-          // edits this proposal, then sends subtitleText and isUsed together.
+          // edits this proposal, then sends subtitleText and reviewState together.
           const proposal = twoLineSubtitle(target.tts_text.replace(/\[停顿=\d{1,4}\]/g, ""));
           if (proposal) throw new SubtitleConfirmationRequired(proposal, original.replace(/\\n/g, "\n"));
         }
       }
-      if (isUsed === true) {
+      if (reviewState && reviewState !== "candidate") {
         await tx`
           UPDATE line_tts_versions
-          SET is_used = false, used_at = NULL
-          WHERE stem = ${stem} AND is_used
+          SET review_state = 'candidate', used_at = NULL
+          WHERE stem = ${stem} AND review_state IN ('locked', 'abnormal')
         `;
       }
-      if (hasUsed && hasSub) {
-        return await tx<{ id: number; is_used: boolean; subtitle_text: string | null }[]>`
+      if (hasState && hasSub) {
+        return await tx<{ id: number; review_state: "candidate" | "locked" | "abnormal"; subtitle_text: string | null }[]>`
           UPDATE line_tts_versions SET
-            is_used = ${isUsed as boolean},
-            used_at = CASE WHEN ${isUsed as boolean} THEN now() ELSE NULL END,
+            review_state = ${reviewState!},
+            used_at = CASE WHEN ${reviewState!} = 'locked' THEN now() ELSE NULL END,
             subtitle_text = ${subtitleText ?? null}
           WHERE id = ${target.id}
-          RETURNING id, is_used, subtitle_text
+          RETURNING id, review_state, subtitle_text
         `;
       }
-      if (hasUsed) {
-        return await tx<{ id: number; is_used: boolean; subtitle_text: string | null }[]>`
+      if (hasState) {
+        return await tx<{ id: number; review_state: "candidate" | "locked" | "abnormal"; subtitle_text: string | null }[]>`
           UPDATE line_tts_versions SET
-            is_used = ${isUsed as boolean},
-            used_at = CASE WHEN ${isUsed as boolean} THEN now() ELSE NULL END
+            review_state = ${reviewState!},
+            used_at = CASE WHEN ${reviewState!} = 'locked' THEN now() ELSE NULL END
           WHERE id = ${target.id}
-          RETURNING id, is_used, subtitle_text
+          RETURNING id, review_state, subtitle_text
         `;
       }
-      return await tx<{ id: number; is_used: boolean; subtitle_text: string | null }[]>`
+      return await tx<{ id: number; review_state: "candidate" | "locked" | "abnormal"; subtitle_text: string | null }[]>`
         UPDATE line_tts_versions SET
           subtitle_text = ${subtitleText ?? null}
         WHERE id = ${target.id}
-        RETURNING id, is_used, subtitle_text
+        RETURNING id, review_state, subtitle_text
       `;
     });
     const updated = updatedRows[0];
     if (!updated) return NextResponse.json({ error: "记录不存在或尚未完成" }, { status: 404 });
-    let skippedTiming = false;
-    if (isUsed === true) {
-      const pair = (
-        await sql<{
-          kind: string | null;
-          jp_start_s: number | null;
-          jp_end_s: number | null;
-          jp_dur_s: number | null;
-          jp_speech_s: number | null;
-          start_s: number | null;
-          end_s: number | null;
-          dur_s: number | null;
-          speech_s: number | null;
-        }[]>`
-          SELECT l.kind,
-                 m.jp_start_s, m.jp_end_s, m.jp_dur_s, m.jp_speech_s,
-                 t.start_s, t.end_s, t.dur_s, t.speech_s
-          FROM line_tts_versions t
-          JOIN lines l ON l.stem = t.stem
-          LEFT JOIN line_meta m ON m.stem = t.stem
-          WHERE t.id = ${Number(id)} AND t.stem = ${stem}
-        `
-      )[0];
-      if (pair) {
-        const flag = healthCaption(
-          { start: pair.jp_start_s, end: pair.jp_end_s, dur: pair.jp_dur_s, speech: pair.jp_speech_s },
-          { start: pair.start_s, end: pair.end_s, dur: pair.dur_s, speech: pair.speech_s },
-          pair.kind ?? undefined,
-        ).flag;
-        if (flag !== "ok") {
-          await sql`
-            INSERT INTO line_meta (stem, skip_timing)
-            VALUES (${stem}, true)
-            ON CONFLICT (stem) DO UPDATE SET skip_timing = true, updated_at = now()
-          `;
-          skippedTiming = true;
-        }
-      }
-    }
-    return NextResponse.json({ ok: true, record: updated, skippedTiming, subtitleAutoFilled });
+    return NextResponse.json({ ok: true, record: updated, skippedTiming: false, subtitleAutoFilled });
   } catch (error) {
     if (error instanceof SubtitleConfirmationRequired) {
+      // 事务已回滚，再复用自动字幕排版，避免等待模型时持有音频记录锁。
+      // 仅生成弹窗草稿，不写字幕、不改TTS稿和音频；取消确认仍保留原锁。
+      let proposal = error.subtitleText;
+      let subtitlePreparationError: string | undefined;
+      try {
+        proposal = await createAutoRunSubtitleFormatter()(proposal);
+      } catch {
+        // 模型断行不可用时保留程序排版结果，让用户仍能确认或手工修改。
+        subtitlePreparationError = "自动语义断行未完成，请检查字幕分行。";
+      }
+      proposal = finalizeAutoSubtitle(proposal, error.originalText) ?? error.originalText;
       return NextResponse.json({ code: "SUBTITLE_CONFIRMATION_REQUIRED", error: error.message,
-        subtitleText: error.subtitleText, originalText: error.originalText }, { status: 409 });
+        subtitleText: proposal, originalText: error.originalText, subtitlePreparationError }, { status: 409 });
     }
     return NextResponse.json(
       { error: error instanceof Error ? error.message : String(error) },
@@ -182,8 +177,8 @@ export async function DELETE(
     const removed = await sql.begin(async (tx) => {
       // Batch cleanup must never race a user listening, adopting, or confirming.
       if (req.nextUrl.searchParams.get("onlyUnreviewed") === "1") {
-        const versions = await tx<{ id: string; is_used: boolean; heard_at: string | null; status: string }[]>`
-          SELECT id::text, is_used, heard_at, status FROM line_tts_versions
+        const versions = await tx<{ id: string; review_state: "candidate" | "locked" | "abnormal"; heard_at: string | null; status: string }[]>`
+          SELECT id::text, review_state, heard_at, status FROM line_tts_versions
           WHERE stem = ${stem} ORDER BY id FOR UPDATE
         `;
         const [meta] = await tx<{ skip_timing: boolean }[]>`
@@ -191,8 +186,8 @@ export async function DELETE(
         `;
         const target = versions.find((item) => item.id === id);
         if (!target) return false;
-        if (meta?.skip_timing || versions.some((item) => item.is_used)
-            || target.heard_at != null || target.status !== "ready") {
+        if (meta?.skip_timing || versions.some((item) => item.review_state === "locked")
+            || target.review_state === "abnormal" || target.heard_at != null || target.status !== "ready") {
           throw new Error("台词或候选已被审查，批处理不删除");
         }
       }

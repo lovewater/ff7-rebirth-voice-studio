@@ -1,3 +1,4 @@
+import { originalCnLockedExpr } from "@/lib/line-filters";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { sql, type LineRow } from "@/lib/db";
@@ -31,7 +32,7 @@ export default async function LinePage({ params }: { params: Promise<{ stem: str
            m.jp_start_s, m.jp_end_s, m.jp_dur_s, m.jp_speech_s,
            m.cn_start_s, m.cn_end_s, m.cn_dur_s, m.cn_speech_s,
            m.en_start_s, m.en_end_s, m.en_dur_s, m.en_speech_s,
-           COALESCE(m.skip_timing, false) AS skip_timing,
+           ${originalCnLockedExpr()} AS skip_timing,
            CASE
              WHEN m.jp_speech_s IS NULL OR m.cn_speech_s IS NULL THEN NULL
              WHEN GREATEST(m.jp_speech_s, m.cn_speech_s) <= 0 THEN NULL
@@ -49,7 +50,7 @@ export default async function LinePage({ params }: { params: Promise<{ stem: str
                AND vv.reference_wav_path IS NOT NULL
            ) AS has_voice,
            tv.id AS tts_record_id,
-           tv.is_used AS tts_record_is_used,
+           tv.review_state AS tts_record_review_state,
            tv.subtitle_text AS tts_record_subtitle, tv.tts_text AS tts_record_text,
            tv.start_s AS tts_record_start_s,
            tv.end_s AS tts_record_end_s,
@@ -63,13 +64,13 @@ export default async function LinePage({ params }: { params: Promise<{ stem: str
     LEFT JOIN regions rg ON rg.code = l.region
     LEFT JOIN line_meta m ON m.stem = l.stem
     LEFT JOIN LATERAL (
-      SELECT id, (is_used IS TRUE) AS is_used, subtitle_text, tts_text, start_s, end_s, dur_s, speech_s,
+      SELECT id, review_state, subtitle_text, tts_text, start_s, end_s, dur_s, speech_s,
              (raw_audio_path IS NOT NULL) AS has_raw,
              (voice_gpu_key = 'jp-lock' OR conversion_meta->>'pipeline' = 'jp-lock') AS jp_lock,
              (heard_at IS NULL) AS is_new
       FROM line_tts_versions
       WHERE stem = l.stem AND status = 'ready'
-      ORDER BY is_used DESC, (parent_tts_id IS NULL) DESC, id DESC
+      ORDER BY (review_state <> 'candidate') DESC, (parent_tts_id IS NULL) DESC, id DESC
       LIMIT 1
     ) tv ON true
     LEFT JOIN LATERAL (
@@ -81,14 +82,14 @@ export default async function LinePage({ params }: { params: Promise<{ stem: str
   `;
   if (!r) notFound();
   const versions = await sql<LineTtsVersion[]>`
-    SELECT id::text AS id, parent_tts_id::text AS parent_tts_id, (is_used IS TRUE) AS is_used, subtitle_text,
+    SELECT id::text AS id, parent_tts_id::text AS parent_tts_id, review_state, subtitle_text,
            start_s, end_s, dur_s, speech_s,
            (raw_audio_path IS NOT NULL) AS has_raw,
            (voice_gpu_key = 'jp-lock' OR conversion_meta->>'pipeline' = 'jp-lock') AS jp_lock,
            (heard_at IS NULL) AS is_new
     FROM line_tts_versions
     WHERE stem = ${stem} AND status = 'ready'
-    ORDER BY is_used DESC, id DESC
+    ORDER BY (review_state = 'locked') DESC, id DESC
   `;
   const speechInitial = (await getSpeechComparisons([{ stem, id: versions[0]?.id }]))[comparisonKey(stem, versions[0]?.id)];
   const skipTiming = Boolean(r.skip_timing);
@@ -100,7 +101,7 @@ export default async function LinePage({ params }: { params: Promise<{ stem: str
     undefined,
     skipTiming,
   );
-  const status = r.flag === "pending" ? "待分析" : health.text;
+  const status = r.tts_record_review_state === "abnormal" ? "异常（人工）" : r.flag === "pending" ? "待分析" : health.text;
   const hasJp = existsSync(path.join(process.cwd(), "data", "jp", `${stem}.mp3`));
   const jpTiming = {
     start: r.jp_start_s,
@@ -116,14 +117,14 @@ export default async function LinePage({ params }: { params: Promise<{ stem: str
     <section className="rounded-xl border border-zinc-800 bg-zinc-950 p-4 sm:p-5">
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="text-lg font-semibold sm:text-xl">{r.name_zh || r.speaker || "未知角色"} · 台词详情</h1>
-        <span className={r.flag === "err" ? "text-sm text-red-300" : r.flag === "warn" ? "text-sm text-amber-300" : "text-sm text-zinc-400"}>{status}{skipTiming ? " · 忽略对时" : ""}</span>
-        <LineActions stem={r.stem} skipTiming={skipTiming} hasJp={hasJp} />
+        <span className={r.flag === "err" ? "text-sm text-red-300" : r.flag === "warn" ? "text-sm text-amber-300" : "text-sm text-zinc-400"}>{status}{skipTiming ? " · 锁原中文" : ""}</span>
+        <LineActions stem={r.stem} skipTiming={skipTiming} hasJp={hasJp} originalText={r.text_zh} />
       </div>
       <p className="mt-2 text-sm text-zinc-400">
         {r.region_name || "未分区"} · {r.kind || "未知类型"}
-        {r.dialogue_mode === "scene" ? " · 场景演出（对时优先）" : null}
+        {r.dialogue_mode === "scene" ? <span className="font-semibold text-emerald-400"> · 场景演出（对时优先）</span> : null}
         {r.dialogue_mode === "field" ? " · 普通对话（语速优先）" : null}
-        {r.dialogue_mode === "mixed" ? " · 兼有场景演出（对时优先）" : null}
+        {r.dialogue_mode === "mixed" ? <span className="font-semibold text-emerald-400"> · 兼有场景演出（对时优先）</span> : null}
         {r.dialogue_mode === "unknown" ? " · 演出类型待判定" : null}
         {" · "}{r.speaker}
       </p>
@@ -172,7 +173,7 @@ export default async function LinePage({ params }: { params: Promise<{ stem: str
               skipTiming={skipTiming}
               modified={r.tts_record_id == null ? null : {
                 id: r.tts_record_id,
-                isUsed: r.tts_record_is_used === true,
+                reviewState: r.tts_record_review_state ?? "candidate",
                 jpLock: r.tts_record_jp_lock === true,
                 timing: {
                   start: r.tts_record_start_s,

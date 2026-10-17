@@ -12,6 +12,10 @@ export function finalizeAutoSubtitle(draft: string, original: string): string | 
     const separator = /[\p{P}\p{S}]$/u.test(lines[0]) || /^[\p{P}\p{S}]/u.test(lines[1]) ? "" : "，";
     result = `${lines[0]}${separator}${lines[1]}`;
   }
+  // 已经分成两行的改稿也可能以逗号/句号结束第一行，不能只清理程序新拆的长句。
+  // 先合并短行，再清理仍保留的换行：合并后的逗号仍承担停顿，不应删除。
+  // 只删除换行紧邻的逗号和单个句点；问号、感叹号、引号、省略号等保持原样。
+  result = result.replace(/[，,。．]+\n/gu, "\n").replace(/(?<!\.)\.(?!\.)\n/gu, "\n");
   // 必须是最后判断：无论最终一行还是两行，只有标点/空白/换行差异就不改字幕。
   // 不做同义词、读音、简繁或大小写归一；真正增删/替换正文的改稿必须保留。
   const body = (text: string) => text.replace(/\\r\\n|\\n/g, "\n").replace(/[\s\p{P}\p{S}]/gu, "");

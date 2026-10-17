@@ -1,12 +1,11 @@
-import { loggedChatFetch } from "@/lib/auto-run-llm";
-import { resolvePromptMessages } from "@/lib/prompt-store";
+import { rewriteChat, chatModelConfigured, chatModelForTask } from "@/lib/auto-run-llm";
 import { NextRequest, NextResponse } from "next/server";
 import { sql } from "@/lib/db";
 import { normalizeScript } from "@/lib/tts-gpu";
 import { SUBTITLE_LAYOUT, subtitleLayout } from "@/lib/subtitle-layout";
 import { NORMAL_JP_CN_RATIO, type BeatResult } from "@/lib/beats";
 import {
-  parseRewrite, performanceLabel, rewriteMessages, REWRITE_COUNT, REWRITE_LIMIT, REWRITE_POLICY, REWRITE_MIN, REWRITE_MAX, rewritePace, samePerformance,
+  parseRewrite, performanceLabel, rewriteMessages, REWRITE_COUNT, REWRITE_LIMIT, REWRITE_POLICY, REWRITE_MIN, REWRITE_MAX, rewriteBand, rewritePace, samePerformance,
   takeUntilBoundary, type ShowEvidence, type ShowLine,
 } from "@/lib/rewrite-prompt";
 
@@ -16,7 +15,7 @@ export const maxDuration = 150;
 export async function GET() {
   return NextResponse.json({ policy: REWRITE_POLICY, min: REWRITE_MIN, max: REWRITE_MAX,
     subtitleLayout: SUBTITLE_LAYOUT, count: REWRITE_COUNT, limit: REWRITE_LIMIT, normalization: NORMAL_JP_CN_RATIO,
-    configured: !!(process.env.REWRITE_LLM_URL && process.env.REWRITE_LLM_KEY) });
+    configured: chatModelConfigured(chatModelForTask("manual-rewrite")) });
 }
 
 type ContextRow = {
@@ -76,7 +75,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ ste
     LEFT JOIN speakers s ON s.code = l.speaker
     LEFT JOIN LATERAL (
       SELECT subtitle_text FROM line_tts_versions
-      WHERE stem = l.stem AND status = 'ready' AND is_used IS TRUE
+      WHERE stem = l.stem AND status = 'ready' AND review_state = 'locked'
       LIMIT 1
     ) tv ON true
     WHERE l.id BETWEEN
@@ -90,12 +89,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ ste
     return NextResponse.json({ error: "仅适用于需要对口型的场景演出" }, { status: 422 });
   }
   if (!line.text_jp || !line.text_zh) return NextResponse.json({ error: "缺少日文或中文原文" }, { status: 422 });
-  if (!process.env.REWRITE_LLM_URL || !process.env.REWRITE_LLM_KEY) {
+  const task = body.action === "select" ? "manual-selection" : "manual-rewrite";
+  if (!chatModelConfigured(chatModelForTask(task))) {
     return NextResponse.json({ error: "尚未配置改写服务" }, { status: 503 });
   }
   try {
     const source = await count(line.text_jp, body.text as string, req.signal);
-    if (source.jp.units == null) return NextResponse.json({ error: "日文正文不超过5字，跳过语速改写" }, { status: 422 });
+    if (source.jp.units == null) return NextResponse.json({ error: "日文正文少于8字，跳过语速改写" }, { status: 422 });
     const inside = (row: ContextRow) => row.dialogue_mode === "scene"
       && samePerformance(line.dialogue_evidence, row.dialogue_evidence)
       && !!(row.text_jp || row.text_zh);
@@ -128,56 +128,26 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ ste
         const spoken = await count(line.text_jp, ttsText, req.signal);
         const lineCount = (value: string) => value.replace(/\\n/g, "\n").split(/\n+/).filter((part) => part.trim()).length;
         if (beats.jp.status === "ok" && beats.normalizedRatio != null
-            && rewritePace(beats.normalizedRatio) === "正常"
-            && spoken.normalizedRatio != null && rewritePace(spoken.normalizedRatio) === "正常"
+            && rewritePace(beats.normalizedRatio, line.text_jp) === "正常"
+            && spoken.normalizedRatio != null && rewritePace(spoken.normalizedRatio, line.text_jp) === "正常"
             && lineCount(draft.text) === lineCount(line.text_zh)) {
           selectable.push({ index, text: draft.text, ratio: beats.normalizedRatio, ttsText, ttsRatio: spoken.normalizedRatio! });
         }
       }
       if (!selectable.length) return NextResponse.json({ error: "没有拍数及分行合格的候选" }, { status: 422 });
       messages.push({ role: "user", content: [
-        "本轮只择优，不要再改写。以下候选均由程序核实比在 0.9–1.1 内，区间内一视同仁，不按接近 1.00 排名。",
+        `本轮只择优，不要再改写。以下候选均由程序核实比在 ${rewriteBand(line.text_jp).low}–${rewriteBand(line.text_jp).high} 内，区间内一视同仁，不按接近 1.00 排名。`,
         "结合上面的本场三语前后文，先排除错译、添加事实、遗漏否定/条件/人物关系的稿子，再挑最简洁自然、措辞优美、人物口吻贴切的一条。杜绝车轱辘话、套话和为了凑拍数而加的废话。",
         "字幕排版跟随原字幕行数，不因文字较长额外分行，不改变朗读文本。",
         "只输出 JSON：{\"selectedIndex\":整数或null,\"reason\":\"选择理由或全部拒绝原因\"}。index 必须使用候选原始编号；都不合适就用 null，不得勉强选，不输出新台词。",
         JSON.stringify(selectable),
-      ].join("\n"), promptKey: "rewrite.manual-selection", promptValues: {"input_json": JSON.stringify(selectable)} });
+      ].join("\n"), promptKey: "rewrite.manual-selection", promptValues: {"input_json": JSON.stringify(selectable), beat_min: rewriteBand(line.text_jp).low, beat_max: rewriteBand(line.text_jp).high} });
     }
-    const llmBody = JSON.stringify({
-      model: process.env.REWRITE_LLM_MODEL || "glm-5.3",
-      messages: await resolvePromptMessages(messages),
-      temperature: body.action === "select" ? 0.2 : [0.4, 0.55, 0.7, 0.6, 0.5][(body.attempt as number) % REWRITE_COUNT],
-      max_tokens: 4096,
-      stream: false,
-      thinking: { type: "disabled" },
-      response_format: { type: "json_object" },
-    });
-    const invocationId = crypto.randomUUID();
-    const promptKeys = [...new Set(messages.flatMap(message => message.promptKey ? [message.promptKey] : []))];
-    let response: Response | undefined;
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
-      response = await loggedChatFetch(`${process.env.REWRITE_LLM_URL.replace(/\/$/, "")}/chat/completions`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          authorization: `Bearer ${process.env.REWRITE_LLM_KEY}`,
-        },
-        cache: "no-store",
-        signal: AbortSignal.any([req.signal, AbortSignal.timeout(120000)]),
-        body: llmBody,
-      }, { invocationId, promptKeys, task: body.action === "select" ? "manual-selection" : "manual-rewrite", attempt, stem });
-      if (response.ok) break;
-      if (response.status !== 500 || attempt === 3) {
-        throw new Error(`改写服务返回 HTTP ${response.status}`);
-      }
-      await response.text().catch(() => undefined);
-      await new Promise((resolve) => setTimeout(resolve, 1500 * attempt));
-    }
-    const payload = await response!.json();
-    const choice = payload.choices?.[0];
-    if (choice?.finish_reason === "length") throw new Error("模型输出被截断，未作为候选使用");
-    const content = choice?.message?.content;
-    if (typeof content !== "string") throw new Error("改写服务返回格式异常");
+    // 手动改稿也走通用入口，防止页面按钮遗漏火山路由、三位小数处理或访问日志。
+    // 只择优不创作台词的manual-selection仍用原模型；所有HTTP重试由连接层统一负责。
+    const { content } = await rewriteChat(messages,
+      body.action === "select" ? 0.2 : [0.4, 0.55, 0.7, 0.6, 0.5][(body.attempt as number) % REWRITE_COUNT],
+      task, 3, { signal: req.signal, stem });
     if (body.action === "select") {
       const selection = JSON.parse(content);
       const reason = typeof selection.reason === "string" ? selection.reason.slice(0, 1000) : "";
@@ -191,13 +161,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ ste
     const warnings: string[] = [];
     if (!draft.situation || !draft.problem || !draft.plan) warnings.push("模型没有说明改法");
     if (beats.jp.status === "review_reading") warnings.push("日文读音待核对，比值仅供参考");
-    if (beats.normalizedRatio == null || rewritePace(beats.normalizedRatio) !== "正常") warnings.push("拍数尚未达到正常范围");
+    if (beats.normalizedRatio == null || rewritePace(beats.normalizedRatio, line.text_jp) !== "正常") warnings.push("拍数尚未达到正常范围");
     if (draft.text.replace(/\s/g, "") === (body.text as string).replace(/\\n/g, "\n").replace(/\s/g, "")) warnings.push("与当前台词相同");
     const lineCount = (value: string) => value.replace(/\\n/g, "\n").split(/\n+/).filter((item) => item.trim()).length;
     if (lineCount(draft.text) !== lineCount(line.text_zh)) warnings.push("换行数量与原字幕不同");
     const show = performanceLabel(line.dialogue_evidence);
     return NextResponse.json({
       ...draft,
+      referenceTextJp: line.text_jp,
       policy: REWRITE_POLICY,
       beats,
       target: source.jp.units / NORMAL_JP_CN_RATIO,

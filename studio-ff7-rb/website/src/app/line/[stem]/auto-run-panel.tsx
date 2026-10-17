@@ -138,8 +138,15 @@ export function AutoRunPanel({ stem }: { stem: string }) {
               <div className={event.level === "error" ? "text-red-300" : event.level === "think" ? "text-sky-300" : "text-zinc-300"}>
                 {new Date(event.at).toLocaleTimeString("zh-CN", { hour12: false })} {event.step} {event.message}
               </div>
-              {thinking ? <pre className="mt-1 whitespace-pre-wrap text-zinc-500">{thinking}</pre> : null}
-              {extra ? <pre className="mt-1 whitespace-pre-wrap break-all text-zinc-600">{extra}</pre> : null}
+              {thinking || extra ? (
+                <details className="mt-1">
+                  <summary className="w-fit cursor-pointer text-zinc-500 hover:text-zinc-300 focus-visible:outline focus-visible:outline-sky-500">
+                    详细信息
+                  </summary>
+                  {thinking ? <pre className="mt-1 whitespace-pre-wrap text-zinc-500">{thinking}</pre> : null}
+                  {extra ? <pre className="mt-1 whitespace-pre-wrap break-all text-zinc-600">{extra}</pre> : null}
+                </details>
+              ) : null}
             </div>
           );
         })}

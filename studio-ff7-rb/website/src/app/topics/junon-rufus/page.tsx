@@ -24,7 +24,7 @@ type Row = {
   latest_dur: number | null;
   latest_start: number | null;
   latest_factor: number | null;
-  latest_used: boolean | null;
+  latest_review_state: "candidate" | "locked" | "abnormal" | null;
   used_id: string | null;
   used_text: string | null;
   used_speech: number | null;
@@ -45,7 +45,7 @@ export default async function JunonRufusPage() {
            latest.id::text AS latest_id, latest.tts_text AS latest_text,
            latest.speech_s AS latest_speech, latest.dur_s AS latest_dur,
            latest.start_s AS latest_start, latest.duration_factor AS latest_factor,
-           latest.is_used AS latest_used,
+           latest.review_state AS latest_review_state,
            used.id::text AS used_id, used.tts_text AS used_text,
            used.speech_s AS used_speech, used.duration_factor AS used_factor
     FROM lines l
@@ -53,7 +53,7 @@ export default async function JunonRufusPage() {
     LEFT JOIN line_meta m ON m.stem = l.stem
     LEFT JOIN LATERAL (
       SELECT picked.id, picked.tts_text, picked.speech_s, picked.dur_s, picked.start_s,
-             picked.duration_factor, picked.is_used
+             picked.duration_factor, picked.review_state
       FROM line_tts_versions picked
       JOIN LATERAL (
         SELECT tts_text
@@ -74,7 +74,7 @@ export default async function JunonRufusPage() {
     LEFT JOIN LATERAL (
       SELECT id, tts_text, speech_s, duration_factor
       FROM line_tts_versions
-      WHERE stem = l.stem AND status = 'ready' AND is_used
+      WHERE stem = l.stem AND status = 'ready' AND review_state = 'locked'
       LIMIT 1
     ) used ON true
     WHERE l.region = 'C2210'
@@ -110,7 +110,7 @@ export default async function JunonRufusPage() {
               dur: num(row.latest_dur),
               start: num(row.latest_start),
               factor: num(row.latest_factor),
-              used: row.latest_used === true,
+              used: row.latest_review_state === "locked",
             }
           : null,
         used: row.used_id

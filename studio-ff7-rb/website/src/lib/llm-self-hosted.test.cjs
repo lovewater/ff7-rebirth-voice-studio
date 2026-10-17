@@ -143,7 +143,7 @@ test('generic model registry exposes self-hosted explicitly while preserving pri
    await api.callChatCompletion({modelId:'self-hosted',messages:[{role:'user',content:'比0.123456'}],selfHosted:opts});
    await api.callChatCompletion({messages:[{role:'user',content:'旧流程'}]});
   });
-  assert.doesNotMatch(JSON.stringify(c.records),/private-local|private-cloud/);assert.equal(api.CHAT_MODELS.length,2);
+  assert.doesNotMatch(JSON.stringify(c.records),/private-local|private-cloud/);assert.equal(api.CHAT_MODELS.length,3);
  }finally{for(const k of names)if(old[k]===undefined)delete process.env[k];else process.env[k]=old[k];}
 });
 

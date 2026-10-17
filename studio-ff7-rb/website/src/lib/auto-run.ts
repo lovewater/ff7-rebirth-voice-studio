@@ -1,5 +1,5 @@
 import { localTtsAsr, needsChineseCutAxis } from "./tts-local-asr";
-import { quickTimingPass, quickPickMessages, parseQuickPick, type QuickCandidate } from "./auto-run-quick";
+import { quickTimingPass, quickBeatPass, quickPickMessages, parseQuickPick, type QuickCandidate } from "./auto-run-quick";
 import { runFallbackFeedback, type FallbackTiming } from "./fallback-feedback";
 import { classifyMissingJapaneseSubtitle } from "./missing-jp-subtitle";
 import { finalizeAutoSubtitle } from "./final-auto-subtitle";
@@ -20,7 +20,7 @@ import { qwenAsr } from "./qwen-asr";
 import { packSeedAsr, seedAsr, seedCacheMatches, seedLangForPath, unpackSeedAsr, type SeedAsrLang, type SeedAsrResult, type SeedAsrStored } from "./seed-asr";
 import { normalizeScript, parseWavPcm16, wavTiming } from "./tts-gpu";
 import { buildSpeechReference } from "./tts-reference";
-import { clearlyShortSpeakingRound, durationRewritePolicy, type DurationRewritePolicy, checkAutoBeat, shortPerformancePolicy, checkShortCharacters, shortRewriteTarget, shortAudioDirection, spokenCharacters, slowPerformancePolicy, performanceCharacterLimit } from "./auto-run-script-policy";
+import { clearlyShortSpeakingRound, durationRewritePolicy, type DurationRewritePolicy, autoBeatBand, checkAutoBeat, shortPerformancePolicy, checkShortCharacters, shortRewriteTarget, shortAudioDirection, spokenCharacters, slowPerformancePolicy, performanceCharacterLimit } from "./auto-run-script-policy";
 import { autoRunSubtitle, twoLineSubtitle, subtitleRestorePlan, restorePerformanceSubtitle } from "./auto-run-subtitle";
 import { createAutoRunSubtitleFormatter } from "./auto-run-subtitle-format";
 import { closestFallback, type FallbackQuality } from "./auto-run-fallback";
@@ -109,7 +109,13 @@ function rememberCandidates(recovery: RunRecovery, clips: TtsClip[], target: num
  * 改稿请求重试耗尽应进入 runCurrentScriptFallback，不能直接走这里省掉三次合成。
  */
 async function finishWithFallback(runId: string, recovery: RunRecovery, reason: string) {
-  const chosen = closestFallback(recovery.candidates);
+  // 人工在生成过程中标坏的候选不能再被兜底择优选回。
+  const rejected = recovery.candidates.length ? await sql<{ id: string }[]>`
+    SELECT id::text FROM line_tts_versions
+    WHERE id = ANY(${recovery.candidates.map(row => Number(row.clip.id))}::bigint[]) AND review_state='abnormal'
+  ` : [];
+  const rejectedIds = new Set(rejected.map(row => row.id));
+  const chosen = closestFallback(recovery.candidates.filter(row => !rejectedIds.has(row.clip.id)));
   if (!chosen) {
     await finish(runId, "failed", `${reason}；没有已生成的可用音频`, null);
     return;
@@ -163,7 +169,7 @@ async function finish(runId: string | number, status: "passed" | "failed", error
     const [caption] = await sql<{ japanese: string; chinese: string }[]>`
       SELECT COALESCE(l.text_jp, '') AS japanese, COALESCE(NULLIF(v.subtitle_text, ''), l.text_zh, '') AS chinese
       FROM line_tts_versions v JOIN line_auto_runs r ON r.id = ${runId} AND r.stem = v.stem
-      JOIN lines l ON l.stem = v.stem WHERE v.id = ${selected} AND v.status = 'ready'
+      JOIN lines l ON l.stem = v.stem WHERE v.id = ${selected} AND v.status = 'ready' AND v.review_state <> 'abnormal'
     `;
     if (caption && needsSubtitleQuotes(caption.japanese, caption.chinese)) {
       try {
@@ -189,13 +195,19 @@ async function finish(runId: string | number, status: "passed" | "failed", error
     const [run] = await tx<{ stem: string }[]>`SELECT stem FROM line_auto_runs WHERE id = ${runId} FOR UPDATE`;
     if (!run) throw new Error("自动运行记录不存在");
     if (selected != null) {
-      const [output] = await tx<{ id: string; subtitle_text: string | null; original_subtitle: string }[]>`
-        SELECT v.id::text, v.subtitle_text, COALESCE(l.text_zh, '') AS original_subtitle
+      const [output] = await tx<{ id: string; review_state: string; subtitle_text: string | null; original_subtitle: string }[]>`
+        SELECT v.id::text, v.review_state, v.subtitle_text, COALESCE(l.text_zh, '') AS original_subtitle
         FROM line_tts_versions v JOIN lines l ON l.stem = v.stem
         WHERE v.id = ${selected} AND v.stem = ${run.stem} AND v.status = 'ready'
         FOR UPDATE OF v
       `;
       if (!output) throw new Error("自动运行最终音频不存在或尚未就绪");
+      if (output.review_state === "abnormal") {
+        // 最后确认与手动标记同一行锁，不能让后台完成回调重新推荐人工否决的音频。
+        await tx`UPDATE line_auto_runs SET status='failed', error='候选已由人工标记异常，保留音频但不推荐',
+          selected_tts_id=NULL, completed_at=now(), updated_at=now() WHERE id=${runId}`;
+        return;
+      }
       // 最后一道字幕整理：拟声已恢复、引号已补完；短两行合一后，再忽略标点比较原文。
       // 即使仍有两行，只要正文没变就清空覆盖字幕；绝不写tts_text/spoken_text或子音频。
       // 直接日文原声线路明确保留附带字幕，不走自动改稿收尾。
@@ -205,7 +217,7 @@ async function finish(runId: string | number, status: "passed" | "failed", error
           await tx`UPDATE line_tts_versions SET subtitle_text = ${cleaned} WHERE id = ${selected}`;
           await tx`
             INSERT INTO line_auto_run_events (run_id, step, level, message, payload)
-            VALUES (${runId}, 'subtitle-finalize', 'result', ${cleaned === null ? "最终字幕仅标点或排版不同，沿用原字幕，不标改" : "最终短字幕两行合一，保留TTS朗读稿中的停顿"},
+            VALUES (${runId}, 'subtitle-finalize', 'result', ${cleaned === null ? "最终字幕仅标点或排版不同，沿用原字幕，不标改" : "最终字幕整理：短行合并、换行处逗号句号清理，保留TTS朗读稿中的停顿"},
               ${tx.json({ ttsId: String(selected), before: output.subtitle_text, after: cleaned, original: output.original_subtitle })})
           `;
           output.subtitle_text = cleaned;
@@ -219,7 +231,7 @@ async function finish(runId: string | number, status: "passed" | "failed", error
         `;
       }
       // 每轮 TTS 和中间拼接产物均登记归属；结束时统一收在最终推荐下面。
-      // 兜底推荐也建立相同层级，展示关系不改变 is_used、试听或原始来源信息。
+      // 兜底推荐也建立相同层级，展示关系不改变 review_state、试听或原始来源信息。
       await tx`
         UPDATE line_tts_versions SET
           parent_tts_id = CASE WHEN id = ${selected}::bigint THEN NULL ELSE ${selected}::bigint END,
@@ -292,7 +304,7 @@ async function generateClone(runId: string, stem: string, ttsText: string, extra
            (conversion_meta->>'speech_pass')::boolean AS speech_pass,
            (conversion_meta->>'speech_score')::float8 AS speech_score
     FROM line_tts_versions
-    WHERE stem = ${stem} AND id = ANY(${ids.map((id) => Number(id))}::bigint[])
+    WHERE stem = ${stem} AND id = ANY(${ids.map((id) => Number(id))}::bigint[]) AND review_state <> 'abnormal'
     ORDER BY id
   `;
   return rows;
@@ -413,7 +425,7 @@ async function saveSplicedEdit(runId: string, stem: string, sourceId: string, au
       SELECT speaker, tts_text, spoken_text, subtitle_text, conversion_meta,
              jp_text_snapshot, game_zh_text_snapshot, duration_factor
       FROM line_tts_versions
-      WHERE id = ${Number(sourceId)} AND stem = ${stem} AND status = 'ready'
+      WHERE id = ${Number(sourceId)} AND stem = ${stem} AND status = 'ready' AND review_state <> 'abnormal'
     `
   )[0];
   if (!source) throw new Error("拼接源记录不存在");
@@ -477,6 +489,17 @@ async function countBeats(jp: string, cn: string, includeSpeechReading = false) 
   });
   if (!response.ok) throw new Error("拍数计算服务暂不可用");
   return (await response.json() as { results: BeatResult[] }).results[0];
+}
+
+/** 快速线路使用完整日文参考，与整句Zero-shot一致；不使用列表旧字幕的比值缓存。
+ * 净发声计算与完整线路相同，扣掉长静音，避免慢速豁免被长空白误触发。
+ * 每条检查只复用本次调用内的参考音频测量，不能跨字幕/音频变化沿用旧结论。
+ */
+async function quickReferenceSpeechSeconds(stem: string) {
+  const audio = await audioToMonoWav(await readFile(dataFile("jp", `${stem}.mp3`)));
+  const timing = wavTiming(audio);
+  const measured = measurePerformanceSpeakingTime({ ...decodeWavMono(audio), startS: timing.start, endS: timing.end });
+  return measured && measured.speechSeconds > 0 ? measured.speechSeconds : null;
 }
 
 async function saveAutoRunComparison(
@@ -587,6 +610,21 @@ export async function latestAutoRun(stem: string) {
 export async function startAutoRun(stem: string, options: { forceGenerate?: boolean } = {}) {
   const line = await loadLine(stem);
   if (!line) throw Object.assign(new Error("台词不存在"), { status: 404 });
+  // 批次按稳定的stem去重，不按区域名、顺序或成品是否合格判断“跑过”。
+  // 章节重命名/重排后重扫，也不能重复花费模型和TTS调用；待复核、失败、
+  // 中断及正在执行的历史同样跳过。需重试时由界面forceGenerate=true明确发起。
+  // 只读历史，不改旧状态、不清理产物，也不创建“跳过”的空运行记录。
+  if (!options.forceGenerate) {
+    const [previous] = await sql<{ id: string; selected_tts_id: string | null; status: string }[]>`
+      SELECT id::text AS id, selected_tts_id::text AS selected_tts_id, status
+      FROM line_auto_runs WHERE stem = ${stem}
+      ORDER BY id DESC LIMIT 1
+    `;
+    if (previous) return {
+      skipped: true as const, selectedTtsId: previous.selected_tts_id,
+      reason: previous.status === "running" ? "已在自动运行，批量跳过" : "已经自动跑过，批量跳过；需重跑请在界面手动点击",
+    };
+  }
   const [running] = await sql<{ id: string; updated_at: string }[]>`
     SELECT id::text, updated_at FROM line_auto_runs
     WHERE stem = ${stem} AND status = 'running'
@@ -598,25 +636,49 @@ export async function startAutoRun(stem: string, options: { forceGenerate?: bool
     }
     await finish(running.id, "failed", "上次运行中断", null);
   }
-  // 批量入口先跳过人工已锁、自动已通过或完整时间检查正常的顶层成品。
+  // 批量入口保留人工锁；未锁的快速/手工成品必须同时过时间和比检查。
+  // 完整线路已用裁后正文参考、短/慢句及动态时长豁免评判，不能拿完整原声比值重新推翻。
   // 只读现有结果，不建立空运行、不改父子归属；手点强制运行完全绕过此判断。
+  const rejectedQuickResults: { ttsId: string; ratio?: number | null; reason: string }[] = [];
   if (!options.forceGenerate) {
-    const results = await sql<{ id: string; audio_path: string; is_used: boolean; passed: boolean; start_s: number | null; end_s: number | null; dur_s: number | null; speech_s: number | null; jp_start_s: number | null; jp_end_s: number | null; jp_dur_s: number | null; jp_speech_s: number | null }[]>`
-      SELECT v.id::text, v.audio_path, v.is_used, EXISTS (SELECT 1 FROM line_auto_runs r WHERE r.selected_tts_id=v.id AND r.status='passed') AS passed,
+    let referenceSeconds: Promise<number | null> | undefined;
+    const results = await sql<{ id: string; audio_path: string; review_state: "candidate" | "locked" | "abnormal"; passed: boolean; complete_passed: boolean;
+      spoken_text: string | null; tts_text: string; voice_gpu_key: string | null; workflow: string | null;
+      start_s: number | null; end_s: number | null; dur_s: number | null; speech_s: number | null; jp_start_s: number | null; jp_end_s: number | null; jp_dur_s: number | null; jp_speech_s: number | null }[]>`
+      SELECT v.id::text, v.audio_path, v.review_state, EXISTS (SELECT 1 FROM line_auto_runs r WHERE r.selected_tts_id=v.id AND r.status='passed') AS passed,
+        EXISTS (SELECT 1 FROM line_auto_runs r WHERE r.selected_tts_id=v.id AND r.status='passed' AND r.reference_audio_path IS NOT NULL) AS complete_passed,
+        v.spoken_text,v.tts_text,v.voice_gpu_key,v.conversion_meta->>'workflow' AS workflow,
         v.start_s,v.end_s,v.dur_s,v.speech_s,m.jp_start_s,m.jp_end_s,m.jp_dur_s,m.jp_speech_s
       FROM line_tts_versions v LEFT JOIN line_meta m ON m.stem=v.stem
       WHERE v.stem=${stem} AND v.status='ready' AND v.audio_path IS NOT NULL
-        AND (v.parent_tts_id IS NULL OR v.is_used)
-      ORDER BY v.is_used DESC,v.id DESC
+        AND v.review_state <> 'abnormal'
+        AND (v.parent_tts_id IS NULL OR v.review_state = 'locked')
+      ORDER BY (v.review_state = 'locked') DESC,v.id DESC
     `;
     for (const row of results) {
-      const suitable = row.is_used || row.passed || quickTimingPass(
+      if (row.review_state === "abnormal") continue;
+      const completePassed = row.passed && (row.complete_passed || row.voice_gpu_key === "jp-lock");
+      const suitable = row.review_state === "locked" || completePassed || quickTimingPass(
       { start: row.jp_start_s, end: row.jp_end_s, dur: row.jp_dur_s, speech: row.jp_speech_s },
       { start: row.start_s, end: row.end_s, dur: row.dur_s, speech: row.speech_s }, line.dialogue_mode === "field",
       );
       if (!suitable) continue;
       try { if (!(await stat(dataFile(row.audio_path))).size) continue; } catch { continue; }
-      return { skipped: true as const, selectedTtsId: row.id, reason: row.is_used ? "已有人工锁定结果" : row.passed ? "已有自动通过结果" : "已有时间检查正常的成品" };
+      // 整句降级是独立的待人工线路，本来就无法可靠校字/计算正文比；保留既有复用策略。
+      // 旧quick-pick的passed没有裁后参考证据，必须重新检查，不能凭旧状态永久跳过。
+      if (row.review_state !== "locked" && !completePassed && row.workflow !== "whole-line-fallback" && isPerformanceMode(line.dialogue_mode)) {
+        try {
+          const spoken = row.spoken_text || row.tts_text || "";
+          const beats = await countBeats(line.text_jp || "", spoken, true);
+          referenceSeconds ??= quickReferenceSpeechSeconds(stem);
+          const check = quickBeatPass({ textJp: line.text_jp || "", spoken, beats, speechSeconds: await referenceSeconds });
+          if (!check.pass) { rejectedQuickResults.push({ ttsId: row.id, ratio: check.ratio, reason: "已有成品未过比或短/慢句字数检查" }); continue; }
+        } catch {
+          rejectedQuickResults.push({ ttsId: row.id, reason: "已有成品比检查不可用，不能视为合格" });
+          continue;
+        }
+      }
+      return { skipped: true as const, selectedTtsId: row.id, reason: row.review_state === "locked" ? "已有人工锁定结果" : row.passed ? "已有自动通过结果" : "已有时间检查正常的成品" };
     }
   }
   const kind = isPerformanceMode(line.dialogue_mode) ? "performance" : "casual";
@@ -625,6 +687,8 @@ export async function startAutoRun(stem: string, options: { forceGenerate?: bool
     VALUES (${stem}, ${kind}, 'running')
     RETURNING id::text
   `;
+  // 仅新运行记录自己的前置检查，不篡改旧运行或音频；完整线路会按裁后参考再次复核。
+  if (rejectedQuickResults.length) await log(run.id, "preflight-beat", "已有成品时间虽正常，但比检查未过，继续完整自动流程", { rejected: rejectedQuickResults }, "result");
   return { skipped: false as const, id: run.id, kind };
 }
 
@@ -663,7 +727,7 @@ async function executeAutoRunMeasured(runId: string, stem: string, options: { fo
 /** 自动运行前置：没有任何已就绪修改音频才批量Zero-shot，参数与手动原稿生成一致。
  * 已锁日文不属于修改音频；失败/未完成记录也不能阻止首次生成。已有成品则跳过，
  * 不重新认领旧工作流或改变旧音频父子关系。合格输出仅待选，绝不自动锁定。
- * 程序检查完整起止/总长/发声跨度后，Qwen识别合格候选，一次模型请求校字并排名。
+ * 程序检查完整起止/总长/发声跨度和比后，Qwen识别合格候选，一次模型请求校字并排名。
  * 无合格/识别或模型服务失败继续完整线路；这批已落库文件仍登记兜底，确保有产物。
  */
 async function runQuickOriginal(runId: string, line: LinePack, recovery: RunRecovery) {
@@ -685,12 +749,28 @@ async function runQuickOriginal(runId: string, line: LinePack, recovery: RunReco
     `;
     const jp = { start: timing?.jp_start_s ?? null, end: timing?.jp_end_s ?? null, dur: timing?.jp_dur_s ?? null, speech: timing?.jp_speech_s ?? null };
     const candidates: QuickCandidate[] = [];
+    let referenceSeconds: Promise<number | null> | undefined;
+    const beatChecks = new Map<string, Promise<ReturnType<typeof quickBeatPass>>>();
     for (const { clip } of saved) {
       const measured = wavTiming(await audioToMonoWav(await readFile(dataFile(clip.audio_path!))));
       const candidateTiming = { start: measured.start, end: measured.end, dur: measured.duration, speech: measured.speech };
       const pass = quickTimingPass(jp, candidateTiming, line.dialogue_mode === "field");
       await log(runId, "quick-timing", `#${clip.id} 完整音频时间检查${pass ? "正常" : "未通过"}`, { ttsId: clip.id, pass, jp, timing: candidateTiming }, "result");
       if (!pass) continue;
+      if (isPerformanceMode(line.dialogue_mode)) {
+        let check = beatChecks.get(clip.spoken_text);
+        if (!check) {
+          check = (async () => {
+            const beats = await countBeats(line.text_jp || "", clip.spoken_text, true);
+            referenceSeconds ??= quickReferenceSpeechSeconds(line.stem);
+            return quickBeatPass({ textJp: line.text_jp || "", spoken: clip.spoken_text, beats, speechSeconds: await referenceSeconds });
+          })();
+          beatChecks.set(clip.spoken_text, check);
+        }
+        const checked = await check;
+        await log(runId, "quick-beat", `#${clip.id} 比 ${checked.ratio?.toFixed(3) ?? "不可计算"}${checked.exemption ? `（${checked.exemption === "short" ? "短句" : "慢速"}豁免）` : ""} ${checked.pass ? "过关" : "未通过，继续完整线路"}`, { ttsId: clip.id, ...checked }, "result");
+        if (!checked.pass) continue;
+      }
       try {
         const asr = await asrQwen(clip);
         await log(runId, "quick-asr", `#${clip.id} Qwen：${asr.text || "（空）"}`, { ttsId: clip.id, text: asr.text }, "asr");
@@ -1362,7 +1442,7 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
         beatCache.set(candidateText, beat);
       }
       // 短句或实测慢速任一成立便豁免；比值只作诊断，不参与淘汰、改稿和兜底评分。
-      const beatCheck = ignoreBeat || durationBeatReference ? { enabled: false, ratio: null, pass: true, deviation: 0 } : checkAutoBeat(beat.result);
+      const beatCheck = ignoreBeat || durationBeatReference ? { enabled: false, ratio: null, pass: true, deviation: 0 } : checkAutoBeat(beat.result, referenceTextJp);
       const characters = characterPolicy ? checkShortCharacters(characterPolicy, candidateText) : null;
       if (characters && !characters.pass) shortCharactersOutOfBand = true;
       if (characters) await log(runId, "short-text", `#${clip.id} ${slowLine ? "慢速句" : "短句"}正文 ${characters.characters} 字，要求 ${characters.min}–${characters.max} 字${characters.pass ? "，过关" : "，不过"}`, { ttsId: clip.id, ...characters }, "result");
@@ -1370,7 +1450,7 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
       candidate.beatDeviation = beatCheck.deviation;
       if (beatCheck.enabled && !beatCheck.pass && beatCheck.deviation !== null) beatOutOfBand = true;
       await log(runId, "beat", durationBeatReference ? `#${clip.id} 拍数比 ${beat.result?.normalizedRatio?.toFixed(3) ?? "不可计算"} 仅供参考，不参与淘汰或评分` : !beatCheck.enabled ? `#${clip.id} ${durationBeatReference ? "实测偏短，拍数比仅供参考" : slowLine ? "日文慢速低于3拍/秒" : "日文短句"}，不计算拍数比`
-        : `#${clip.id} 拍数比 ${beatCheck.ratio?.toFixed(3) ?? "不可计算"} ${beatCheck.pass ? "过关" : "不过，要求 0.85–1.15"}`, {
+        : `#${clip.id} 拍数比 ${beatCheck.ratio?.toFixed(3) ?? "不可计算"} ${beatCheck.pass ? "过关" : `不过，要求 ${autoBeatBand(referenceTextJp).low}–${autoBeatBand(referenceTextJp).high}`}`, {
         ttsId: clip.id, ...beatCheck, referenceRatio: beat.result?.normalizedRatio ?? null, error: beat.error, exemption: durationBeatReference ? "actual-short" : slowLine ? "slow" : shortLine ? "short" : null, slowLine,
       }, "result");
       await saveAutoRunComparison(runId, clip, referenceHit.stored, { path: clip.audio_path, sha256: createHash("sha256").update(await readFile(dataFile(clip.audio_path))).digest("hex") }, comparison, referenceTextJp, candidateText, beat);

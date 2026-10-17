@@ -1,6 +1,11 @@
+"use client";
+
+import { usePathname } from "next/navigation";
 import Link from "next/link";
 
 export function Nav() {
+  const pathname = usePathname();
+  if (pathname.startsWith("/review/")) return null;
   return (
     <header className="border-b border-zinc-800 bg-zinc-950 px-3 py-2 sm:px-6 sm:py-3">
       <div className="mx-auto flex max-w-6xl flex-col gap-1 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
@@ -26,6 +31,7 @@ export function Nav() {
           <Link href="/prompts" className="shrink-0 whitespace-nowrap rounded px-2.5 py-2 hover:text-white">
             提示词库
           </Link>
+          <Link href="/abnormal" className="shrink-0 whitespace-nowrap rounded px-2.5 py-2 hover:text-white">异常处理</Link>
         </nav>
       </div>
     </header>

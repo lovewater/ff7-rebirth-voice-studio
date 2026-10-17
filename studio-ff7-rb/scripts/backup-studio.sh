@@ -121,7 +121,7 @@ chk_count() { docker exec "$DB_CID" psql -U "$DB_USER" -d studio_restore_check -
 
 Q_TTS='SELECT COUNT(*) FROM line_tts_versions'
 Q_READY="SELECT COUNT(*) FROM line_tts_versions WHERE status = 'ready' AND audio_path IS NOT NULL"
-Q_USED="SELECT COUNT(*) FROM line_tts_versions WHERE is_used"
+Q_USED="SELECT COUNT(*) FROM line_tts_versions WHERE review_state='locked'"
 Q_LINES='SELECT COUNT(*) FROM lines'
 Q_META='SELECT COUNT(*) FROM line_meta'
 Q_PRON='SELECT COUNT(*) FROM pronunciations'

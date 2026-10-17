@@ -1,13 +1,15 @@
 import { NORMAL_JP_CN_RATIO, type BeatResult } from "./beats";
+import { compactPerformanceBeatBand } from "./auto-run-script-policy";
 
 export const REWRITE_COUNT = 5;
 // 界面一次仍是五轮。批处理在五条都不合格时再要五条，择优最多看十个候选。
 export const REWRITE_LIMIT = REWRITE_COUNT * 2;
-export const REWRITE_POLICY = "literary-0.9-1.1-v1";
+export const REWRITE_POLICY = "literary-compact11-v2";
 export const REWRITE_MIN = 0.9;
 export const REWRITE_MAX = 1.1;
 
 export type RewriteCandidate = {
+  referenceTextJp?: string;
   text: string;
   beats: BeatResult;
   target: number;
@@ -36,8 +38,13 @@ export type ShowLine = {
 
 // ratio 这里就是「比」：(日文拍 ÷ 中文拍) ÷ NORMAL_JP_CN_RATIO。1.00 为标准。
 // 这条合格带只给改写反馈，不是列表上偏离 1.00 的 10%/15% 报警。
-export function rewritePace(ratio: number): "偏慢" | "正常" | "偏快" {
-  return ratio > REWRITE_MAX + 1e-9 ? "偏慢" : ratio < REWRITE_MIN - 1e-9 ? "偏快" : "正常";
+export function rewriteBand(textJp?: string) {
+  return compactPerformanceBeatBand(textJp) ?? { low: REWRITE_MIN, high: REWRITE_MAX };
+}
+
+export function rewritePace(ratio: number, textJp?: string): "偏慢" | "正常" | "偏快" {
+  const { low, high } = rewriteBand(textJp);
+  return ratio > high + 1e-9 ? "偏慢" : ratio < low - 1e-9 ? "偏快" : "正常";
 }
 
 export function performanceKey(evidence: ShowEvidence | null | undefined): string | null {
@@ -80,18 +87,19 @@ export function takeUntilBoundary<T>(rows: T[], currentIndex: number, inside: (r
   return { before, after };
 }
 
-function feedback(target: number, units: number, spokenUnits?: number, matchJapanese = false) {
+function feedback(target: number, units: number, spokenUnits?: number, matchJapanese = false, textJp?: string) {
+  const { low, high } = rewriteBand(textJp);
   const ratio = units > 0 ? target / units : Infinity;
   const spokenRatio = spokenUnits != null && spokenUnits > 0 ? target / spokenUnits : ratio;
-  const measured = rewritePace(spokenRatio) !== "正常" ? (spokenUnits ?? units) : units;
-  const pace = rewritePace(target / measured);
+  const measured = rewritePace(spokenRatio, textJp) !== "正常" ? (spokenUnits ?? units) : units;
+  const pace = rewritePace(target / measured, textJp);
   const delta = Math.max(1, Math.round(Math.abs(target - measured)));
   const action = pace === "偏慢" ? `中文偏短，放进同样的演出时间会偏慢。下一条请增加大约 ${delta} 个汉字，补全口语，不要堆语气词。`
     : pace === "偏快" ? `中文偏长，放进同样的演出时间会偏快。下一条请减少大约 ${delta} 个汉字，留下关键信息。`
     : "长度已经合格，不用向 1.00 靠拢。下一条优先优化文字：去掉重复解释、套话和赘词，让措辞简洁、自然、有韵味，保留人物口吻，不要改成书面腔。";
   const extra = Math.max(0, (spokenUnits ?? units) - units);
-  const pauseHint = extra > 0 ? `本稿换行转换额外增加 ${extra} 拍。若保留这些停顿，字幕拍数必须落在 ${(target / REWRITE_MAX).toFixed(2)} 到 ${(target / REWRITE_MIN - extra).toFixed(2)} 之间才能双达标。也可以自然地调整断句：把已有逗号移到语义合适的行尾，使换行和标点共用一次停顿；或重组为不需要句中逗号的自然说法。不要叠加停顿，不要增加新意思，${matchJapanese ? "段数尽量与日文正文一致" : "行数不变"}。` : "";
-  return `程序实测：中文 ${units} 拍，比 ${Number.isFinite(ratio) ? ratio.toFixed(3) : "不可计算"}；实际朗读比 ${Number.isFinite(spokenRatio) ? spokenRatio.toFixed(3) : "不可计算"}（原候选换行合成时会变成句号停顿），判定${pace}。字幕和实际朗读都要合格，可减少赘字或重复停顿，${matchJapanese ? "分段尽量与日文正文一致" : "但保持原字幕行数"}。正常范围是 0.9 到 1.1，含两端。${action}${pauseHint}不要复述上一条，也不要只改一个语气词。`;
+  const pauseHint = extra > 0 ? `本稿换行转换额外增加 ${extra} 拍。若保留这些停顿，字幕拍数必须落在 ${(target / high).toFixed(2)} 到 ${(target / low - extra).toFixed(2)} 之间才能双达标。也可以自然地调整断句：把已有逗号移到语义合适的行尾，使换行和标点共用一次停顿；或重组为不需要句中逗号的自然说法。不要叠加停顿，不要增加新意思，${matchJapanese ? "段数尽量与日文正文一致" : "行数不变"}。` : "";
+  return `程序实测：中文 ${units} 拍，比 ${Number.isFinite(ratio) ? ratio.toFixed(3) : "不可计算"}；实际朗读比 ${Number.isFinite(spokenRatio) ? spokenRatio.toFixed(3) : "不可计算"}（原候选换行合成时会变成句号停顿），判定${pace}。字幕和实际朗读都要合格，可减少赘字或重复停顿，${matchJapanese ? "分段尽量与日文正文一致" : "但保持原字幕行数"}。正常范围是 ${low} 到 ${high}，含两端。${action}${pauseHint}不要复述上一条，也不要只改一个语气词。`;
 }
 
 function showLine(index: number, side: "前" | "后", line: ShowLine) {
@@ -180,7 +188,7 @@ export function rewriteMessages(input: {
   if (input.shortLine) {
     const { min, max } = input.shortLine;
     const messages: { role: "system" | "user" | "assistant"; content: string; promptKey?: string; promptValues?: Record<string, unknown> }[] = [{ role: "system", content: [
-      "你是《最终幻想7 重生》中文配音修订台的台词编辑。当前日文正文少于六个字符，可能有长拖音。",
+      "你是《最终幻想7 重生》中文配音修订台的台词编辑。当前日文正文少于八个字符，可能有长拖音。",
       "本句不计算、不追求拍数比。以程序实测的有效发声时长反馈调整中文字符数，首尾静音不能充当发声时长。",
       `中文正文必须 ${min}–${max} 个字符（标点、空格、换行不算）。请根据额外提供的实际发声时长决定怎样改写。`,
       "中文实测偏短且未达上限时，应增加当前正文的字符数、补全自然表达；若已经达到上限，优先保住核心含义，允许自然标点停顿匹配慢表达，不强制增字。实测偏长时才简化。上限是容量，不要求凑满。",
@@ -205,6 +213,7 @@ export function rewriteMessages(input: {
     return messages;
   }
   const target = input.beats.jp.units! / NORMAL_JP_CN_RATIO;
+  const { low, high } = rewriteBand(input.textJp);
   const lines = input.original.replace(/\\n/g, "\n").split(/\n+/).filter((line) => line.trim());
   const ratio = input.beats.cn.units > 0 ? target / input.beats.cn.units : null;
   const attempt = input.attempt ?? input.previous.length;
@@ -213,10 +222,10 @@ export function rewriteMessages(input: {
     { role: "system", content: [
       "你是《最终幻想7 重生》中文配音修订台的台词编辑。修订对象是一场已经演出来的中文对白，要让它放进日文演出的时间里仍然像人话。",
       "只输出一个 JSON 对象，不要 Markdown，不要在 JSON 外面写说明。",
-      `「比」= (日文拍 ÷ 中文拍) ÷ ${NORMAL_JP_CN_RATIO.toFixed(2)}。1.00 表示中文拍等于日文拍除以 ${NORMAL_JP_CN_RATIO.toFixed(2)}，这是参考长度，不是必须逼近的目标；0.9 到 1.1 全部同等合格。比大于 1，中文偏短，同样的演出里会被放慢。比小于 1，中文偏长，会被加快。`,
+      `「比」= (日文拍 ÷ 中文拍) ÷ ${NORMAL_JP_CN_RATIO.toFixed(2)}。1.00 表示中文拍等于日文拍除以 ${NORMAL_JP_CN_RATIO.toFixed(2)}，这是参考长度，不是必须逼近的目标；${low} 到 ${high} 全部同等合格。比大于 1，中文偏短，同样的演出里会被放慢。比小于 1，中文偏长，会被加快。`,
       "拍数由程序计算，你不要自己数日文拍。句中标点计 1.5 拍，句末标点不计。换行本身不计拍，但合成时换行会读成句号。不要用无意义语气词或额外标点凑拍数，也不要把短促的喊声注水。",
-      "这条工具的正常范围是 0.9 到 1.1。保留原意、人物关系、称谓、否定、时态、问句和情绪。不能添加事实、动作、承诺或新剧情。专名沿用原中文的写法，不要改成另一种译名。",
-      "五轮中前两轮先保义并进入 0.9–1.1；一般从第三轮开始重点打磨表达。已有合格稿时，后续必须在合格范围内减少车轱辘话、套话、重复说明和废话，优先自然、凝练、优美且适合演员说出口的中文。不要为了更接近 1.00 加字，不要把本来简短的意思绕着说；优美不等于堆辞藻。仍未合格时先解决长度，不能牺牲原意。",
+      `这条工具的正常范围是 ${low} 到 ${high}。保留原意、人物关系、称谓、否定、时态、问句和情绪。不能添加事实、动作、承诺或新剧情。专名沿用原中文的写法，不要改成另一种译名。`,
+      `五轮中前两轮先保义并进入 ${low}–${high}；一般从第三轮开始重点打磨表达。已有合格稿时，后续必须在合格范围内减少车轱辘话、套话、重复说明和废话，优先自然、凝练、优美且适合演员说出口的中文。不要为了更接近 1.00 加字，不要把本来简短的意思绕着说；优美不等于堆辞藻。仍未合格时先解决长度，不能牺牲原意。`,
       "每句都有日文、英文、中文。中文译得不通顺时，用英文核对意思，不要只顺着别扭的中文改。英文是同一条语音上的英文字幕，断句有时和日文、中文不一样；对不上时不要用英文改这句的情节，只在它和这句是同一意思时用来核对措辞。没有英文就写着（无），不要编造。不要按英文另起专名或称谓。",
       "必须使用中国大陆规范简体字。上下文只包含本场演出；没列出来的句子不属于这场，不要脑补它们。",
       "JSON 字段：situation 是这句在本场演出里的作用以及和前后句怎么接；problem 是当前稿的语速和措辞问题；plan 是这一条准备怎么改；text 是改写后的台词；risk 是可能改丢的地方，没有就用空字符串。text 里的换行使用 JSON 的换行转义。" + (input.segmentationHint ? "中文段数尽量与日文正文一致，不要求原中文行数。" : "行数与原中文一致。"),
@@ -224,12 +233,12 @@ export function rewriteMessages(input: {
     ].join("\n"), promptKey: "rewrite.normal.system", promptValues: {"normal_ratio": NORMAL_JP_CN_RATIO.toFixed(2),"output_format_instruction": "JSON 字段：situation 是这句在本场演出里的作用以及和前后句怎么接；problem 是当前稿的语速和措辞问题；plan 是这一条准备怎么改；text 是改写后的台词；risk 是可能改丢的地方，没有就用空字符串。text 里的换行使用 JSON 的换行转义。" + (input.segmentationHint ? "中文段数尽量与日文正文一致，不要求原中文行数。" : "行数与原中文一致。"),"segmentation_hint": input.segmentationHint || "","round_notice": ""} },
   ];
   if (secondRound) {
-    messages[0] = { ...messages[0], content: messages[0].content + "\n前五个候选的比都不在 0.9–1.1。现在是补做的第二轮，每次仍然只输出一条新稿，最后会和前五条放在一起选。", promptValues: { ...messages[0].promptValues, round_notice: "\n前五个候选的比都不在 0.9–1.1。现在是补做的第二轮，每次仍然只输出一条新稿，最后会和前五条放在一起选。" } };
+    messages[0] = { ...messages[0], content: messages[0].content + `\n前五个候选的比都不在 ${low}–${high}。现在是补做的第二轮，每次仍然只输出一条新稿，最后会和前五条放在一起选。`, promptValues: { ...messages[0].promptValues, round_notice: `\n前五个候选的比都不在 ${low}–${high}。现在是补做的第二轮，每次仍然只输出一条新稿，最后会和前五条放在一起选。` } };
   }
   messages.push({ role: "user", content: [
     secondRound
-      ? `当前是补做的第 ${attempt - REWRITE_COUNT + 1} 条。前五个候选都不在 0.9–1.1，所以再要五个，最后只在合格稿里选。这一条先把比调进 0.9–1.1，保住原意、人物口吻${input.segmentationHint ? "，分段尽量与日文正文一致" : "和原字幕行数"}，不要复述已经出现过的句子。`
-      : `当前是第 ${attempt + 1} 轮，共五轮。${attempt >= 2 ? "本轮优先打磨已合格稿的文字表达，保持 0.9–1.1，不为靠近 1.00 添加赘词。若仍无合格稿，先保义调好长度。" : "先保证原意和人物口吻，再将比调入 0.9–1.1。"}`,
+      ? `当前是补做的第 ${attempt - REWRITE_COUNT + 1} 条。前五个候选都不在 ${low}–${high}，所以再要五个，最后只在合格稿里选。这一条先把比调进 ${low}–${high}，保住原意、人物口吻${input.segmentationHint ? "，分段尽量与日文正文一致" : "和原字幕行数"}，不要复述已经出现过的句子。`
+      : `当前是第 ${attempt + 1} 轮，共五轮。${attempt >= 2 ? `本轮优先打磨已合格稿的文字表达，保持 ${low}–${high}，不为靠近 1.00 添加赘词。若仍无合格稿，先保义调好长度。` : `先保证原意和人物口吻，再将比调入 ${low}–${high}。`}`,
     `说话人：${input.speaker || "未知"}`,
     `本场演出：${input.show || "未能识别场次，因此没有附带前后文"}`,
     input.before.length ? `上文，只到本场边界：\n${input.before.map((line, index) => showLine(input.before.length - index, "前", line)).join("\n\n")}` : "上文：这场演出在这句之前没有其他演出台词。",
@@ -239,13 +248,13 @@ export function rewriteMessages(input: {
     `程序计数：日文 ${input.beats.jp.units} 拍，当前中文 ${input.beats.cn.units} 拍，目标约 ${target.toFixed(1)} 拍，比 ${ratio == null ? "不可计算" : ratio.toFixed(3)}。${input.segmentationHint ? "分段尽量遵循日文正文提示。" : `请保持 ${Math.max(1, lines.length)} 行。`}`,
     "请先对照这句的日文、英文和中文，判断它在演出里承担什么，再说明当前稿哪里不合适，然后给出改写。",
   ].join("\n\n"), promptKey: "rewrite.normal.context", promptValues: {"attempt_instruction": secondRound
-      ? `当前是补做的第 ${attempt - REWRITE_COUNT + 1} 条。前五个候选都不在 0.9–1.1，所以再要五个，最后只在合格稿里选。这一条先把比调进 0.9–1.1，保住原意、人物口吻${input.segmentationHint ? "，分段尽量与日文正文一致" : "和原字幕行数"}，不要复述已经出现过的句子。`
-      : `当前是第 ${attempt + 1} 轮，共五轮。${attempt >= 2 ? "本轮优先打磨已合格稿的文字表达，保持 0.9–1.1，不为靠近 1.00 添加赘词。若仍无合格稿，先保义调好长度。" : "先保证原意和人物口吻，再将比调入 0.9–1.1。"}`,"speaker": input.speaker || "未知","show": input.show || "未能识别场次，因此没有附带前后文","before_context": input.before.length ? `上文，只到本场边界：\n${input.before.map((line, index) => showLine(input.before.length - index, "前", line)).join("\n\n")}` : "上文：这场演出在这句之前没有其他演出台词。","text_jp": input.textJp || "（无）","text_en": input.textEn || "（无）","original": input.original.replace(/\\n/g, "\n"),"current": input.current.replace(/\\n/g, "\n"),"after_context": input.after.length ? `下文，只到本场边界：\n${input.after.map((line, index) => showLine(index + 1, "后", line)).join("\n\n")}` : "下文：这场演出在这句之后没有其他演出台词。","japanese_units": input.beats.jp.units,"chinese_units": input.beats.cn.units,"target_units": target.toFixed(1),"normalized_ratio": ratio == null ? "不可计算" : ratio.toFixed(3),"layout_instruction": input.segmentationHint ? "分段尽量遵循日文正文提示。" : `请保持 ${Math.max(1, lines.length)} 行。`} });
+      ? `当前是补做的第 ${attempt - REWRITE_COUNT + 1} 条。前五个候选都不在 ${low}–${high}，所以再要五个，最后只在合格稿里选。这一条先把比调进 ${low}–${high}，保住原意、人物口吻${input.segmentationHint ? "，分段尽量与日文正文一致" : "和原字幕行数"}，不要复述已经出现过的句子。`
+      : `当前是第 ${attempt + 1} 轮，共五轮。${attempt >= 2 ? `本轮优先打磨已合格稿的文字表达，保持 ${low}–${high}，不为靠近 1.00 添加赘词。若仍无合格稿，先保义调好长度。` : `先保证原意和人物口吻，再将比调入 ${low}–${high}。`}`,"speaker": input.speaker || "未知","show": input.show || "未能识别场次，因此没有附带前后文","before_context": input.before.length ? `上文，只到本场边界：\n${input.before.map((line, index) => showLine(input.before.length - index, "前", line)).join("\n\n")}` : "上文：这场演出在这句之前没有其他演出台词。","text_jp": input.textJp || "（无）","text_en": input.textEn || "（无）","original": input.original.replace(/\\n/g, "\n"),"current": input.current.replace(/\\n/g, "\n"),"after_context": input.after.length ? `下文，只到本场边界：\n${input.after.map((line, index) => showLine(index + 1, "后", line)).join("\n\n")}` : "下文：这场演出在这句之后没有其他演出台词。","japanese_units": input.beats.jp.units,"chinese_units": input.beats.cn.units,"target_units": target.toFixed(1),"normalized_ratio": ratio == null ? "不可计算" : ratio.toFixed(3),"layout_instruction": input.segmentationHint ? "分段尽量遵循日文正文提示。" : `请保持 ${Math.max(1, lines.length)} 行。`} });
   for (const sample of input.previous) {
     messages.push({ role: "assistant", content: sample.raw });
-    messages.push({ role: "user", content: `${sample.units == null ? "本稿拍数不可用，不编造数值。" : feedback(target, sample.units, sample.spokenUnits ?? undefined, Boolean(input.segmentationHint))}\n请重新组织表达，再输出一个新的 JSON。保持三语对照后的原意。${input.segmentationHint || `保持 ${Math.max(1, lines.length)} 行。`}`, promptKey: "rewrite.normal.feedback", promptValues: {"beat_feedback": sample.units == null ? "本稿拍数不可用，不编造数值。" : feedback(target, sample.units, sample.spokenUnits ?? undefined, Boolean(input.segmentationHint)),"layout_instruction": input.segmentationHint || `保持 ${Math.max(1, lines.length)} 行。`} });
+    messages.push({ role: "user", content: `${sample.units == null ? "本稿拍数不可用，不编造数值。" : feedback(target, sample.units, sample.spokenUnits ?? undefined, Boolean(input.segmentationHint), input.textJp)}\n请重新组织表达，再输出一个新的 JSON。保持三语对照后的原意。${input.segmentationHint || `保持 ${Math.max(1, lines.length)} 行。`}`, promptKey: "rewrite.normal.feedback", promptValues: {"beat_feedback": sample.units == null ? "本稿拍数不可用，不编造数值。" : feedback(target, sample.units, sample.spokenUnits ?? undefined, Boolean(input.segmentationHint), input.textJp),"layout_instruction": input.segmentationHint || `保持 ${Math.max(1, lines.length)} 行。`} });
   }
-  return messages;
+  return messages.map(message => message.promptKey ? { ...message, promptValues: { ...message.promptValues, beat_min: low, beat_max: high } } : message);
 }
 
 export function cleanRewrite(raw: string) {

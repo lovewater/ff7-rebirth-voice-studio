@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { audioFileResponse } from "@/lib/audio-file-response";
 import path from "node:path";
 import { NextResponse } from "next/server";
 import { sql } from "@/lib/db";
@@ -35,15 +35,13 @@ export async function GET(
   try {
     const ext = path.extname(target).toLowerCase();
     const contentType = ext === ".mp3" ? "audio/mpeg" : "audio/wav";
-    const audio = await readFile(target);
-    return new NextResponse(audio, {
-      headers: {
-        "content-type": contentType,
-        "cache-control": "private, no-store",
-        ...(kind === "reference" ? { "x-reference-kind": "original" } : {}),
-      },
+    return await audioFileResponse(req, target, {
+      contentType,
+      headers: kind === "reference" ? { "x-reference-kind": "original" } : undefined,
     });
   } catch {
     return NextResponse.json({ error: "音频文件不存在" }, { status: 404 });
   }
 }
+
+export const HEAD = GET;

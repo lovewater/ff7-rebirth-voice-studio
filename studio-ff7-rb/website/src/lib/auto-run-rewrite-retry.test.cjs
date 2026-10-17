@@ -24,10 +24,10 @@ test('actual five-draft loop retries only the failed request, without nested HTT
   return{};
  };
  m._compile(ts.transpileModule(readFileSync(`${__dirname}/auto-run-llm.ts`,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,`${__dirname}/auto-run-llm.ts`);
- const originalFetch=global.fetch,oldUrl=process.env.REWRITE_LLM_URL,oldKey=process.env.REWRITE_LLM_KEY;
- process.env.REWRITE_LLM_URL='https://example.invalid/v1';process.env.REWRITE_LLM_KEY='test';
+ const originalFetch=global.fetch,oldUrl=process.env.VOLCENGINE_LLM_URL,oldKey=process.env.VOLCENGINE_LLM_KEY;
+ process.env.VOLCENGINE_LLM_URL='https://example.invalid/v1';process.env.VOLCENGINE_LLM_KEY='test';
  global.fetch=async(_url,init)=>{const input=JSON.parse(JSON.parse(init.body).messages[0].content);requests.push(input);if(input.draft===1&&secondFailures++<3)return new Response('{}',{status:500});return new Response(JSON.stringify({choices:[{message:{content:JSON.stringify({text:'稿'+input.draft})}}]}));};
  try{await m.exports.rewriteFive({speaker:'',show:null,textJp:'',textEn:'',original:'原文',current:'当前稿',beats:{jp:{units:10}},before:[],after:[],jpAsr:{raw:{}},failNotes:[],measure:async()=>{measurements++;return{jp:{units:10},cn:{units:10},normalizedRatio:1};},onRetry:async e=>failures.push(e)});
  assert.equal(requests.length,8);assert.deepEqual(requests.map(r=>r.draft),[0,1,1,1,1,2,3,4]);assert.ok(requests.filter(r=>r.draft===1).every(r=>r.previous===1));assert.equal(measurements,10);assert.equal(failures.length,3);
- }finally{global.fetch=originalFetch;if(oldUrl===undefined)delete process.env.REWRITE_LLM_URL;else process.env.REWRITE_LLM_URL=oldUrl;if(oldKey===undefined)delete process.env.REWRITE_LLM_KEY;else process.env.REWRITE_LLM_KEY=oldKey;}
+ }finally{global.fetch=originalFetch;if(oldUrl===undefined)delete process.env.VOLCENGINE_LLM_URL;else process.env.VOLCENGINE_LLM_URL=oldUrl;if(oldKey===undefined)delete process.env.VOLCENGINE_LLM_KEY;else process.env.VOLCENGINE_LLM_KEY=oldKey;}
 });

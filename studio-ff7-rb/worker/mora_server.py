@@ -32,7 +32,7 @@ def refresh_metrics():
           WHERE l.kind IN ('对话','talk') AND m.dialogue_mode='scene'
             AND NOT COALESCE(l.subtitle_italic,false) AND NOT COALESCE(m.skip_timing,false)
             AND NOT EXISTS (SELECT 1 FROM line_tts_versions t
-                WHERE t.stem=l.stem AND t.is_used AND t.status='ready')
+                WHERE t.stem=l.stem AND t.review_state='locked' AND t.status='ready')
             AND (m.beat_version IS DISTINCT FROM %s
               OR m.beat_jp_hash IS DISTINCT FROM md5(COALESCE(l.text_jp,''))
               OR m.beat_cn_hash IS DISTINCT FROM md5(COALESCE(l.text_zh,'')))

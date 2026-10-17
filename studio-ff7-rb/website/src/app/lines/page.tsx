@@ -1,3 +1,8 @@
+import { originalCnLockedExpr } from "@/lib/line-filters";
+import { LINE_PAGE_SIZE } from "@/lib/line-pagination";
+import { randomUUID } from "node:crypto";
+import { lineListWhere } from "@/lib/line-list-query";
+import { MobileListAudio } from "@/components/mobile-list-audio";
 import Link from "next/link";
 import { Fragment } from "react";
 import { sql, type LineRow } from "@/lib/db";
@@ -15,7 +20,7 @@ import { getSpeechComparisons } from "@/lib/speech-metrics-store";
 
 export const dynamic = "force-dynamic";
 
-const PAGE_SIZE = 40;
+const PAGE_SIZE = LINE_PAGE_SIZE;
 
 const KIND_LABEL: Record<string, string> = {
   对话: "对话",
@@ -81,7 +86,8 @@ export default async function LinesPage({
   const q = sp.q ?? "";
   const page = Math.max(1, parseInt(sp.page ?? "1", 10) || 1);
   const offset = (page - 1) * PAGE_SIZE;
-  const like = "%" + q + "%";
+  const reviewSession = randomUUID();
+  const listWhere = lineListWhere({ region, kind, mode, flag, speakers, q, onlyCast, modifiedOnly });
   const flagExpr = healthFlagExpr();
   const healthStats = await countFilteredHealth({
     region,
@@ -100,35 +106,7 @@ export default async function LinesPage({
     LEFT JOIN speakers s ON s.code = l.speaker
     LEFT JOIN regions rg ON rg.code = l.region
     LEFT JOIN line_meta m ON m.stem = l.stem
-    WHERE (${region} = '' OR l.region = ${region})
-      AND (${kind} = '' OR l.kind = ${kind})
-      AND (${mode} = '' OR m.dialogue_mode = ${mode})
-      AND (${speakers.length} = 0 OR l.speaker = ANY(${speakers}))
-      AND (
-        ${flag} = ''
-        OR (${flag} = 'fixed' AND (
-          COALESCE(m.skip_timing, false)
-          OR EXISTS (
-            SELECT 1 FROM line_tts_versions tf
-            WHERE tf.stem = l.stem AND tf.status = 'ready' AND tf.is_used
-          )
-        ))
-        OR (${flag} <> '' AND ${flag} <> 'fixed' AND (${flagExpr}) = ${flag})
-      )
-      AND (NOT ${onlyCast} OR EXISTS (SELECT 1 FROM cast_members cm WHERE cm.speaker = l.speaker))
-      AND (NOT ${onlyCast} OR l.kind = '对话')
-      AND (NOT ${modifiedOnly} OR EXISTS (
-        SELECT 1 FROM line_tts_versions tv
-        WHERE tv.stem = l.stem AND tv.status = 'ready'
-      ))
-      AND (${q} = '' OR l.stem ILIKE ${like}
-           OR s.name_zh ILIKE ${like} OR m.actor_zh ILIKE ${like} OR rg.name_zh ILIKE ${like}
-           OR l.filename ILIKE ${like} OR l.text_jp ILIKE ${like} OR l.text_zh ILIKE ${like} OR l.text_en ILIKE ${like}
-           OR EXISTS (
-             SELECT 1 FROM line_tts_versions tq
-             WHERE tq.stem = l.stem
-               AND (tq.tts_text ILIKE ${like} OR tq.subtitle_text ILIKE ${like})
-           ))
+    WHERE ${listWhere}
   `;
 
   const rows = await sql<LineRow[]>`
@@ -142,7 +120,7 @@ export default async function LinesPage({
            m.jp_start_s, m.jp_end_s, m.jp_dur_s, m.jp_speech_s,
            m.cn_start_s, m.cn_end_s, m.cn_dur_s, m.cn_speech_s,
            m.en_start_s, m.en_end_s, m.en_dur_s, m.en_speech_s,
-           COALESCE(m.skip_timing, false) AS skip_timing,
+           ${originalCnLockedExpr()} AS skip_timing,
            CASE
              WHEN m.jp_speech_s IS NULL OR m.cn_speech_s IS NULL THEN NULL
              WHEN GREATEST(m.jp_speech_s, m.cn_speech_s) <= 0 THEN NULL
@@ -160,7 +138,7 @@ export default async function LinesPage({
                AND vv.reference_wav_path IS NOT NULL
            ) AS has_voice,
            tv.id AS tts_record_id,
-           tv.is_used AS tts_record_is_used,
+           tv.review_state AS tts_record_review_state,
            tv.subtitle_text AS tts_record_subtitle,
            tv.tts_text AS tts_record_text,
            tv.start_s AS tts_record_start_s,
@@ -174,19 +152,19 @@ export default async function LinesPage({
            ar.status AS auto_run_status,
            ar.selected_tts_id::text AS auto_run_tts_id,
            ar.error AS auto_run_error,
-           (artts.is_used IS TRUE) AS auto_run_locked
+           (artts.review_state = 'locked') AS auto_run_locked
     FROM lines l
     LEFT JOIN speakers s ON s.code = l.speaker
     LEFT JOIN regions rg ON rg.code = l.region
     LEFT JOIN line_meta m ON m.stem = l.stem
     LEFT JOIN LATERAL (
-      SELECT id, (is_used IS TRUE) AS is_used, subtitle_text, tts_text, start_s, end_s, dur_s, speech_s,
+      SELECT id, review_state, subtitle_text, tts_text, start_s, end_s, dur_s, speech_s,
              (raw_audio_path IS NOT NULL) AS has_raw,
              (voice_gpu_key = 'jp-lock' OR conversion_meta->>'pipeline' = 'jp-lock') AS jp_lock,
              (heard_at IS NULL) AS is_new
       FROM line_tts_versions
       WHERE stem = l.stem AND status = 'ready'
-      ORDER BY is_used DESC, (parent_tts_id IS NULL) DESC, id DESC
+      ORDER BY (review_state <> 'candidate') DESC, (parent_tts_id IS NULL) DESC, id DESC
       LIMIT 1
     ) tv ON true
     LEFT JOIN LATERAL (
@@ -202,35 +180,7 @@ export default async function LinesPage({
       LIMIT 1
     ) ar ON true
     LEFT JOIN line_tts_versions artts ON artts.id = ar.selected_tts_id
-    WHERE (${region} = '' OR l.region = ${region})
-      AND (${kind} = '' OR l.kind = ${kind})
-      AND (${mode} = '' OR m.dialogue_mode = ${mode})
-      AND (${speakers.length} = 0 OR l.speaker = ANY(${speakers}))
-      AND (
-        ${flag} = ''
-        OR (${flag} = 'fixed' AND (
-          COALESCE(m.skip_timing, false)
-          OR EXISTS (
-            SELECT 1 FROM line_tts_versions tf
-            WHERE tf.stem = l.stem AND tf.status = 'ready' AND tf.is_used
-          )
-        ))
-        OR (${flag} <> '' AND ${flag} <> 'fixed' AND (${flagExpr}) = ${flag})
-      )
-      AND (NOT ${onlyCast} OR EXISTS (SELECT 1 FROM cast_members cm WHERE cm.speaker = l.speaker))
-      AND (NOT ${onlyCast} OR l.kind = '对话')
-      AND (NOT ${modifiedOnly} OR EXISTS (
-        SELECT 1 FROM line_tts_versions tm
-        WHERE tm.stem = l.stem AND tm.status = 'ready'
-      ))
-      AND (${q} = '' OR l.stem ILIKE ${like}
-           OR s.name_zh ILIKE ${like} OR m.actor_zh ILIKE ${like} OR rg.name_zh ILIKE ${like}
-           OR l.filename ILIKE ${like} OR l.text_jp ILIKE ${like} OR l.text_zh ILIKE ${like} OR l.text_en ILIKE ${like}
-           OR EXISTS (
-             SELECT 1 FROM line_tts_versions tq
-             WHERE tq.stem = l.stem
-               AND (tq.tts_text ILIKE ${like} OR tq.subtitle_text ILIKE ${like})
-           ))
+    WHERE ${listWhere}
     ORDER BY COALESCE(rg.sort_order, 99999), l.stem
     LIMIT ${PAGE_SIZE} OFFSET ${offset}
   `;
@@ -302,6 +252,11 @@ export default async function LinesPage({
     u.set("page", String(p));
     return `/lines?${u.toString()}`;
   };
+  function reviewHref(stem: string) {
+    const context = new URLSearchParams(qs(page).split("?")[1]);
+    context.set("reviewSession", reviewSession);
+    return `/review/${encodeURIComponent(stem)}?${context}`;
+  }
   const netInitial = await getSpeechComparisons(rows
     .filter((r) => (r.kind === "对话" || r.kind === "talk") && r.dialogue_mode === "scene" && !r.subtitle_italic)
     .flatMap((r) => [{ stem: r.stem }, ...(r.tts_record_id == null ? [] : [{ stem: r.stem, id: String(r.tts_record_id) }])]));
@@ -331,7 +286,7 @@ export default async function LinesPage({
         autoRunError={r.auto_run_error}
         modified={r.tts_record_id == null ? null : {
           id: r.tts_record_id,
-          isUsed: r.tts_record_is_used === true,
+          reviewState: r.tts_record_review_state ?? "candidate",
           jpLock: r.tts_record_jp_lock === true,
           isNew: r.tts_record_is_new === true,
           timing: {
@@ -457,7 +412,7 @@ export default async function LinesPage({
         stems={rows.map((r) => r.stem)}
         initial={Object.fromEntries(rows.map((r) => [r.stem, {
           id: r.tts_record_id,
-          isUsed: r.tts_record_is_used === true,
+          reviewState: r.tts_record_review_state ?? "candidate",
           subtitle: r.tts_record_subtitle,
           ttsText: r.tts_record_text,
           count: r.tts_record_count,
@@ -476,8 +431,8 @@ export default async function LinesPage({
       <FilterStatsBar initial={healthStats} query={summaryQuery} active={flag} />
       <div className="space-y-3 md:hidden">
         {rows.map((r) => (
-          <ToneBox key={r.stem} stem={r.stem} flag={r.flag} className="rounded-lg border border-zinc-800 p-3">
-            <Link href={`/line/${encodeURIComponent(r.stem)}/`} title={r.stem} target="_blank" rel="noopener noreferrer" className="block break-all font-mono text-xs leading-5 text-sky-300">
+          <ToneBox key={r.stem} stem={r.stem} flag={r.flag} className={`rounded-lg border p-3 ${r.dialogue_mode === "scene" ? "border-emerald-500" : "border-zinc-800"}${r.subtitle_italic ? " italic" : ""}`}>
+            <Link href={reviewHref(r.stem)} title={r.stem} className="block break-all font-mono text-xs leading-5 text-sky-300">
               {r.stem}
             </Link>
             <div className={`mt-1 flex flex-wrap gap-x-3 gap-y-1 text-sm${r.subtitle_italic ? " italic" : ""}`}>
@@ -488,10 +443,11 @@ export default async function LinesPage({
               </span>
               <span className="text-zinc-500">{KIND_LABEL[r.kind ?? ""] ?? r.kind}</span>
               {r.kind === "对话" && r.dialogue_mode ? (
-                <span className={r.dialogue_mode === "field" ? "text-zinc-500" : "text-sky-400"}>{MODE_LABEL[r.dialogue_mode] ?? r.dialogue_mode}</span>
+                <span className={r.dialogue_mode === "scene" ? "inline-flex items-center rounded border border-emerald-600 bg-emerald-950 px-1.5 py-0.5 font-semibold text-emerald-300" : r.dialogue_mode === "field" ? "text-zinc-500" : "text-sky-400"}>{MODE_LABEL[r.dialogue_mode] ?? r.dialogue_mode}</span>
               ) : null}
             </div>
-            <div className="mt-2 space-y-1 text-sm">
+            <MobileListAudio stem={r.stem} initialId={r.tts_record_id}>
+            <div className="mt-2 space-y-1 text-xs leading-5">
               <div className="flex gap-2">
                 <span className="w-4 shrink-0 text-zinc-500">日</span>
                 <div className={r.text_jp ? `whitespace-pre-wrap text-zinc-200${r.subtitle_italic ? " italic" : ""}` : "text-zinc-600"}>{r.text_jp || "（无日文字幕）"}</div>
@@ -502,7 +458,7 @@ export default async function LinesPage({
               </div>
               <LiveTtsSubtitle stem={r.stem} initial={r.tts_record_subtitle} original={r.text_zh} />
             </div>
-            <div className="mt-3">{playFor(r)}</div>
+            </MobileListAudio>
             {r.auto_run_status === "running" ? (
               <div className="mt-3">
                 <AutoRunMark
@@ -511,8 +467,8 @@ export default async function LinesPage({
                 />
               </div>
             ) : null}
-            <Link href={`/line/${encodeURIComponent(r.stem)}/#tts`} target="_blank" rel="noopener noreferrer" className="mt-3 flex min-h-11 items-center justify-center rounded bg-sky-900 px-3 text-sm text-sky-100">
-              TTS / 详情
+            <Link href={reviewHref(r.stem)} className="mt-3 flex min-h-11 items-center justify-center rounded bg-sky-900 px-3 text-sm text-sky-100">
+              试听 / 审核
             </Link>
             <LiveTtsCount stem={r.stem} initial={r.tts_record_count} />
           </ToneBox>
@@ -535,6 +491,7 @@ export default async function LinesPage({
             {rows.map((r) => (
               <Fragment key={r.id}>
               <LiveTr
+                id={`line-${r.stem}`}
                 stem={r.stem}
                 flag={r.flag}
                 className="border-t border-zinc-800"
@@ -553,7 +510,7 @@ export default async function LinesPage({
                 <td rowSpan={2} className="align-middle px-3 py-2 text-zinc-500">
                   <div>{KIND_LABEL[r.kind ?? ""] ?? r.kind}</div>
                   {r.kind === "对话" && r.dialogue_mode ? (
-                    <div className={`mt-1 whitespace-nowrap text-[11px] ${r.dialogue_mode === "field" ? "text-zinc-500" : "text-sky-400"}`}>{MODE_LABEL[r.dialogue_mode] ?? r.dialogue_mode}</div>
+                    <div className={`mt-1 whitespace-nowrap text-[11px] ${r.dialogue_mode === "scene" ? "font-semibold text-emerald-400" : r.dialogue_mode === "field" ? "text-zinc-500" : "text-sky-400"}`}>{MODE_LABEL[r.dialogue_mode] ?? r.dialogue_mode}</div>
                   ) : null}
                 </td>
                 <td rowSpan={2} className="align-middle max-w-sm px-3 py-2 align-middle">
@@ -603,18 +560,18 @@ export default async function LinesPage({
         </span>
         {page < pages ? <Link href={qs(page + 1)} className="inline-flex min-h-11 items-center rounded bg-zinc-800 px-4">下一页</Link> : null}
         <PageJump page={page} pages={pages} hrefTemplate={qs("__PAGE__")} />
-        <AutoProcess
+        <div className="hidden md:block"><AutoProcess
           jobs={rows
             .filter(
               (r) =>
                 (r.flag === "warn" || r.flag === "err") &&
                 Boolean(r.text_zh?.trim()) &&
                 !r.skip_timing &&
-                r.tts_record_is_used !== true &&
+                r.tts_record_review_state !== "locked" &&
                 r.tts_record_jp_lock !== true,
             )
             .map((r) => ({ stem: r.stem, textZh: r.text_zh!.trim() }))}
-        />
+        /></div>
       </div>
     </main>
   );

@@ -8,14 +8,14 @@ import pyopenjtalk
 from fugashi import Tagger
 from mora_weights import weighted_mora
 
-BEAT_VERSION = "beats-v4-quotes-free"
+BEAT_VERSION = "beats-v5-short8-quotes-free"
 # 「比」= (日文拍 ÷ 中文拍) / NORMAL_JP_CN_RATIO。
 # 1.00 表示中文拍正好等于日文拍 / 下面这个常数。大于 1 中文偏短，小于 1 中文偏长。
 # 界面和改写目标读归一后的「比」。ratio 是还没除的日文拍 ÷ 中文拍，不能当成「比」。
 #
 # 再改这个常数时按下面的口径重算，不要按单句听感改。网站 beats.ts 的同名常数必须一起改。
 # 1. 样本只取主角（cast_members.role = 主角）里列表标成「确认」的原中文：
-#    skip_timing，且没有 is_used 的就绪音频。锁定过的新 TTS 不进样本，那些稿子是对着旧常数改的。
+#    skip_timing，且没有 review_state='locked' 的就绪音频。锁定过的新 TTS 不进样本，那些稿子是对着旧常数改的。
 # 2. 去掉日文正文 ≤5 字、没有中文、或两边读音拍数不一致的句子。只留场景演出、非斜体。
 # 3. 按中文汉字数取最长的 30%（句数四舍五入；字数相同按 stem）。权重取这些句子
 #    「日文拍 ÷ 中文拍」的中位数，不用平均数，也不要先按角色平均再取中位数。
@@ -122,7 +122,8 @@ def is_pause(ch: str) -> bool:
 
 
 def japanese_characters(text: str) -> int:
-    # <=5 means written body characters, NOT mora; punctuation cannot make a
+    # 少于8个日文正文字符时豁免比；不是摩拉数，标点和空白不计字数。
+    # Punctuation cannot make a
     # short interjection eligible. Long-vowel kana ー remains a body character.
     return sum(not ch.isspace() and not is_punctuation(ch) for ch in clean_text(text))
 
@@ -141,7 +142,7 @@ def punctuation_estimate(text: str) -> float:
 def japanese_metrics(text: str) -> dict:
     text = clean_text(text)
     chars = japanese_characters(text)
-    if chars <= 5:
+    if chars < 8:
         return {"status": "short" if chars else "missing", "characters": chars,
                 "mora": None, "weightedMora": None, "weightStatus": "uncalibrated",
                 "punctuation": None, "units": None,

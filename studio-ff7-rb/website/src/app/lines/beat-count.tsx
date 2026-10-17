@@ -83,7 +83,7 @@ function beatTooltip(result: BeatResult) {
     `比＝（日文拍数÷中文拍数）÷${NORMAL_JP_CN_RATIO.toFixed(2)}；1.00 为标准。大于1表示中文偏短，小于1表示中文偏长。`,
     "偏离1.00超过10%为警告、超过15%为异常（旧比例范围半宽的80% / 120%）。",
     "中文：汉字数 + 句中标点 × 1.5；整句末尾标点不计时，字幕换行不算句末。名字里的间隔点 ·・ 不算停顿。",
-    "日文正文（不含标点、空白）≤5字符不计算。",
+    "日文正文（不含标点、空白）<8字符不计算。",
     j.reading && `日文读音：${j.reading}`,
     j.mora != null && `日文 ${j.mora} 拍 + 标点 ${j.punctuation}；中文 ${result.cn.han} 字 + 标点 ${result.cn.punctuation}`,
     j.status === "review_reading" && `读音待核对：另一词典 ${j.alternateMora} 拍（${j.alternateReading}）${j.unknown.length ? `；未知：${j.unknown.join("、")}` : ""}`,
@@ -102,7 +102,7 @@ type Props = {
  * Locked/confirmed audio retains the number but is always treated as approved.
  * Row backgrounds and filtering come from the same core's cached source metrics.
  */
-export function BeatRatio({ jp, cn, enabled = false, approved = false }: Props & { approved?: boolean }) {
+export function BeatRatio({ jp, cn, enabled = false, approved = false, compact = false }: Props & { approved?: boolean; compact?: boolean }) {
   const { current, retry } = useBeats(jp, cn, enabled);
   if (!enabled) return null;
   const result = current?.result;
@@ -114,7 +114,7 @@ export function BeatRatio({ jp, cn, enabled = false, approved = false }: Props &
     {current?.error ? <button type="button" title={`${current.error}；点击重试`} onClick={retry} className="text-zinc-500">比 —</button>
       : <span className={color} title={result ? beatTooltip(result) : "计算中"}>
         比 {result ? (value == null ? "—" : value.toFixed(2)) : "…"}
-        {result?.jp.status === "short" ? "（≤5字）" : result?.jp.status === "review_reading" ? "（待核对）" : ""}
+        {!compact && (result?.jp.status === "short" ? "（<8字）" : result?.jp.status === "review_reading" ? "（待核对）" : "")}
       </span>}
   </>;
 }
@@ -128,7 +128,7 @@ export function BeatCount({ jp, cn, label = "拍数", enabled = false }: Props &
   if (!result) return <div className="mt-1 text-[11px] text-zinc-600">{label}计算中…</div>;
   const j = result.jp;
   return <div className="mt-1 text-[11px] text-zinc-400" title={beatTooltip(result)}>
-    {label}：日 {j.units ?? (j.status === "short" ? "≤5字，跳过" : "无文本，跳过")} · 中 {result.cn.units}
+    {label}：日 {j.units ?? (j.status === "short" ? "<8字，跳过" : "无文本，跳过")} · 中 {result.cn.units}
     {result.normalizedRatio != null ? ` · 比 ${result.normalizedRatio.toFixed(2)}` : ""}
     {j.status === "review_reading" ? " · 读音待核对" : ""}
   </div>;
@@ -141,6 +141,6 @@ export function BeatSuffix({ jp, cn, enabled = false, language }: Props & { lang
   if (current?.error) return <button type="button" onClick={retry} title="拍数暂不可用，点击重试" className="text-zinc-500">（—）</button>;
   const result = current?.result;
   const units = language === "jp" ? result?.jp.units : result?.cn.units;
-  const value = !result ? "…" : units == null ? "≤5字，跳过" : String(units);
+  const value = !result ? "…" : units == null ? "<8字，跳过" : String(units);
   return <span className="text-zinc-500" title={result ? beatTooltip(result) : "拍数计算中"}>（{value}）</span>;
 }

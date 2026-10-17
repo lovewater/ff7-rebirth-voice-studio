@@ -1,7 +1,7 @@
 export type BeatPair = { jp: string; cn: string };
 // Must match worker/mora_core.py. The recalibration procedure is commented
 // above NORMAL_JP_CN_RATIO there; change this number only by that procedure.
-export const BEAT_VERSION = "beats-v4-quotes-free";
+export const BEAT_VERSION = "beats-v5-short8-quotes-free";
 export const NORMAL_JP_CN_RATIO = 1.33;
 
 export type BeatResult = {
