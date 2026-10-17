@@ -29,6 +29,16 @@
 中文包：`game/sound-part/FF7Rebirth_CN_Voice_v1.3_for1.005_20260830.zip`
 已解压只读副本：`work/ref-cn-voice/`（`zzz_cn_voice_{a-g,vo,vo_full}_P`）。
 
+## 本仓库的用途与同步方式
+
+本仓库对应 `https://github.com/lovewater/ff7-rebirth-voice-studio.git`，用于集中保存、审阅和发布经过脱敏的配音工程源代码。本机目录名是 `git-voice-studio/`，位于实际工作工程根目录下；这里是独立 Git 仓库。
+
+当前网站、worker、Compose 和推理服务使用实际工作工程中各自原有的部署目录。此仓库是代码发布副本：修改这里不会自动更新线上服务，线上源码的修改也不会自动同步到这里。同步应逐文件审阅差异，保留本仓库的环境变量配置和脱敏处理；不要直接整目录覆盖，也不要递归收录本仓库自身。
+
+这里只提交源代码、数据库建表/迁移、文档和空白配置示例。真实 `.env`、密钥、实际部署地址、数据库内容、音频、游戏资源、模型权重、缓存和日志均不得提交。运行数据和服务部署仍由实际工作工程管理。
+
+提交前执行 `git add -A --dry-run` 核对清单，以及 `python3 scripts/check-source-safety.py --worktree`；暂存后执行 `python3 scripts/check-source-safety.py`，并核对本机实际凭证没有进入代码。提交使用中文日志，推送按用户授权执行。
+
 ## 工具怎么跑
 
 ```bash
