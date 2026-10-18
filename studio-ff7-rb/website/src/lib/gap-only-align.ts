@@ -5,9 +5,10 @@ type TwoParts = { start: number; end: number; gapStart: number; gapEnd: number }
 
 /** 只认“有声—一处长静音—有声”，不推断文字或语义，不调用 ASR。
  * 与试听实验相同：10ms窗内全部采样低于全局峰值5%，连续>=250ms算长静音。
+ * 编辑器默认250ms；自动两段线路入口显式传350ms，中文/拼装仍用250ms。
  * 首尾留白不算内部停顿；零处/多处内部停顿均不走高级对齐。
  */
-export function singleInternalGap({ samples, sampleRate }: Wave): TwoParts | null {
+export function singleInternalGap({ samples, sampleRate }: Wave, minimumSeconds = 0.25): TwoParts | null {
   if (!Number.isFinite(sampleRate) || sampleRate <= 0 || !samples.length) return null;
   let peak = 0;
   for (const sample of samples) {
@@ -20,7 +21,7 @@ export function singleInternalGap({ samples, sampleRate }: Wave): TwoParts | nul
   while (start < end && Math.abs(samples[start]) < threshold) start++;
   while (end > start && Math.abs(samples[end - 1]) < threshold) end--;
   const hop = Math.max(1, Math.round(sampleRate * 0.01));
-  const minimum = Math.ceil(sampleRate * 0.25);
+  const minimum = Math.ceil(sampleRate * minimumSeconds);
   let quietStart: number | null = null;
   const gaps: { start: number; end: number }[] = [];
   for (let at = Math.floor(start / hop) * hop; at < end + hop; at += hop) {

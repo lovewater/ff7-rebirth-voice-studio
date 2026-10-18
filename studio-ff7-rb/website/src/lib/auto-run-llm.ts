@@ -1,3 +1,5 @@
+import { performanceRewriteMessages } from "./auto-run-two-parts";
+import { withRewriteNumberHint } from "./rewrite-number-hint";
 import { resolvePromptMessages } from "./prompt-store";
 import type { PromptMessage } from "./prompt-template";
 import type { DurationRewritePolicy } from "./auto-run-script-policy";
@@ -15,6 +17,7 @@ export { loggedChatFetch, roundLlmInputText, CHAT_MODELS, chatModelForTask, chat
 /** 业务模板入口：按任务选择模型；可选参数只用于显式覆盖，模板和访问日志始终统一处理。 */
 export async function rewriteChat(messages: PromptMessage[], temperature = 0.2, task = "unspecified", httpTries = 3,
   options: { modelId?: ChatModelId; signal?: AbortSignal; stem?: string } = {}) {
+  messages = withRewriteNumberHint(performanceRewriteMessages(messages, task));
   return callChatCompletion({ messages: await resolvePromptMessages(messages), temperature, task,
     attempts: httpTries, modelId: options.modelId, signal: options.signal, stem: options.stem,
     promptKeys: [...new Set(messages.flatMap(message => message.promptKey ? [message.promptKey] : []))] });

@@ -1,3 +1,5 @@
+import { PartAssemblyError } from "./auto-run-part-alignment";
+import { countParts, repairTwoParts, setReference, rememberRhythm, rankByRhythm, inspectFinal, alignmentCheck, assemblePreserved, setMeaningAnchor, withTwoPartContext } from "./auto-run-two-parts";
 import { localTtsAsr, needsChineseCutAxis } from "./tts-local-asr";
 import { quickTimingPass, quickBeatPass, quickPickMessages, parseQuickPick, type QuickCandidate } from "./auto-run-quick";
 import { runFallbackFeedback, type FallbackTiming } from "./fallback-feedback";
@@ -78,6 +80,7 @@ type TtsClip = {
   audio_path: string | null;
   speech_pass: boolean | null;
   speech_score?: number | null;
+  conversion_meta?: { auto_run_gap_alignment?: import("./auto-run-part-alignment").PartAlignmentMeta } | null;
 };
 
 type RecoveryCandidate = FallbackQuality & {
@@ -300,7 +303,7 @@ async function generateClone(runId: string, stem: string, ttsText: string, extra
   const ids = (Array.isArray(data.ids) ? data.ids : data.id != null ? [data.id] : []).map(String);
   if (!ids.length) throw new Error("TTS 没有返回音频");
   const rows = await sql<TtsClip[]>`
-    SELECT id::text AS id, tts_text, spoken_text, dur_s, audio_path,
+    SELECT id::text AS id, tts_text, spoken_text, dur_s, audio_path, conversion_meta,
            (conversion_meta->>'speech_pass')::boolean AS speech_pass,
            (conversion_meta->>'speech_score')::float8 AS speech_score
     FROM line_tts_versions
@@ -693,7 +696,7 @@ export async function startAutoRun(stem: string, options: { forceGenerate?: bool
 }
 
 export async function executeAutoRun(runId: string, stem: string, options: { forceGenerate?: boolean } = {}) {
-  return withLlmMetrics(runId, stem, () => executeAutoRunMeasured(runId, stem, options));
+  return withLlmMetrics(runId, stem, () => withTwoPartContext(() => executeAutoRunMeasured(runId, stem, options)));
 }
 
 async function executeAutoRunMeasured(runId: string, stem: string, options: { forceGenerate?: boolean }) {
@@ -860,7 +863,10 @@ async function pickPassedClip(
 ) {
   // 字与跨度合格之后，读音疑点少的优先。节奏模型只能在同分候选中挑，
   // 不能以节奏更好为由，把疑点更多的一条选回来。
-  const best = fewestPronunciationIssues(passed);
+  // 仍然先比较读音疑点；只有同等疑点的候选才比较两节的时序。
+  const rhythmRank = rankByRhythm(fewestPronunciationIssues(passed));
+  const best = rhythmRank.items;
+  await log(runId,"two-parts-rhythm-rank","同等读音疑点下，按两段时长及第二节开口排序，50ms内留给模型择优",rhythmRank.metrics,"result");
   await log(runId, "quality", `保留读音疑点最少的 ${best.length} 条候选`, {
     candidates: passed.map((row) => ({ ttsId: row.clip.id, pronunciationNotes: row.pronunciationNotes })),
     shortlisted: best.map((row) => row.clip.id),
@@ -1093,6 +1099,7 @@ async function runCurrentScriptFallback(runId: string, line: LinePack, recovery:
  */
 
 async function runPerformance(runId: string, line: LinePack, recovery: RunRecovery) {
+  setMeaningAnchor({japanese:line.text_jp||"",chinese:line.text_zh||""});
   const rules = await lexicon();
   const jpPath = path.posix.join("jp", `${line.stem}.mp3`);
   const jpFile = await readFile(dataFile(jpPath));
@@ -1342,13 +1349,16 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
       onomatopoeia: plan.onomatopoeia, ambient: plan.ambient, speech: plan.speech,
       cnAsr, cnAudio: decoded, cnTtsText: candidate.clip.tts_text,
     });
-    const mixed = spliceMix(jpWav, ttsWav, plan, splice.pieces, line.jp_dur_s || ttsDurMs / 1000);
+    const mixed = assemblePreserved(jpWav, ttsWav, plan, splice.pieces, line.jp_dur_s || ttsDurMs / 1000, reference.audio);
     const id = await saveSplicedEdit(runId, line.stem, candidate.clip.id, mixed.audio, plan, splice.pieces, { fit: mixed.fit, boundaries: splice.boundaries, cutMethod: splice.cutMethod,
+      // 主音频也带上逐段正确/警告状态，不能只有子候选才知道为什么还存在余差。
+      ...(candidate.clip.conversion_meta?.auto_run_gap_alignment ? {auto_run_gap_alignment:candidate.clip.conversion_meta.auto_run_gap_alignment} : {}),
+      ...((requiredTwoParts || plan.enabled) ? {two_parts_assembly:{status:"correct",exact_length:true,target_seconds:mixed.fit.target,actual_seconds:mixed.fit.actual_s}} : {}),
       beat_policy: { enabled: !(ignoreBeat || durationBeatReference), exemption: durationBeatReference ? "actual-short" : slowLine ? "slow" : shortLine ? "short" : null, durationLine, slowLine, character_limit: characterPolicy ? characterLimit : null },
       ...(candidate.workflow ? { workflow: candidate.workflow, manual_review_required: true, quality_review: "manual-required" } : {}),
     });
     candidate.assembledId = id;
-    await log(runId, "splice", `选定正文 #${candidate.clip.id} 编辑成 #${id}，${plan.enabled ? "拼接并微调" : "整段拉伸"}，最终 ${mixed.fit.actual_s.toFixed(3)}s / 目标 ${mixed.fit.target.toFixed(3)}s`, {
+    await log(runId, "splice", `选定正文 #${candidate.clip.id} 编辑成 #${id}，${plan.enabled ? "保留情绪原声并调整间隔" : requiredTwoParts ? "逐段缩放后填充间隔" : "整段拉伸"}，最终 ${mixed.fit.actual_s.toFixed(3)}s / 目标 ${mixed.fit.target.toFixed(3)}s`, {
       sourceId: candidate.clip.id, splicedId: id, fit: mixed.fit, ok: mixed.ok,
       boundaries: splice.boundaries, cutMethod: splice.cutMethod,
     }, "result");
@@ -1371,6 +1381,17 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
     }
   };
   const failNotes: string[] = [];
+  // 两段正文线路硬门槛：参考恰好两节时，中文也必须两节。无论总时长/拍数多合适都不能绕过。
+  const requiredTwoParts = countParts(reference.audio, 0.35) === 2;
+  let rhythmAttempts = 0;
+  let originalPunctuationAttempts = 0;
+  // 警告可用稿跨额外一轮保留；不能因为尝试改善反而丢掉已有答案。
+  let warningRetryUsed = false;
+  const warningPool: Parameters<typeof pickPassedClip>[3] = [];
+  const meaningContext = await loadRewriteContext(line.stem, sourceScript, referenceTextJp);
+  setMeaningAnchor({japanese:line.text_jp||"",chinese:line.text_zh||"",earliestDialogue:meaningContext.before.slice(0,3).map(x=>({japanese:x.textJp,chinese:x.textZh}))});
+  setReference(reference.audio, referenceAsr, referenceTextJp, plan);
+  const rhythmHistory: unknown[] = [];
   const beatCache = new Map<string, { result: BeatResult | null; error: string | null }>();
   if (referenceBeats) beatCache.set(plan.cnTtsText, { result: referenceBeats, error: null });
   for (let round = 1; round <= AUTO_RUN_MAX_ROUNDS; round += 1) {
@@ -1393,6 +1414,10 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
       pronunciationNotes: string[];
     }[] = [];
     let textPassedCount = 0;
+    let rhythmMismatchCount = 0;
+    let rhythmCorrectCount = 0;
+    const punctuationEligible: unknown[] = [];
+    const rhythmResults: {ttsId:string;actualParts:number;script:string}[] = [];
     let beatOutOfBand = false;
     let shortCharactersOutOfBand = false;
     const reliableWaveforms: { referenceSeconds: number; candidateSeconds: number; script: string; ttsId: string }[] = [];
@@ -1404,10 +1429,25 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
       if (!clip.audio_path) continue;
       // 每个中文候选只用自部署Qwen校字，禁止逐候选调用收费Seed。
       // 中文时长来自实际保存音频波形，不伪造Qwen没有提供的字轴。
-      await log(runId, "asr", `#${clip.id} 送本地 Qwen 校字`);
-      const local = await asrQwen(clip);
+
       const candidateAudio = await audioToMonoWav(await readFile(dataFile(clip.audio_path)));
       const savedTiming = wavTiming(candidateAudio);
+      const actualParts = countParts(candidateAudio);
+      rememberRhythm(clip.id,candidateAudio,clip.spoken_text);
+      const partCheck=alignmentCheck(clip);
+      const twoPartsOk = (!requiredTwoParts || actualParts === 2) && partCheck.pass;
+      await log(runId,"two-parts-part-stretch","逐段85%～115%拉伸后检查300ms余差",{ttsId:clip.id,...partCheck},"result");
+      if (!twoPartsOk) rhythmMismatchCount++;
+      else rhythmCorrectCount++;
+      rhythmResults.push({ttsId:clip.id,actualParts,script:clip.spoken_text});
+      await log(runId, "two-parts-two-parts", "两段正文：两节结构硬检查", {ttsId:clip.id,required:requiredTwoParts?2:null,actual:actualParts,pass:twoPartsOk}, "result");
+      if(!twoPartsOk){
+        // 结构已经不合格，无需再付费校字/判比；保留音频用于最后待人工兜底。
+        candidate.reviewed=true;candidate.hardIssueCount=1000;candidate.reason="两节结构不符合";
+        continue;
+      }
+      await log(runId,"asr",`#${clip.id} 结构通过，送本地 Qwen 校字`);
+      const local=await asrQwen(clip);
       const asr = localTtsAsr(local.text, local.raw, savedTiming);
       candidate.asr = asr;
       await sql`UPDATE line_tts_versions SET conversion_meta = COALESCE(conversion_meta, '{}'::jsonb)
@@ -1473,7 +1513,9 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
         missing: judged.missing, extra: judged.extra, repeated: judged.repeated, unrelated: judged.unrelated,
         pronunciationNotes: judged.pronunciationNotes, pronunciationIssueCount: judged.pronunciationIssueCount,
       }, "think");
-      if (judged.ok) {
+      if(twoPartsOk && judged.ok && lengthOk && pace.ok && (!characters || characters.pass) && beatCheck.enabled && !beatCheck.pass)
+        punctuationEligible.push({ttsId:clip.id,script:clip.spoken_text,normalizedRatio:beatCheck.ratio,band:autoBeatBand(referenceTextJp)});
+      if (judged.ok && twoPartsOk) {
         textPassedCount += 1;
         reliableWaveforms.push({ referenceSeconds: promptTiming.speech, candidateSeconds: savedTiming.speech, script: clip.tts_text, ttsId: clip.id });
       }
@@ -1485,8 +1527,43 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
         ttsId: clip.id, enabled: enablePace, ok: pace.ok, ratio, metricVersion: comparison.metricVersion,
         referenceSpanMs: comparison.jpSpan?.span, candidateSpanMs: comparison.cnSpan?.span,
       }, "result");
-      if (judged.ok && lengthOk && pace.ok && beatCheck.pass && (!characters || characters.pass)) passed.push({ clip, asr, paceRatio: ratio, pronunciationNotes: judged.pronunciationNotes });
+      if (twoPartsOk && judged.ok && lengthOk && pace.ok && beatCheck.pass && (!characters || characters.pass)) passed.push({ clip, asr, paceRatio: ratio, pronunciationNotes: judged.pronunciationNotes });
       else failNotes.push(`${lengthFact}；字:${judged.ok ? "过" : judged.reason} 语速:${pace.ok ? "过" : (ratio?.toFixed(3) ?? "无")} 拍数比:${durationBeatReference ? "实测偏短仅参考" : ignoreBeat ? (slowLine ? "慢速不检查" : "短句不检查") : `${beatCheck.ratio?.toFixed(3) ?? "无"}(${beatCheck.pass ? "过" : "不过"})`}${characters ? ` 字数:${characters.characters}(${characters.pass ? "过" : "不过"}，要求${characters.min}–${characters.max})` : ""}`);
+    }
+    if(warningPool.length){
+      for(const saved of warningPool)if(!passed.some(x=>x.clip.id===saved.clip.id))passed.push(saved);
+    }
+    // 结构错误优先修标点，不让缺停顿造成的偏短进入增字反馈。
+    // 三条全不符合结构才改断句；结构重试独立计数，不能消耗三轮语义改写预算。
+    if (requiredTwoParts && !passed.length && rhythmMismatchCount > 0 && rhythmCorrectCount === 0) {
+      rhythmAttempts++;
+      rhythmHistory.push({attempt:rhythmAttempts,script,results:rhythmResults});
+      await log(runId,"two-parts-pause-retry","两节结构或逐段时长未过：优先调整断句，必要时据分段余差自然调整正文",{round,rhythmAttempts,rhythmMismatchCount,maxBatches:10},"result");
+      if(rhythmAttempts >= 10) break;
+      try {
+        script = await repairTwoParts({stem:line.stem,script,textJp:referenceTextJp,textEn:line.text_en||"",referenceAudio:reference.audio,round,history:rhythmHistory,allowRewrite:rhythmResults.some(x=>x.actualParts===2)});
+        subtitleDraft=script;
+        await log(runId,"two-parts-pause-script","模型返回新朗读稿；最终字幕另行整理",{round,script},"result");
+      } catch(error) {
+        await log(runId,"two-parts-pause-script","断句返回不合法，保留原稿重试TTS",{error:String(error)},"error");
+      }
+      round--;
+      continue;
+    }
+    // 原字、结构、校字和时长已合格但比未过，先给自然标点两次机会。
+    // 比仍按原区间淘汰，不把本轮实验变成放宽比值的实验。
+    if(requiredTwoParts && !passed.length && punctuationEligible.length && originalPunctuationAttempts < 2
+      && script.replace(/[\p{P}\p{Z}\s]/gu,"") === plan.cnTtsText.replace(/[\p{P}\p{Z}\s]/gu,"")) {
+      originalPunctuationAttempts++;
+      await log(runId,"two-parts-original-punctuation","原字已过校字、长度和两节检查，仅比未过：先尝试自然断句，不增删字",{attempt:originalPunctuationAttempts,evidence:punctuationEligible},"result");
+      try {
+        const previousScript=script;
+        const adjusted=await repairTwoParts({stem:line.stem,script,textJp:referenceTextJp,textEn:line.text_en||"",referenceAudio:reference.audio,round,history:rhythmHistory,
+          feedback:"目前已有恰好两节、校字与实测时长合格的音频，只有拍数比不合格。保留原字，只调整一个自然语义停顿或标点，尝试让比进入给定范围。不堆标点凑数，不增加新的长停顿。如果当前稿已经最自然、没有可行调整，可以原样返回。",beatEvidence:punctuationEligible});
+        await log(runId,"two-parts-original-punctuation","原字标点尝试返回",{before:previousScript,script:adjusted,attempt:originalPunctuationAttempts},"result");
+        rhythmHistory.push({type:"original-punctuation",script:adjusted,evidence:punctuationEligible});
+        if(adjusted!==previousScript){script=adjusted;round--;continue;}
+      } catch(error) {await log(runId,"two-parts-original-punctuation","标点尝试不可用，沿用原有改写规则",{error:String(error)},"error");}
     }
     if (!ignoreBeat && !durationBeatReference && clearlyShortSpeakingRound(reliableWaveforms)) {
       durationBeatReference = true;
@@ -1502,13 +1579,53 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
       const best = reliableWaveforms.reduce((a, b) => Math.abs(a.candidateSeconds-a.referenceSeconds) <= Math.abs(b.candidateSeconds-b.referenceSeconds) ? a : b);
       durationLine = durationRewritePolicy(best.script, best.referenceSeconds, best.candidateSeconds);
     }
+    if(passed.length && requiredTwoParts){
+      const correct=passed.filter(x=>alignmentCheck(x.clip).status==='correct');
+      if(correct.length)passed.splice(0,passed.length,...correct);
+      else if(!warningRetryUsed && passed.every(x=>alignmentCheck(x.clip).status==='warning')){
+        warningRetryUsed=true;warningPool.push(...passed);
+        await log(runId,"two-parts-warning-retry","仅有警告候选，保留现稿并额外请模型尝试一轮；失败仍选回可用稿",{ids:passed.map(x=>x.clip.id),extraRounds:1},"result");
+        try{
+          script=await repairTwoParts({stem:line.stem,script,textJp:referenceTextJp,textEn:line.text_en||"",referenceAudio:reference.audio,round,history:rhythmHistory,allowRewrite:true,
+            feedback:"本轮只有警告，没有正确的可用候选：85%～115%缩放后各段仍有余差但均不超过300ms。请再改善一轮，优先自然断句与节奏，必要时微调表达，但不改变原始日中字幕的中心意思，不为几毫秒硬塞字。"});
+          subtitleDraft=script;
+        }catch(error){await log(runId,"two-parts-warning-retry","警告改善改稿失败，保留现稿再合成一次",{error:String(error)},"error");}
+        round--;continue;
+      }
+    }
     if (passed.length) {
       const chosen = await pickPassedClip(runId, { ...line, text_jp: referenceTextJp }, referenceAsr, passed);
-      // 候选的校字、语速、拍数和 ±200ms 时长检查已在编辑前完成。
-      // 选定之后只编辑这一条：无拟声也整体拉伸；最终误差只记日志，不能倒过来重跑 TTS。
-      const selected = recovery.candidates.find((row) => row.clip.id === chosen.clip.id);
-      if (!selected || !recovery.assemble) throw new Error("选定候选缺少编辑上下文");
-      const splicedId = await recovery.assemble(selected);
+      const selected = recovery.candidates.find(row=>row.clip.id===chosen.clip.id);
+      if(!selected || !recovery.assemble)throw Error("选定候选缺少编辑上下文");
+      let splicedId:string;
+      try {
+        // 两段线路最终必须等长；不能拿候选阶段的300ms警告容差代替成品门槛。
+        splicedId=await recovery.assemble(selected);
+        const [finalRow]=await sql<{audio_path:string}[]>`SELECT audio_path FROM line_tts_versions WHERE id=${splicedId}`;
+        const finalAudio=await readFile(dataFile(finalRow.audio_path));
+        const finalCheck=inspectFinal(finalAudio,requiredTwoParts && !plan.enabled);
+        if(requiredTwoParts){
+          const got=decodeWavMono(finalAudio),original=decodeWavMono(jpWav);
+          const delta=got.samples.length/got.sampleRate-original.samples.length/original.sampleRate;
+          if(Math.abs(delta)>1/got.sampleRate || !finalCheck.pass)throw new PartAssemblyError("最终组装未等长或两段结构被破坏，升级错误");
+        }
+        await log(runId,"two-parts-final-structure","最终复查结构及等长硬门槛",finalCheck,"result");
+      } catch(error) {
+        if(!(error instanceof PartAssemblyError))throw error;
+        // 即便先前只是警告，拼不成等长成品也不可作为合格成品；清除可用池并反馈模型。
+        selected.hardIssueCount=1000;selected.reason=String(error);selected.assembledId=undefined;
+        const oldMeta=chosen.clip.conversion_meta?.auto_run_gap_alignment;
+        if(oldMeta){oldMeta.status="error";oldMeta.pass=false;oldMeta.reason=String(error);}
+        await sql`UPDATE line_tts_versions SET conversion_meta=COALESCE(conversion_meta,'{}'::jsonb)||${sql.json({speech_pass:false,two_parts_assembly:{status:"error",reason:String(error)},...(oldMeta?{auto_run_gap_alignment:oldMeta}:{})})} WHERE id=${chosen.clip.id}`;
+        warningPool.splice(0,warningPool.length);rhythmAttempts++;
+        await log(runId,"two-parts-assembly-error","无法组装等长：由警告/正确升级错误，重新请模型调整",{ttsId:chosen.clip.id,error:String(error),attempt:rhythmAttempts},"error");
+        if(rhythmAttempts>=10)break;
+        try{
+          script=await repairTwoParts({stem:line.stem,script:chosen.clip.spoken_text,textJp:referenceTextJp,textEn:line.text_en||"",referenceAudio:reference.audio,round,history:rhythmHistory,allowRewrite:true,feedback:"最终组装失败，已升级错误："+String(error)+(requiredTwoParts?"。必须保留中心意思、恰好两段正文并保留至少250ms中间静音，最终与日文原音频等长。请据各段测量调整断句或表达。":"。情绪原声已保留，本轮只调整正文，不能重新加入情绪词，也不能把单段正文硬拆成两段。必须让最终组装与日文原音频等长。")});
+          subtitleDraft=script;
+        }catch(rewriteError){await log(runId,"two-parts-assembly-rewrite","等长改稿失败，保留现稿继续尝试",{error:String(rewriteError)},"error");}
+        round--;continue;
+      }
       await finish(runId, "passed", null, splicedId);
       return;
     }
