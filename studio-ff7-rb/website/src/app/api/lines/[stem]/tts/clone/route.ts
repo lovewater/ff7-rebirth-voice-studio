@@ -7,6 +7,8 @@ import { applyPronunciations, type Pronunciation } from "@/lib/pronounce";
 import { DUR_OK_S, type Timing } from "@/lib/timing";
 import { ensurePromptTailSilence, limitWavEdgeSilence, gpuJsonAt, matchPeak10Loudness, normalizeScript, TTS_URLS, wavTiming, withTts } from "@/lib/tts-gpu";
 import { layoutSpeechWav, pickSpeechStretch } from "@/lib/wav-stretch";
+import { autoGapAlign } from "@/lib/auto-gap-align";
+import { audioToMonoWav } from "@/lib/audio-splice";
 import { resolvePromptRef } from "@/lib/prompt-refs";
 
 export const dynamic = "force-dynamic";
@@ -135,9 +137,15 @@ export async function POST(
     : (Number.isFinite(Number(body.alignStartS)) ? Number(body.alignStartS) : (syncToJp ? slotStart : null));
 
   let prompt: Buffer;
+  let gapReference: Buffer | null = null;
   let healthByUrl: Map<string, TtsHealth>;
   try {
     const input = await readFile(promptFile);
+    // 只改自动场景候选：用真实日文输入判断间隙，不把ensurePromptTailSilence补的静音算作目标。
+    // 快速原稿、完整正文及整句fallback均由autoRunId归属验证，不影响真人Zero-shot。
+    if (autoRunId != null && syncToJp && promptLang === "jp" && promptStem === stem) {
+      gapReference = await audioToMonoWav(input);
+    }
     // 自动运行已经删段、裁首尾并保留内部停顿，必须原样送入 TTS。
     // 这里不能再次补尾静音；其他未预处理的手动参考仍沿用原有准备流程。
     prompt = preservePromptAudio ? input : await ensurePromptTailSilence(input);
@@ -200,9 +208,12 @@ export async function POST(
 
     const referenceTiming = autoRunId != null && syncToJp && preservePromptAudio ? wavTiming(prompt) : null;
     const processed = results.map((row, index) => {
+      // 优先修间距再评判，避免“文字—空白—文字”因少停顿被误判成正文少字。
+      // 命中时跳过旧的候选拉伸/补槽，之后沿用裁首尾、校字、比和择优，不放宽任何门槛。
+      const gapAligned = gapReference ? autoGapAlign(row.audio, gapReference) : null;
       const got = target?.key === "speech" ? row.timing.speech : row.timing.duration;
-      const stretch = !feedbackRound && target ? pickSpeechStretch(got, target.value, DUR_OK_S, durationFactor) : 1;
-      const laidOut = syncToJp && !feedbackRound
+      const stretch = gapAligned ? 1 : !feedbackRound && target ? pickSpeechStretch(got, target.value, DUR_OK_S, durationFactor) : 1;
+      const laidOut = gapAligned ? gapAligned.audio : syncToJp && !feedbackRound
         ? Buffer.from(layoutSpeechWav(
             row.audio,
             { start: row.timing.start, end: row.timing.end },
@@ -227,6 +238,7 @@ export async function POST(
         score,
         pass,
         edgeTrim: edgeTrim?.meta ?? null,
+        gapAlignment: gapAligned?.meta ?? null,
         rawSpeech: row.timing.speech,
         rawDur: row.timing.duration,
         meta: row.generated.conversion_meta,
@@ -286,6 +298,7 @@ export async function POST(
         stretch_hi: Math.min(2, Math.round((durationFactor + 0.2) * 50) / 50),
         post_stretch: row.stretch,
         auto_run_edge_trim: row.edgeTrim,
+        auto_run_gap_alignment: row.gapAlignment,
         auto_run_reference: referenceTiming ? { start: referenceTiming.start, end: referenceTiming.end,
           dur: referenceTiming.duration, speech: referenceTiming.speech } : null,
         raw_speech_s: row.rawSpeech,
@@ -310,6 +323,12 @@ export async function POST(
           completed_at = now(), error = NULL
         WHERE id = ${record.id}
       `;
+      if (autoRunId != null && row.gapAlignment) {
+        await sql`INSERT INTO line_auto_run_events(run_id,step,level,message,payload)
+          VALUES(${autoRunId},'gap-align','result',
+            ${`#${record.id} 先调整首尾和内部间距，再检查时长；正文未拉伸、未增字`},
+            ${sql.json({ ttsId: String(record.id), referencePath: typeof body.promptPath === "string" ? body.promptPath : `${promptLang}/${promptStem}.mp3`, ...row.gapAlignment })})`;
+      }
       ids.push(record.id);
     }
     return NextResponse.json({ ok: true, id: ids[0], ids });
