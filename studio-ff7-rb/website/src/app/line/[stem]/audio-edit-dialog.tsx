@@ -2,10 +2,12 @@
 
 import { reportTtsPlayback } from "@/lib/tts-play-count";
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Button, ConfigProvider, Dropdown, theme } from "antd";
 import {
   alignToJpSlot,
+  bufferFromMono,
+  mixMono,
   deleteRange,
   encodeWavPcm16,
   insertClip,
@@ -16,6 +18,7 @@ import {
   stretchRange,
   wavToBase64,
 } from "@/lib/audio-edit";
+import { alignSingleGap, gapOnlyAlignmentPlan } from "@/lib/gap-only-align";
 import type { Timing } from "@/lib/timing";
 
 function niceStep(max: number) {
@@ -233,6 +236,15 @@ export function AudioEditDialog({ stem, sourceId, source = "tts", jp, onClose, o
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [busy, onClose]);
+
+  // 随当前编辑缓冲重新判断，撤销、删段或插入静音后菜单也同步变化。
+  // 使用已加载的完整日文波形，不能用数据库旧起止值或当前选区代替参考。
+  const gapAlignment = useMemo(() => {
+    if (!jpBuffer || !buffer) return null;
+    const reference = { samples: mixMono(jpBuffer), sampleRate: jpBuffer.sampleRate };
+    const edited = { samples: mixMono(buffer), sampleRate: buffer.sampleRate };
+    return gapOnlyAlignmentPlan(reference, edited) ? { reference, edited } : null;
+  }, [jpBuffer, buffer]);
 
   const scaleMax = Math.max(jpBuffer?.duration ?? 0, buffer?.duration ?? 0, 0.001);
   const jpPct = jpBuffer ? Math.min(100, (jpBuffer.duration / scaleMax) * 100) : 100;
@@ -513,6 +525,13 @@ export function AudioEditDialog({ stem, sourceId, source = "tts", jp, onClose, o
     withCtx((ctx, buf) => alignToJpSlot(ctx, buf, { start, dur }));
   }
 
+  function advancedAutoAlign() {
+    if (!gapAlignment) return;
+    withCtx((ctx, buf) => bufferFromMono(
+      ctx, alignSingleGap(gapAlignment.reference, gapAlignment.edited), buf.sampleRate,
+    ));
+  }
+
   async function save() {
     if (!buffer) return;
     setBusy("保存并计算净语速中…");
@@ -685,9 +704,17 @@ export function AudioEditDialog({ stem, sourceId, source = "tts", jp, onClose, o
               <Button title="时长÷1.05（按加速倍率缩短）" onClick={() => scale(1 / 1.05)}>缩短 5%</Button>
             </HoverDrop>
             <ConfigProvider theme={{ algorithm: theme.darkAlgorithm, token: { colorPrimary: "#0369a1" } }}>
-              <Button type="primary" onClick={autoAlign}>
-                自动对齐
-              </Button>
+              {gapAlignment ? (
+                <HoverDrop items={[{ key: "ordinary", label: "自动对齐" }]} onItem={autoAlign}>
+                  <Button type="primary" onClick={advancedAutoAlign}>
+                    高级自动对齐
+                  </Button>
+                </HoverDrop>
+              ) : (
+                <Button type="primary" onClick={autoAlign}>
+                  自动对齐
+                </Button>
+              )}
             </ConfigProvider>
             <Button onClick={undo}>撤销</Button>
             <span className="ml-auto inline-flex">
