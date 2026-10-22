@@ -4,17 +4,17 @@
 
 | 节点 | 地址 | GPU | 精度 | Compose |
 |---|---|---|---|---|
-| **RTX 5080 官方 2.0（正式）** | `https://inference.example.invalid` | RTX 5080 | **bf16-autocast** | `tts-official/docker-compose.yml` |
-| inference-host 官方 2.0（已清掉，不再用于 TTS） | 已删 | RTX 2080 Ti 22GB | — | `tts-official/docker-compose.sis.yml` |
+| **inference-host 官方 2.0 × 2（正式）** | 网站经 Nginx `http://studio-host:8810`；后端 `inference-host:8811/8812` | GPU1/GPU2 各 22GB 2080 Ti | **fp16-autocast** | `tts-official/docker-compose.sis.yml` |
+| RTX 5080（已退出 TTS） | 已停 | RTX 5080 | — | `tts-official/docker-compose.yml` 仅历史参考 |
 | inference-host IndexTTS 2.5（已清掉） | 已删 | 同一张 22GB | — | 旧定义已从 `docker-compose.yml` 去掉，该文件现在只有 ASR |
-| inference-host（兼容性实验，已停） | 按需启动后 `https://inference.example.invalid` | Radeon AI PRO R9700 32GiB / gfx1201 | bf16-native + eager/math 兼容路径 | `docker-compose.amd.yml` |
+| amd-inference-host（兼容性实验，已停） | 按需启动后 `http://amd-inference-host:8100` | Radeon AI PRO R9700 32GiB / gfx1201 | bf16-native + eager/math 兼容路径 | `docker-compose.amd.yml` |
 
 正式节点是官方 IndexTTS 2.0，说明见 [`tts-official/README.md`](../tts-official/README.md)。下面这份文档其余部分讲的是已停掉的 2.5 兼容接口（`:8000`）。2.5 权重仍在：
 
 - 模型 revision：`c39ce5ba981572cb187443877ff559dfb246ce63`
 - 权重目录：`/srv/models/IndexTeam/IndexTTS-2.5`
 
-正式制作走 5080 的官方 IndexTTS 2.0（`INFERENCE_HOST`，BF16 autocast）。2026-10-15 起 inference-host 整机关机，它的 22GB 2080 Ti 不再用于 TTS。旧 `docker-compose.yml` 的 2.5 服务在关机前已停，不要再 `up` 它。2080 Ti 没有原生 BF16；若以后在这种卡上重开 2.0，用 `INDEXTTS_PRECISION=fp16`（权重保持 FP32，autocast 用 FP16）。不要依赖 `torch.cuda.is_bf16_supported()` 的默认结果判断 2080 Ti，因为新版 PyTorch 可能把 BF16 模拟也报告为支持。
+正式制作走 Nginx 统一入口，后端为 inference-host 双卡官方 2.0。旧 2.5 服务仍停用，不要启动旧接口。2080 Ti 没有原生 BF16，2.0 使用 `INDEXTTS_PRECISION=fp16`（权重 FP32、autocast FP16）；不要用 PyTorch 的模拟 BF16 支持判断代替原生能力。
 
 ## 项目里的用法
 
@@ -151,16 +151,6 @@ Path("result.wav").write_bytes(base64.b64decode(synth.json()["audio_wav_b64"]))
 
 ## 修订台路由约束
 
-`studio-ff7-rb/docker-compose.yml` 的正式 `TTS_URL` 是 5080 上的官方 IndexTTS 2.0。若容器里还指着 inference-host，按下面重载环境（不必 `--build`）：
-
-```bash
-cd /srv/ff7-rebirth-voice-studio/studio-ff7-rb
-unset TTS_URL TTS_URLS
-docker compose --profile full up -d --force-recreate website
-docker inspect studio-ff7-rb-website-1 \
-  --format '{{range .Config.Env}}{{println .}}{{end}}' | grep '^TTS_URL'
-```
-
-输出应显示 `TTS_URL=https://inference.example.invalid`，`TTS_URLS` 里也不要再出现 `INFERENCE_HOST`。健康检查应返回 `model_version` 2.0、`precision` `bf16-autocast`、设备 RTX 5080。
+正式入口为 `http://tts-proxy:8810`，后端为双卡官方 IndexTTS 2.0 FP16。真实后端地址只填在本地 `.env`，迁移和扩容不改网站。模板渲染、热加载及代理重建步骤见 [代理说明](../../studio-ff7-rb/tts-proxy/README.md)。
 
 CampPlus 向量也可以用于说话人确认，例如区分赤红 XIII 深嗓和纳纳基真声。

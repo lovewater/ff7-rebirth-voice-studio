@@ -32,7 +32,7 @@ docker compose up -d                              # 库 + pgAdmin
 docker compose --profile full up -d --build website
 ```
 
-正式 TTS 是 `https://inference.example.invalid`，跑在 RTX 5080 上，官方 IndexTTS 2.0 zero-shot clone，BF16 autocast。inference-host 不再用于 TTS（镜像和权重已清）。逐句接口为 `/api/lines/[stem]/tts/clone`，默认使用当前句日文音频做 zero-clone prompt；无需 ready embedding，不经过 Seed-VC。部署说明见 `../gpu/tts-official/README.md`。
+正式 TTS 经 Compose 内 `http://tts-proxy:8810` 统一入口访问，Nginx 分配到两张 22GB 2080 Ti，各一份官方 IndexTTS 2.0 FP16。真实后端只在本机 `.env` 中配置，网站不保存 GPU 地址或数量。代理部署见 `tts-proxy/README.md`。逐句接口为 `/api/lines/[stem]/tts/clone`，默认使用当前句日文音频做 zero-clone prompt；无需 ready embedding，不经过 Seed-VC。部署说明见 `../gpu/tts-official/README.md`。
 
 台词关联统一使用 `lines.stem`（已有唯一索引），无依赖 lines.id 的外键；017 迁移补齐所有关联外键缺少的索引。编辑中文 TTS 台词时，在不改变意思的前提下让中日发音音节数尽量接近；中文标点会形成停顿，估算时可按每个标点约 1–2 个音节时长考虑，避免依靠明显拉伸语速补偿大幅差异。
 

@@ -1,0 +1,9 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+ENV PYTHONUNBUFFERED=1 PYTHONPATH=/opt/index-tts
+COPY upstream /opt/index-tts
+COPY patches /tmp/patches
+RUN python3 /tmp/patches/apply_patch.py
+COPY app /app
+WORKDIR /opt/index-tts
+CMD ["python", "/app/main.py"]

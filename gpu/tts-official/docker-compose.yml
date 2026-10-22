@@ -1,11 +1,13 @@
 services:
   official-api:
+    # Historical deployment; production uses docker-compose.sis.yml.
+    profiles: ["legacy-5080"]
     build:
       context: .
       args:
         BASE_IMAGE: ${INDEXTTS_BASE_IMAGE:?配置含 CUDA 和 IndexTTS 依赖的基础镜像}
     container_name: ff7-indextts-official
-    restart: unless-stopped
+    restart: "no"
     ports:
       - "8810:8810"
     environment:

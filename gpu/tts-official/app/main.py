@@ -875,7 +875,8 @@ def synth_clone(req: CloneRequest):
     active_model = _active_model()
     with tempfile.TemporaryDirectory(prefix="ff7clone_") as tmp_name:
         tmp = Path(tmp_name)
-        prompt_path = _ensure_trailing_silence(_decode_audio(req.prompt_audio, tmp / "prompt.audio"))
+        # Preserve the production reference exactly; the website prepares silence.
+        prompt_path = _decode_audio(req.prompt_audio, tmp / "prompt.audio")
         # timbre_path = _concat_reference_audios(refs, tmp / "timbre.wav")
         out = tmp / f"{uuid.uuid4().hex}.wav"
         common_kwargs = dict(

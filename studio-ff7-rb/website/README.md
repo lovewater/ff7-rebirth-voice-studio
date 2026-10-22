@@ -37,7 +37,7 @@ npm run dev
 
 人物页制作 embedding 时可切换“日文 / 中文”音源。开关决定送入 IndexTTS 的实际参考 MP3、时长排序和总长；每个版本在数据库及 manifest 中记录 `source_lang`，版本卡也会标明“日文音源”或“中文音源”。已选原音频总时长不得超过 15 秒，页面、网站 API 和 GPU 解码后均校验；不再自动拆分超长选择。保存 `speaker.pt`、`reference.wav`、拼接音源 `source.wav`、manifest 与中日示例。示例中文也经过 Seed-VC 修复。
 
-默认 TTS 节点为 `https://inference.example.invalid`（RTX 5080、官方 IndexTTS 2.0）。inference-host 不再做 TTS。可用环境变量 `TTS_URL` 临时覆盖；版本记录会保存实际节点和 `/health` 返回的源码、精度及设备信息。
+默认 TTS 入口为 Compose 内 `http://tts-proxy:8810`。Nginx 管理双卡后端，网站只设置统一入口；主机开发时配置主机可访问的代理地址。后端迁移或扩容无需修改网站代码。部署见 `../tts-proxy/README.md`。
 
 逐句接口为 `/api/lines/[stem]/tts`；单条采用/删除为 `/api/lines/[stem]/tts/[id]`；试听为 `/api/lines/[stem]/tts/[id]/audio`。
 

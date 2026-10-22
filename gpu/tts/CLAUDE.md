@@ -4,13 +4,13 @@
 
 ## 正式环境
 
-修订台的正式 TTS 不在这里。正式节点是 5080 上的官方 IndexTTS 2.0：`https://inference.example.invalid`。inference-host 不再用于 TTS，镜像和权重已删。本文件其余部分是已停用的 IndexTTS 2.5（`:8000`）维护记录。
+修订台的正式 TTS 不在这里。正式节点是 inference-host 双 22GB 2080 Ti 上的官方 IndexTTS 2.0（FP16），网站只访问 Nginx `http://tts-proxy:8810`（局域网 `studio-host:8810`）。后端为 `inference-host:8811/8812`，见 `../tts-official/README.md`。本文件其余部分是已停用的 IndexTTS 2.5（`:8000`）维护记录。
 
 关机前的 2.5 节点：
 
 - 主机：`inference-host`（TTS 已清掉）
 - 地址：`https://inference.example.invalid`
-- GPU：RTX 2080 Ti（22GB 那张，不再用于 TTS）
+- GPU：RTX 2080 Ti（历史 2.5；现已改跑官方 2.0）
 - 精度：`INDEXTTS_PRECISION=fp16`，健康检查应显示 `fp16-autocast`
 - 代码：`/srv/ff7-rebirth-voice-studio/gpu`
 - 权重：`/srv/models/IndexTeam/IndexTTS-2.5`

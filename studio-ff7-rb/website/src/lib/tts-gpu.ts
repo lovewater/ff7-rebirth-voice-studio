@@ -1,18 +1,24 @@
 import { spawn } from "node:child_process";
 import { ALIGN_SILENCE_RATIO } from "./auto-run-rules";
 
-export const TTS_URL = process.env.TTS_URL ?? "";
-// 只剩 5080。inference-host 的 22GB 2080 Ti 不再做 TTS。三次试音都走这一张，同时只跑一条。
+export const TTS_URL = process.env.TTS_URL ?? "http://tts-proxy:8810";
+// Website limits outstanding requests; Nginx alone manages GPU hosts and capacity.
 export const TTS_URLS = (process.env.TTS_URLS ?? TTS_URL)
   .split(",").map((item) => item.trim()).filter(Boolean);
 const ttsInflight = new Map<string, number>();
 const ttsWaiters: Array<() => void> = [];
+const configuredTtsLimit = Number(process.env.TTS_MAX_INFLIGHT ?? 8);
+const ttsMaxInflight = Number.isSafeInteger(configuredTtsLimit) && configuredTtsLimit > 0
+  ? configuredTtsLimit : 8;
 
 export async function withTts<T>(urls: string[], fn: (url: string) => Promise<T>): Promise<T> {
   const allowed = urls.length ? urls : TTS_URLS;
   if (!allowed.length) throw new Error("请配置 TTS_URL 或 TTS_URLS");
   for (;;) {
-    const url = allowed.find((item) => (ttsInflight.get(item) ?? 0) < 1);
+    const inflight = [...ttsInflight.values()].reduce((sum, count) => sum + count, 0);
+    const url = inflight < ttsMaxInflight
+      ? [...allowed].sort((a, b) => (ttsInflight.get(a) ?? 0) - (ttsInflight.get(b) ?? 0))[0]
+      : undefined;
     if (url) {
       ttsInflight.set(url, (ttsInflight.get(url) ?? 0) + 1);
       try {
