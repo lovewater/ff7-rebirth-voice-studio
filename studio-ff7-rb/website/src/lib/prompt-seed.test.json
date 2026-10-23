@@ -442,8 +442,8 @@
   {
     "key": "rhythm-pick.system",
     "name": "合格音频节奏择优 · 系统指令",
-    "desc": "校字、时长、语速均合格后择优。日文为实际参考的Seed字轴，中文为本地Qwen识别及波形跨度，不提供中文字轴。不得声称听过音频或编造中文字时序。",
-    "prompt": "你在为《最终幻想7 重生》场景演出挑一条中文配音。这些候选字和语速都已经过关。\n日文提供Seed-ASR字轴，中文提供本地Qwen识别和波形起止；中文没有字轴。根据实际提供的文字、波形跨度和长度比择优，不编造中文字轴或声学听感。\n只输出 JSON：ttsId 必须是候选里的 id；reason 一句话；thinking 判断过程。",
+    "desc": "校字、时长、语速均合格后择优。日文为实际参考的Seed字轴，中文为本地Qwen识别及波形跨度，不提供中文字轴。不得声称听过音频或编造中文字时序。 同等读音疑点、时序合格的候选同时考虑前后文连贯性，邻句优先锁定中文，本句仍以原中文为准。",
+    "prompt": "你在为《最终幻想7 重生》场景演出挑一条中文配音。这些候选字和语速都已经过关。\n日文提供Seed-ASR字轴，中文提供本地Qwen识别和波形起止；中文没有字轴。根据实际提供的文字、波形跨度和长度比择优，不编造中文字轴或声学听感。\n上下文连贯性也是最终择优维度：结合 context.before/after 的前后句，比较候选能否自然接话、回答问题，称谓、指代、文字语气和信息衔接是否一致。邻句中文有锁定稿时以锁定稿为主，originalTextZh 仅供核对；本句原始中文仍是 context.originalChinese，不继承本句旧锁定稿。上下文只能帮助理解，不能补造剧情、改变本句原意或放宽读音、时长、分段等已执行的门槛。只在给定候选中综合节奏与上下文连贯性择优，不为几毫秒优势牺牲接话自然度；缺少上下文时明确按现有证据判断。reason 简要说明选择的节奏依据和上下文依据（或上下文不足）。不得从文字臆测实际声线、情绪表现或其他未提供的声学听感。\n只输出 JSON：ttsId 必须是候选里的 id；reason 一句话；thinking 判断过程。",
     "enable": true,
     "role": "system",
     "placeholders": [],
@@ -452,7 +452,7 @@
   {
     "key": "rhythm-pick.input",
     "name": "合格音频节奏择优 · 结构化输入",
-    "desc": "校字、时长、语速均合格后择优。日文为实际参考的Seed字轴，中文为本地Qwen识别及波形跨度，不提供中文字轴。不得声称听过音频或编造中文字时序。\ninput_json包含textJp、jp和candidates；中文asr为provider=qwen-local的识别结果及waveform起止/总长（毫秒），paceRatio为中文/日文波形跨度比。",
+    "desc": "校字、时长、语速均合格后择优。日文为实际参考的Seed字轴，中文为本地Qwen识别及波形跨度，不提供中文字轴。不得声称听过音频或编造中文字时序。\ninput_json包含textJp、jp和candidates；中文asr为provider=qwen-local的识别结果及waveform起止/总长（毫秒），paceRatio为中文/日文波形跨度比。 context 包含本句原中文、说话人和同一演出的前后句；邻句textZh优先锁定稿，originalTextZh保留原字幕。",
     "prompt": "{{input_json}}",
     "enable": true,
     "role": "user",

@@ -1,3 +1,4 @@
+import { rhythmPickMessages, type RhythmPickInput } from "./rhythm-pick-context";
 import type { VolcengineCallOptions } from "./llm-volcengine";
 import { withTranslationReferences } from "./rewrite-translation-reference";
 import { currentLlmStem } from "./llm-metrics";
@@ -48,48 +49,8 @@ export async function judgeSpokenText(input: SpokenReviewInput) {
   };
 }
 
-export async function pickRhythm(input: {
-  textJp: string;
-  jp: SeedAsrResult;
-  candidates: {
-    ttsId: string;
-    spoken: string;
-    asr: SeedAsrResult;
-    paceRatio: number | null;
-  }[];
-}) {
-  const { content, thinking } = await rewriteChat([
-    {
-      role: "system",
-      content: [
-        "你在为《最终幻想7 重生》场景演出挑一条中文配音。这些候选字和语速都已经过关。",
-        "日文提供Seed-ASR字轴，中文提供本地Qwen识别和波形起止；中文没有字轴。根据实际提供的文字、波形跨度和长度比择优，不编造中文字轴或声学听感。",
-        "只输出 JSON：ttsId 必须是候选里的 id；reason 一句话；thinking 判断过程。",
-      ].join("\n"), promptKey: "rhythm-pick.system", promptValues: {},
-    },
-    {
-      role: "user",
-      content: JSON.stringify({
-        textJp: input.textJp,
-        jp: { text: input.jp.text, utterances: input.jp.raw },
-        candidates: input.candidates.map((row) => ({
-          ttsId: row.ttsId,
-          spoken: row.spoken,
-          paceRatio: row.paceRatio,
-          asr: row.asr.raw,
-        })),
-      }), promptKey: "rhythm-pick.input", promptValues: {"input_json": JSON.stringify({
-        textJp: input.textJp,
-        jp: { text: input.jp.text, utterances: input.jp.raw },
-        candidates: input.candidates.map((row) => ({
-          ttsId: row.ttsId,
-          spoken: row.spoken,
-          paceRatio: row.paceRatio,
-          asr: row.asr.raw,
-        })),
-      })},
-    },
-  ], 0.2, "rhythm-pick");
+export async function pickRhythm(input: RhythmPickInput) {
+  const { content, thinking } = await rewriteChat(rhythmPickMessages(input), 0.2, "rhythm-pick");
   const parsed = parseJsonObject(content);
   const ttsId = typeof parsed.ttsId === "string" || typeof parsed.ttsId === "number"
     ? String(parsed.ttsId)

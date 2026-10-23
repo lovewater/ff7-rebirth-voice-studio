@@ -631,9 +631,8 @@ function asShowLine(row: ContextRow): ShowLine {
   };
 }
 
-async function loadRewriteContext(stem: string, current: string, referenceTextJp?: string) {
+async function loadDialogueContext(stem: string) {
   // 前后文优先使用人工锁定后的中文；本句仍从游戏原字幕开始。
-  // current 仅为本次运行内部产生的清理稿/改写稿。
   const rows = await sql<ContextRow[]>`
     SELECT l.stem, COALESCE(s.name_zh, l.speaker) AS name_zh,
            l.text_jp, l.text_en, l.text_zh, l.subtitle_italic, l.kind,
@@ -655,12 +654,18 @@ async function loadRewriteContext(stem: string, current: string, referenceTextJp
   const currentIndex = rows.findIndex((row) => row.stem === stem);
   const line = rows[currentIndex];
   if (!line || !line.text_jp || !line.text_zh) throw new Error("缺少日文或中文原文，无法改稿");
-  const beats = await countBeats(referenceTextJp ?? line.text_jp, current);
   const inside = (row: ContextRow) => row.dialogue_mode === "scene"
     && samePerformance(line.dialogue_evidence, row.dialogue_evidence)
     && !!(row.text_jp || row.text_zh);
   const context = takeUntilBoundary(rows, currentIndex, inside, 8);
-  return { line, beats, before: context.before.map(asShowLine), after: context.after.map(asShowLine) };
+  return { line, before: context.before.map(asShowLine), after: context.after.map(asShowLine) };
+}
+
+async function loadRewriteContext(stem: string, current: string, referenceTextJp?: string) {
+  // current 仅为本次运行内部产生的清理稿/改写稿。
+  const context = await loadDialogueContext(stem);
+  const beats = await countBeats(referenceTextJp ?? context.line.text_jp!, current);
+  return { ...context, beats };
 }
 
 export async function latestAutoRun(stem: string) {
@@ -940,7 +945,13 @@ async function pickPassedClip(
     await log(runId, "pick", `选 #${best[0].clip.id}`, { ttsId: best[0].clip.id }, "result");
     return best[0];
   }
+  // 最终择优时重新读邻句锁定状态，避免使用数分钟前改稿阶段的旧上下文。
+  const context = await loadDialogueContext(line.stem);
+  await log(runId, "pick-context", "最终择优同时考虑前后文连贯性；邻句优先锁定中文，本句沿用原中文", {
+    before: context.before, after: context.after, originalChinese: line.text_zh || "",
+  }, "result");
   const picked = await pickRhythm({
+    context: { speaker: line.speaker || "未知", originalChinese: line.text_zh || "", before: context.before, after: context.after },
     textJp: line.text_jp || "",
     jp: jpAsr,
     candidates: best.map((row) => ({
