@@ -97,6 +97,33 @@ export class PartAssemblyError extends Error {
     readonly code = "TWO_PARTS_ASSEMBLY_ERROR";
     constructor(message: string) { super(message); this.name = "PartAssemblyError"; }
 }
+/** 已有停顿可能装在正文切片里，先暴露真实>=250ms静音，不能凭字轴造空白。 */
+function exposeBodySilences(segments: splice.MixSeg[]): splice.MixSeg[] {
+    return segments.flatMap(segment => {
+        if (segment.kind !== "speech") return [segment];
+        const { wave, chunks } = speechChunks(segment.buffer, .25);
+        if (!chunks.length) return [segment];
+        const gaps = [
+            { start: 0, end: chunks[0].start },
+            ...chunks.slice(1).map((chunk, index) => ({ start: chunks[index].end, end: chunk.start })),
+            { start: chunks[chunks.length - 1].end, end: wave.samples.length },
+        ].filter(gap => gap.end - gap.start >= Math.ceil(.25 * wave.sampleRate));
+        if (!gaps.length) return [segment];
+        const parts: splice.MixSeg[] = [];
+        let cursor = 0;
+        const append = (end: number, kind: string) => {
+            if (end <= cursor) return;
+            const duration = (end - cursor) / wave.sampleRate;
+            parts.push({ ...segment, id: `${segment.id}-${parts.length}`, kind, duration,
+                buffer: splice.sliceWav(segment.buffer, cursor / wave.sampleRate, end / wave.sampleRate),
+                ...(kind === "silence" ? { origDuration: duration } : {}) });
+            cursor = end;
+        };
+        for (const gap of gaps) { append(gap.start, "speech"); append(gap.end, "silence"); }
+        append(wave.samples.length, "speech");
+        return parts;
+    });
+}
 export function assembleParts(jp: Buffer, cn: Buffer, plan: OnoPlan, pieces: SplicePiece[], _target: number, reference: Buffer, splitRegions: SpeechSplitRegion[] = []) {
     const jd = decodeWavMono(jp), target = jd.samples.length / jd.sampleRate;
     if (!plan.enabled) {
@@ -109,7 +136,11 @@ export function assembleParts(jp: Buffer, cn: Buffer, plan: OnoPlan, pieces: Spl
         return {audio:encodeWavMono(cd.sampleRate,layout.samples),ok:true,fit:{version:ref.length===3?'three-parts-exact-assembly-v1':'two-parts-exact-assembly-v1',target,actual_s:actual,wav_s:actual,scales:{body:1},splitRegions:outputRegions,middle_s:layout.gapsSeconds.reduce((n,x)=>n+x,0),gaps_s:layout.gapsSeconds}};
     }
     // 拟声原声与正文均不缩放；剩余总时长只分配给两者之间的静音。
-    const segments = splice.mixSegments(jp, cn, plan, pieces, target);
+    let segments = splice.mixSegments(jp, cn, plan, pieces, target);
+    // 无独立静音段且偏短时，仍可使用正文内部已有的真实留白补齐。
+    if (!segments.some(x => x.kind === "silence")
+        && segments.reduce((sum, x) => sum + x.duration, 0) < target - ASSEMBLY_LENGTH_TOLERANCE_S)
+        segments = exposeBodySilences(segments);
     const silences = segments.filter(x => x.kind === 'silence');
     const actual = segments.reduce((sum, x) => sum + x.duration, 0);
     const oldSilence = silences.reduce((sum, x) => sum + x.duration, 0), wanted = oldSilence + target - actual;

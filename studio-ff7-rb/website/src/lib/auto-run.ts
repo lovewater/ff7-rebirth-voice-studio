@@ -1,3 +1,4 @@
+import { applyAmbientPolicy, IGNORED_AMBIENT_MAX_MS, type AmbientPolicyPlan } from "./ambient-policy";
 import { rewriteContextChinese } from "./rewrite-context";
 import { currentChatModel } from "./llm-model-context";
 import { captureAutoRunOutcome, runAutoRunModels } from "./auto-run-model-policy";
@@ -1272,7 +1273,7 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
   await log(runId, "ono", "模型切拟声和正文");
   // 自动场景与手动 TTS 稿独立。去拟声从原中文字幕出发，后续只延续本轮生成的稿。
   const sourceScript = line.text_zh || "";
-  let plan: OnoPlan;
+  let plan: AmbientPolicyPlan;
   try {
     plan = await planOnomatopoeia({
       textJp: missingFragment?.japaneseBody ?? (line.text_jp || ""),
@@ -1315,7 +1316,10 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
   // 仅保留有零缺文与独立切口证据的环境音，其他未对应声音不得自动删除。
   plan.ambient = segments.filter((span)=>span.kind==="ambient");
   // 已确认的短拟声也必须从参考中删除，不再用时长门槛绕过清理。
-  plan.enabled = plan.onomatopoeia.length > 0 || plan.ambient.length > 0;
+  plan = applyAmbientPolicy(plan);
+  if (plan.ignoredAmbient?.length) await log(runId, "ambient-ignored",
+    "环境音不超过450ms：忽略分类，原音仍整句用于克隆，不删除或单独拼回；情绪拟声不受影响",
+    { maxDurationMs: IGNORED_AMBIENT_MAX_MS, ignoredAmbient: plan.ignoredAmbient }, "result");
   const unknown = segments.filter((span) => span.kind === "unknown");
   const segmentLabels = { speech: "正文", silence: "停顿", onomatopoeia: "拟声", ambient:"环境音", unknown: "待判定声音" };
   await log(runId, "segment", segments.map((span) => (

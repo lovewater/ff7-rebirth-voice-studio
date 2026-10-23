@@ -191,3 +191,18 @@ test('分段改稿注入程序分档；择优任务不收到改稿指令',async(
   assert.ok(!rhythm.performanceRewriteMessages([{role:'system',content:'择优'}],'rhythm-pick').some(m=>m.content.includes('程序裁定')));
  });
 });
+
+test('保留原声与正文相接且偏短时，暴露正文内真实静音补齐，不重生成或缩放声音',()=>{
+ const tone=seconds=>encode(24000,new Float32Array(Math.round(seconds*24000)).fill(.35));
+ const jp=wav(.5,.5,1,24000,0,0),cn=wav(.3,.4,.3,24000,0,0);
+ const emotion={enabled:true,onomatopoeia:[{startMs:0,endMs:500}],ambient:[],speech:[{startMs:500,endMs:2000}]};
+ const pieces=[{src:'ono',index:0},{src:'tts',startMs:0,endMs:null}];
+ const result=assembleParts(jp,cn,emotion,pieces,2,jp);
+ assert.equal(decode(result.audio).samples.length,decode(jp).samples.length);
+ assert.equal(result.fit.segments.find(x=>x.kind==='onomatopoeia').packed_s,.5);
+ const silence=result.fit.segments.filter(x=>x.kind==='silence').reduce((n,x)=>n+x.packed_s,0);
+ assert.ok(Math.abs(silence-.9)<.02);assert.ok(Object.values(result.fit.scales).every(x=>x===1));
+ // 没有真实停顿时不凭空塞停顿；过长时也不截声音。
+ assert.throws(()=>assembleParts(jp,tone(1),emotion,pieces,2,jp),PartAssemblyError);
+ assert.throws(()=>assembleParts(jp,tone(1.6),emotion,pieces,2,jp),PartAssemblyError);
+});
