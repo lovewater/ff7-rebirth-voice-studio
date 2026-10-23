@@ -1,11 +1,20 @@
-import { PartAssemblyError } from "./auto-run-part-alignment";
-import { countParts, repairTwoParts, setReference, rememberRhythm, rankByRhythm, inspectFinal, alignmentCheck, assemblePreserved, setMeaningAnchor, withTwoPartContext } from "./auto-run-two-parts";
+import { currentChatModel } from "./llm-model-context";
+import { captureAutoRunOutcome, runAutoRunModels } from "./auto-run-model-policy";
+import { polishAcceptedScript } from "./accepted-script-polish";
+import type { AttemptInput } from "./attempt-feedback";
+import { measureNormalSpeedBeatExemption } from "./normal-speed-beat";
+import { pureShushuOriginal } from "./shushu-emotion";
+import { isSingingLine, singingSubtitle } from "./singing-original";
+import { allowBodyRewrite, bodyScriptPolicy, validBodyScript, type BodyScriptPolicy } from "./two-part-script";
+import { TWO_PART_JP_GAP_S } from "./gap-only-align";
+import { alignZeroShotParts, PartAssemblyError, ASSEMBLY_LENGTH_TOLERANCE_S, assemblyLengthPass } from "./auto-run-part-alignment";
+import { rememberAttempt, hasAttemptHistory, countParts, repairTwoParts, setReference, rememberRhythm, rankByRhythm, inspectFinal, alignmentCheck, assemblePreserved, setMeaningAnchor, setBodyScriptPolicy, withTwoPartContext } from "./auto-run-two-parts";
 import { localTtsAsr, needsChineseCutAxis } from "./tts-local-asr";
-import { quickTimingPass, quickBeatPass, quickPickMessages, parseQuickPick, type QuickCandidate } from "./auto-run-quick";
+import { quickTimingPass, quickBeatPass } from "./auto-run-quick";
 import { runFallbackFeedback, type FallbackTiming } from "./fallback-feedback";
 import { classifyMissingJapaneseSubtitle } from "./missing-jp-subtitle";
 import { finalizeAutoSubtitle } from "./final-auto-subtitle";
-import { missingAudioBlocks, classifyMissingFragment, recoverMissingFragment } from "./missing-fragment";
+import { missingAudioBlocks, classifyMissingFragment, recoverMissingFragment, recoverCompleteTextAmbient, internalAmbientEvidence } from "./missing-fragment";
 import { RewriteDraftUnavailableError } from "./auto-run-rewrite-retry";
 import { addSubtitleQuotes, needsSubtitleQuotes } from "./subtitle-quotes";
 import { withLlmMetrics, llmMetricsForRun } from "./llm-metrics";
@@ -17,22 +26,22 @@ import { AUTO_RUN_MAX_ROUNDS, LENGTH_SLACK_S, PACE_LOW, PACE_HIGH, isPerformance
 import { judgeSpokenText, pickRhythm, rewriteFive, showEvidenceLabel, rewriteChat, parseJsonObject } from "./auto-run-llm";
 import { planOnomatopoeia, planSpliceAfterTts, type OnoPlan, type SplicePiece } from "./auto-run-onomatopoeia";
 import { audioToMonoWav, spliceMix } from "./audio-splice";
-import { alignJapaneseClauses, refinePerformanceBoundaries, segmentPerformanceAudio, measurePerformanceSpeakingTime, SEGMENT_MIN_SILENCE_MS, SEGMENT_SILENCE_RATIO } from "./speech-segmentation";
+import { splitAsrClausesByOriginalPauses, alignJapaneseClauses, refinePerformanceBoundaries, segmentPerformanceAudio, measurePerformanceSpeakingTime, SEGMENT_MIN_SILENCE_MS, SEGMENT_SILENCE_RATIO } from "./speech-segmentation";
 import { qwenAsr } from "./qwen-asr";
 import { packSeedAsr, seedAsr, seedCacheMatches, seedLangForPath, unpackSeedAsr, type SeedAsrLang, type SeedAsrResult, type SeedAsrStored } from "./seed-asr";
 import { normalizeScript, parseWavPcm16, wavTiming } from "./tts-gpu";
 import { buildSpeechReference } from "./tts-reference";
-import { clearlyShortSpeakingRound, durationRewritePolicy, type DurationRewritePolicy, autoBeatBand, checkAutoBeat, shortPerformancePolicy, checkShortCharacters, shortRewriteTarget, shortAudioDirection, spokenCharacters, slowPerformancePolicy, performanceCharacterLimit } from "./auto-run-script-policy";
+import { clearlyShortSpeakingRound, durationRewritePolicy, type DurationRewritePolicy, checkChineseSpeakingSpeed, autoBeatBand, checkAutoBeat, shortPerformancePolicy, checkShortCharacters, shortAudioDirection, SHORT_NET_SPEAKING_TOLERANCE_MS, spokenCharacters, slowPerformancePolicy, slowMoraTargetConflict, performanceCharacterLimit } from "./auto-run-script-policy";
 import { autoRunSubtitle, twoLineSubtitle, subtitleRestorePlan, restorePerformanceSubtitle } from "./auto-run-subtitle";
 import { createAutoRunSubtitleFormatter } from "./auto-run-subtitle-format";
 import { closestFallback, type FallbackQuality } from "./auto-run-fallback";
 import { fewestPronunciationIssues, shouldRetrySameScript } from "./spoken-text-review";
-import { compareAudioSpans, compareWaveformSpans, recognizedSpeechSpan } from "./auto-run-comparison";
+import { compareAudioSpans, compareNetSpeakingTimes, recognizedSpeechSpan } from "./auto-run-comparison";
 import { decodeWavMono } from "./wav-stretch";
 import { measureSavedEdit } from "./speech-metrics-store";
 import { samePerformance, takeUntilBoundary, type ShowEvidence, type ShowLine } from "./rewrite-prompt";
 import type { Pronunciation } from "./pronounce";
-import { NORMAL_JP_CN_RATIO, type BeatResult } from "./beats";
+import { type BeatResult } from "./beats";
 
 export type AutoRunEvent = {
   id: string;
@@ -80,7 +89,7 @@ type TtsClip = {
   audio_path: string | null;
   speech_pass: boolean | null;
   speech_score?: number | null;
-  conversion_meta?: { auto_run_gap_alignment?: import("./auto-run-part-alignment").PartAlignmentMeta } | null;
+  conversion_meta?: { two_parts_regroup?: import("./two-part-regroup").RegroupMeta; auto_run_gap_alignment?: import("./auto-run-part-alignment").PartAlignmentMeta } | null;
 };
 
 type RecoveryCandidate = FallbackQuality & {
@@ -90,10 +99,22 @@ type RecoveryCandidate = FallbackQuality & {
   reason?: string;
   assembledId?: string;
   workflow?: "current-script-fallback";
+  normalSpeedBeat?: ReturnType<typeof measureNormalSpeedBeatExemption>;
+  attemptInput?: AttemptInput;
 };
+/** 将真正保存的音频与稿件绑定，历史说明与日志使用同一个计算结果。 */
+async function saveAttemptFeedback(runId: string, candidate: RecoveryCandidate, input: AttemptInput) {
+  candidate.attemptInput = structuredClone(input);
+  const feedback = rememberAttempt(input);
+  if (!feedback) return;
+  await sql`UPDATE line_tts_versions SET conversion_meta=COALESCE(conversion_meta,'{}'::jsonb)||${sql.json({attempt_feedback:feedback})} WHERE id=${candidate.clip.id}`;
+  await log(runId,"attempt-feedback",`#${candidate.clip.id} ${feedback.status}：${feedback.issues.map(i=>i.reason).join("")||feedback.missingChecks.join("；")||"本轮检查通过"}`,feedback,"result");
+}
 type RunRecovery = {
   candidates: RecoveryCandidate[];
   assemble?: (candidate: RecoveryCandidate) => Promise<string>;
+  /** 润色前已完成最终验收的成品，仅用于润色失败时恢复。 */
+  acceptedFinalId?: string;
 };
 
 function rememberCandidates(recovery: RunRecovery, clips: TtsClip[], target: number | null) {
@@ -112,6 +133,17 @@ function rememberCandidates(recovery: RunRecovery, clips: TtsClip[], target: num
  * 改稿请求重试耗尽应进入 runCurrentScriptFallback，不能直接走这里省掉三次合成。
  */
 async function finishWithFallback(runId: string, recovery: RunRecovery, reason: string) {
+  if (recovery.acceptedFinalId) {
+    const [accepted] = await sql<{id:string}[]>`SELECT id::text FROM line_tts_versions WHERE id=${recovery.acceptedFinalId} AND status='ready' AND review_state<>'abnormal'`;
+    if (accepted) {
+      await log(runId,"polish-fallback","润色复验未通过，保留原合格成品",{id:accepted.id,reason},"result");
+      await finish(runId,"passed",null,accepted.id);
+      return;
+    }
+    // 人工否决或删除原合格成品后，不能再经正文缓存把同一成品选回来。
+    await finish(runId,"failed",`${reason}；原合格成品已不存在或被标为人工异常`,null);
+    return;
+  }
   // 人工在生成过程中标坏的候选不能再被兜底择优选回。
   const rejected = recovery.candidates.length ? await sql<{ id: string }[]>`
     SELECT id::text FROM line_tts_versions
@@ -132,8 +164,9 @@ async function finishWithFallback(runId: string, recovery: RunRecovery, reason: 
       }, "error");
     }
   }
-  await log(runId, "fallback", `保留最接近要求的 #${selected}，待复核`, {
+  await log(runId, "fallback", `校字硬伤最少的候选中，按实际时长选择 #${selected}，待复核`, {
     sourceId: chosen.clip.id, selectedId: selected, reason,
+    selection: "reviewed-text-then-duration", beatUsedForSelection: false, paceRatioUsedForSelection: false,
     candidates: recovery.candidates.map((row) => ({
       ttsId: row.clip.id, reviewed: row.reviewed, hardIssueCount: row.hardIssueCount,
       pronunciationIssueCount: row.pronunciationIssueCount, paceDeviation: row.paceDeviation, beatDeviation: row.beatDeviation,
@@ -167,6 +200,7 @@ async function log(runId: string | number, step: string, message: string, payloa
 }
 
 async function finish(runId: string | number, status: "passed" | "failed", error: string | null, selected: string | null, options: { preserveSubtitle?: boolean } = {}) {
+  if (captureAutoRunOutcome({ status, error, selected, options })) return;
   // 最终选定音频后才独立整理字幕引号，不给五稿改写增加任务，也不反向影响音频。
   if (selected != null && !options.preserveSubtitle) {
     const [caption] = await sql<{ japanese: string; chinese: string }[]>`
@@ -191,9 +225,28 @@ async function finish(runId: string | number, status: "passed" | "failed", error
       }
     }
   }
+  // 只在最终选定成品上重新排版；候选/TTS分行不再决定字幕切口。
+  // 本地函数在事务外排版，且不覆盖期间被人工锁定或改过的字幕。
+  if (selected != null && !options.preserveSubtitle) {
+    const [caption] = await sql<{text:string; source:string}[]>`
+      SELECT COALESCE(NULLIF(v.subtitle_text,''),l.text_zh,'') AS text, v.tts_text AS source
+      FROM line_tts_versions v JOIN lines l ON l.stem=v.stem
+      WHERE v.id=${selected} AND v.status='ready' AND v.review_state='candidate'`;
+    if (caption?.text) try {
+      const formatted = await createAutoRunSubtitleFormatter({ reflow: true })(caption.text, caption.source);
+      if (formatted !== caption.text) {
+        const changed = await sql`UPDATE line_tts_versions v SET subtitle_text=${formatted} FROM lines l
+          WHERE v.id=${selected} AND v.stem=l.stem AND v.review_state='candidate'
+            AND COALESCE(NULLIF(v.subtitle_text,''),l.text_zh,'')=${caption.text} RETURNING v.id`;
+        await log(runId,"subtitle-reflow",changed.length ? "最终字幕脱离TTS分段，按本地规则重新排版" : "字幕已由人工更新，保留现有内容",{ttsId:selected,before:caption.text,after:formatted},"result");
+      }
+    } catch (error) {
+      await log(runId,"subtitle-reflow","本地排版失败，保留成品及现有字幕待核对",{ttsId:selected,error:String(error)},"error");
+    }
+  }
   // 聚合包括最终补引号的所有 LLM 请求；无调用则两个字段都为 NULL。
   // 与父子归组同事务写入，候选字段清空，始终只有最终主音频承担这次工作流用量。
-  const metrics = llmMetricsForRun(runId);
+  const metrics = await llmMetricsForRun(runId);
   await sql.begin(async (tx) => {
     const [run] = await tx<{ stem: string }[]>`SELECT stem FROM line_auto_runs WHERE id = ${runId} FOR UPDATE`;
     if (!run) throw new Error("自动运行记录不存在");
@@ -214,13 +267,13 @@ async function finish(runId: string | number, status: "passed" | "failed", error
       // 最后一道字幕整理：拟声已恢复、引号已补完；短两行合一后，再忽略标点比较原文。
       // 即使仍有两行，只要正文没变就清空覆盖字幕；绝不写tts_text/spoken_text或子音频。
       // 直接日文原声线路明确保留附带字幕，不走自动改稿收尾。
-      if (!options.preserveSubtitle && output.subtitle_text) {
+      if (!options.preserveSubtitle && output.review_state === "candidate" && output.subtitle_text) {
         const cleaned = finalizeAutoSubtitle(output.subtitle_text, output.original_subtitle);
         if (cleaned !== output.subtitle_text) {
           await tx`UPDATE line_tts_versions SET subtitle_text = ${cleaned} WHERE id = ${selected}`;
           await tx`
             INSERT INTO line_auto_run_events (run_id, step, level, message, payload)
-            VALUES (${runId}, 'subtitle-finalize', 'result', ${cleaned === null ? "最终字幕仅标点或排版不同，沿用原字幕，不标改" : "最终字幕整理：短行合并、换行处逗号句号清理，保留TTS朗读稿中的停顿"},
+            VALUES (${runId}, 'subtitle-finalize', 'result', ${cleaned === null ? "最终字幕正文与原字幕一致，沿用原字幕，不标改" : "最终字幕整理：短行合并、换行处逗号句号清理，保留TTS朗读稿中的停顿"},
               ${tx.json({ ttsId: String(selected), before: output.subtitle_text, after: cleaned, original: output.original_subtitle })})
           `;
           output.subtitle_text = cleaned;
@@ -264,7 +317,7 @@ async function loadLine(stem: string) {
 }
 
 async function lexicon() {
-  return sql<Pronunciation[]>`SELECT id, src, dst, note FROM pronunciations ORDER BY id`;
+  return sql<Pronunciation[]>`SELECT id, src, dst, note FROM pronunciations WHERE usage = 'reference' ORDER BY id`;
 }
 
 async function generateClone(runId: string, stem: string, ttsText: string, extra?: {
@@ -274,6 +327,7 @@ async function generateClone(runId: string, stem: string, ttsText: string, extra
   preservePromptAudio?: boolean;
   manualTemplates?: boolean;
   feedbackRound?: boolean;
+  bodyScriptPolicy?: BodyScriptPolicy;
   subtitleText?: string | null;
   finalSubtitleText?: string | null;
 }) {
@@ -285,6 +339,7 @@ async function generateClone(runId: string, stem: string, ttsText: string, extra
     body: JSON.stringify({
       ttsText,
       autoRunId: runId,
+      autoRunModel: currentChatModel() ?? "primary",
       subtitleText: extra?.subtitleText,
       finalSubtitleText: extra?.finalSubtitleText,
       promptLang: "jp",
@@ -296,6 +351,7 @@ async function generateClone(runId: string, stem: string, ttsText: string, extra
       preservePromptAudio: extra?.preservePromptAudio,
       manualTemplates: extra?.manualTemplates,
       feedbackRound: extra?.feedbackRound,
+      bodyScriptPolicy: extra?.bodyScriptPolicy,
     }),
   });
   const data = await response.json() as { error?: string; ids?: unknown; id?: unknown };
@@ -420,7 +476,7 @@ async function saveSplicedEdit(runId: string, stem: string, sourceId: string, au
       tts_text: string;
       spoken_text: string;
       subtitle_text: string | null;
-      conversion_meta: { auto_run_final_subtitle?: string | null } | null;
+      conversion_meta: { auto_run_final_subtitle?: string | null; body_comparison?: Record<string,string|number|boolean|null>; chinese_speed?: Record<string,string|number|boolean|null> } | null;
       jp_text_snapshot: string | null;
       game_zh_text_snapshot: string | null;
       duration_factor: number;
@@ -462,6 +518,8 @@ async function saveSplicedEdit(runId: string, stem: string, sourceId: string, au
     ambient: plan.ambient,
     speech: plan.speech,
     splice: pieces,
+    ...(source.conversion_meta?.body_comparison ? {body_comparison:source.conversion_meta.body_comparison} : {}),
+    ...(source.conversion_meta?.chinese_speed ? {chinese_speed:source.conversion_meta.chinese_speed} : {}),
     ...extra,
   };
   await sql`
@@ -507,7 +565,7 @@ async function quickReferenceSpeechSeconds(stem: string) {
 
 async function saveAutoRunComparison(
   runId: string, clip: TtsClip, reference: SeedAsrStored, candidate: Pick<SeedAsrStored, "path" | "sha256">,
-  comparison: ReturnType<typeof compareAudioSpans>, referenceTextJp: string, candidateText: string,
+  comparison: ReturnType<typeof compareAudioSpans> & Partial<Pick<ReturnType<typeof compareNetSpeakingTimes>, "deltaMs" | "absoluteToleranceMs" | "ratioPass" | "absolutePass">>, referenceTextJp: string, candidateText: string,
   beat: { result: BeatResult | null; error: string | null },
 ) {
   if (!clip.audio_path) throw new Error("候选音频路径缺失，不能保存比较结果");
@@ -535,6 +593,18 @@ async function saveAutoRunComparison(
       beat_version = excluded.beat_version, normalized_beat_ratio = excluded.normalized_beat_ratio,
       beat_result = excluded.beat_result, beat_error = excluded.beat_error, measured_at = now()
   `;
+  // 同一值同时存到候选JSON，组装主音频原样继承正文比较值，不把情绪/静音重算进去。
+  const bodyComparison={metric_version:comparison.metricVersion,reference_audio_path:reference.path,
+    reference_text_jp:referenceTextJp,candidate_text_cn:candidateText,
+    reference_net_ms:comparison.jpSpan?.span??null,candidate_net_ms:comparison.cnSpan?.span??null,
+    net_duration_ratio:comparison.spanRatio,net_duration_delta_ms:comparison.deltaMs??null,
+    net_duration_absolute_tolerance_ms:comparison.absoluteToleranceMs??0,net_duration_pass:comparison.pass,
+    net_duration_ratio_pass:comparison.ratioPass??null,net_duration_absolute_pass:comparison.absolutePass??null,normalized_beat_ratio:beat.result?.normalizedRatio??null,
+    candidate_spoken_units:beat.result?.cn.han??null,
+    candidate_units_per_second:comparison.metricVersion==="waveform-cn-net-over-jp-clean-reference-v1" && comparison.cnSpan?.span && beat.result?.cn.han!=null ? beat.result.cn.han/(comparison.cnSpan.span/1000) : null,
+    beat_version:beat.result?.version??null,scope:"emotion-free-body",silence_removed:comparison.metricVersion==="waveform-cn-net-over-jp-clean-reference-v1"};
+  await sql`UPDATE line_tts_versions SET conversion_meta=COALESCE(conversion_meta,'{}'::jsonb)||${sql.json({body_comparison:bodyComparison})} WHERE id=${clip.id}`;
+
 }
 
 type ContextRow = {
@@ -587,12 +657,13 @@ async function loadRewriteContext(stem: string, current: string, referenceTextJp
 }
 
 export async function latestAutoRun(stem: string) {
+  // SELECT把id转为text供JSON使用；排序必须显式用表内数字ID，避免888排在1781前。
   const [run] = await sql<AutoRunRow[]>`
     SELECT id::text, stem, kind, status, selected_tts_id::text, error,
            created_at, updated_at, completed_at,
            reference_audio_path, reference_text_jp, reference_seed_asr
     FROM line_auto_runs WHERE stem = ${stem}
-    ORDER BY id DESC LIMIT 1
+    ORDER BY line_auto_runs.id DESC LIMIT 1
   `;
   if (!run) return { run: null, events: [] as AutoRunEvent[], comparisons: [] };
   const events = await sql<AutoRunEvent[]>`
@@ -696,7 +767,20 @@ export async function startAutoRun(stem: string, options: { forceGenerate?: bool
 }
 
 export async function executeAutoRun(runId: string, stem: string, options: { forceGenerate?: boolean } = {}) {
-  return withLlmMetrics(runId, stem, () => withTwoPartContext(() => executeAutoRunMeasured(runId, stem, options)));
+  return withLlmMetrics(runId, stem, () => runAutoRunModels({
+    attempt: () => withTwoPartContext(() => executeAutoRunMeasured(runId, stem, options)),
+    event: async (model, outcome) => {
+      const name = model === "primary" ? "官方GLM 5.3" : "火山DeepSeek V4.1 Flash";
+      await log(runId, outcome ? "model-stage-result" : "model-stage-start",
+        outcome ? `${name}整轮${outcome.status === "passed" ? "通过" : "未通过"}` : `开始${name}完整工作流`,
+        { model, ...(outcome ?? {}) }, "result");
+    },
+    canFallback: async () => {
+      const locked = await sql`SELECT id FROM line_tts_versions WHERE stem=${stem} AND review_state='locked' LIMIT 1`;
+      return locked.length === 0;
+    },
+    finish: outcome => finish(runId, outcome.status, outcome.error, outcome.selected, outcome.options),
+  }));
 }
 
 async function executeAutoRunMeasured(runId: string, stem: string, options: { forceGenerate?: boolean }) {
@@ -708,17 +792,30 @@ async function executeAutoRunMeasured(runId: string, stem: string, options: { fo
   const recovery: RunRecovery = { candidates: [] };
   try {
     const kind = isPerformanceMode(line.dialogue_mode) ? "performance" : "casual";
-    await log(runId, "start", kind === "performance" ? "表演句，走 Seed-ASR" : "非表演句，走 Qwen-ASR", {
+    await log(runId, "start", isSingingLine(line) ? "含音符的唱歌：直接锁定日文原声，歌词加括号，不调用ASR/TTS/模型" : pureShushuOriginal(line.text_jp, line.text_zh) ? "纯咻情绪，直接保留日文，不调用ASR/TTS/模型" : kind === "performance" ? "表演句，走 Seed-ASR" : "非表演句，走 Qwen-ASR", {
       kind, dialogue_mode: line.dialogue_mode,
     });
     await log(runId, "script-source", "从原中文字幕开始，不读取手动 TTS 文字或历史修订稿", {
       source: "lines.text_zh", text: line.text_zh,
     }, "result");
-    // 前置快速线路只生成原稿整句；有合格答案就结束，不再走切分/改稿/拼接。
-    // 它失败或没有合格候选只表示快速通道未命中，必须继续原有完整处理。
-    if (options.forceGenerate) await log(runId, "quick-skip", "强制生成：跳过已有结果和原稿快速通道，直接进入完整模型流程", { forceGenerate: true });
-    else if (await runQuickOriginal(runId, line, recovery)) return;
-    if (kind === "performance") await runPerformance(runId, line, recovery);
+    // 已取消“原稿先直接Zero-shot试一批，表面合格就结束”的快速通道。
+    // 无论手点或批量、force=true或false，只要真正创建了任务，立即进入对应完整工作流。
+    // force仅影响启动前的历史/已有结果跳过规则；普通批处理的去重和人工锁保护仍保留。
+    await log(runId, "workflow-entry", "自动运行直接进入完整工作流，不再先试原稿快速生成", { forceGenerate: options.forceGenerate === true, kind }, "result");
+    if (isSingingLine(line)) {
+      // 音符是唱歌标记，不限台词类型，优先于拟声/正常/降级工作流：完整日文直接锁定，歌词套括号。
+      // 必须在任何Seed/Qwen/模型/TTS调用之前处理，forceGenerate=true也不能重新合成唱歌。
+      await runOriginalJapanese(runId,line,await readFile(dataFile(`jp/${line.stem}.mp3`)),{
+        workflow:"singing-original",reason:"原台词含音符：唱歌不处理，直接锁定完整日文原声",lock:true,
+      });
+    }
+    else if (pureShushuOriginal(line.text_jp, line.text_zh)) {
+      // 必须在任何Seed/Qwen/模型调用之前分流；不看ASR，也不把原声再合成一遍。
+      await runOriginalJapanese(runId,line,await readFile(dataFile(`jp/${line.stem}.mp3`)),{
+        workflow:"xiu-only-original",reason:"整句为重复咻／シュ情绪，纯机械保留完整日文原声及中文字幕",
+      });
+    }
+    else if (kind === "performance") await runPerformance(runId, line, recovery);
     else await runCasual(runId, line, recovery);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -727,82 +824,42 @@ async function executeAutoRunMeasured(runId: string, stem: string, options: { fo
   }
 }
 
-/** 自动运行前置：没有任何已就绪修改音频才批量Zero-shot，参数与手动原稿生成一致。
- * 已锁日文不属于修改音频；失败/未完成记录也不能阻止首次生成。已有成品则跳过，
- * 不重新认领旧工作流或改变旧音频父子关系。合格输出仅待选，绝不自动锁定。
- * 程序检查完整起止/总长/发声跨度和比后，Qwen识别合格候选，一次模型请求校字并排名。
- * 无合格/识别或模型服务失败继续完整线路；这批已落库文件仍登记兜底，确保有产物。
- */
-async function runQuickOriginal(runId: string, line: LinePack, recovery: RunRecovery) {
-  const [existing] = await sql<{ count: number }[]>`
-    SELECT count(*)::int AS count FROM line_tts_versions
-    WHERE stem=${line.stem} AND status='ready' AND audio_path IS NOT NULL
-      AND voice_gpu_key IS DISTINCT FROM 'jp-lock'
-  `;
-  if (existing.count > 0 || !(line.text_zh || "").trim()) {
-    await log(runId, "quick-start", existing.count > 0 ? "已有修改音频，跳过原稿批量生成，继续完整线路" : "原中文字幕为空，跳过快速线路", { existing: existing.count });
-    return false;
-  }
-  try {
-    await log(runId, "quick-start", "尚无修改音频，先以原中文字幕和完整日文参考生成一批Zero-shot", { text: line.text_zh, prompt: `jp/${line.stem}.mp3` });
-    const clips = await generateClone(runId, line.stem, line.text_zh!, { subtitleText: null });
-    const saved = rememberCandidates(recovery, clips, line.jp_dur_s);
-    const [timing] = await sql<{ jp_start_s: number | null; jp_end_s: number | null; jp_dur_s: number | null; jp_speech_s: number | null }[]>`
-      SELECT jp_start_s,jp_end_s,jp_dur_s,jp_speech_s FROM line_meta WHERE stem=${line.stem}
-    `;
-    const jp = { start: timing?.jp_start_s ?? null, end: timing?.jp_end_s ?? null, dur: timing?.jp_dur_s ?? null, speech: timing?.jp_speech_s ?? null };
-    const candidates: QuickCandidate[] = [];
-    let referenceSeconds: Promise<number | null> | undefined;
-    const beatChecks = new Map<string, Promise<ReturnType<typeof quickBeatPass>>>();
-    for (const { clip } of saved) {
-      const measured = wavTiming(await audioToMonoWav(await readFile(dataFile(clip.audio_path!))));
-      const candidateTiming = { start: measured.start, end: measured.end, dur: measured.duration, speech: measured.speech };
-      const pass = quickTimingPass(jp, candidateTiming, line.dialogue_mode === "field");
-      await log(runId, "quick-timing", `#${clip.id} 完整音频时间检查${pass ? "正常" : "未通过"}`, { ttsId: clip.id, pass, jp, timing: candidateTiming }, "result");
-      if (!pass) continue;
-      if (isPerformanceMode(line.dialogue_mode)) {
-        let check = beatChecks.get(clip.spoken_text);
-        if (!check) {
-          check = (async () => {
-            const beats = await countBeats(line.text_jp || "", clip.spoken_text, true);
-            referenceSeconds ??= quickReferenceSpeechSeconds(line.stem);
-            return quickBeatPass({ textJp: line.text_jp || "", spoken: clip.spoken_text, beats, speechSeconds: await referenceSeconds });
-          })();
-          beatChecks.set(clip.spoken_text, check);
-        }
-        const checked = await check;
-        await log(runId, "quick-beat", `#${clip.id} 比 ${checked.ratio?.toFixed(3) ?? "不可计算"}${checked.exemption ? `（${checked.exemption === "short" ? "短句" : "慢速"}豁免）` : ""} ${checked.pass ? "过关" : "未通过，继续完整线路"}`, { ttsId: clip.id, ...checked }, "result");
-        if (!checked.pass) continue;
-      }
-      try {
-        const asr = await asrQwen(clip);
-        await log(runId, "quick-asr", `#${clip.id} Qwen：${asr.text || "（空）"}`, { ttsId: clip.id, text: asr.text }, "asr");
-        candidates.push({ ttsId: clip.id, spoken: clip.spoken_text, asr: asr.text, timing: candidateTiming, score: clip.speech_score ?? null });
-      } catch (error) {
-        await log(runId, "quick-asr", `#${clip.id} 快速识别失败，不参加快速择优`, { ttsId: clip.id, error: String(error) }, "error");
-      }
-    }
-    if (candidates.length) {
-      const response = await rewriteChat(quickPickMessages({ original: line.text_zh!, textJp: line.text_jp || "", textEn: line.text_en || "", lexicon: await lexicon(), candidates }), 0.1, "quick-pick");
-      const picked = parseQuickPick(parseJsonObject(response.content), candidates);
-      for (const review of picked.reviews) {
-        const candidate = saved.find(row => row.clip.id === review.ttsId)!;
-        Object.assign(candidate, { reviewed: true, hardIssueCount: review.missing.length + review.extra.length + review.repeated.length + review.unrelated.length, pronunciationIssueCount: review.pronunciationIssueCount, reason: review.reason });
-      }
-      await log(runId, "quick-pick", picked.selected ? `原稿快速择优 #${picked.selected}，设为待选，不锁定` : "原稿候选校字未通过，继续完整线路", { ...picked, thinking: response.thinking }, "think");
-      if (picked.selected) {
-        await finish(runId, "passed", null, picked.selected, { preserveSubtitle: true });
-        return true;
-      }
-    }
-    await log(runId, "quick-continue", "快速通道没有合格答案，继续原有完整自动流程");
-  } catch (error) {
-    await log(runId, "quick-continue", "快速通道不可用，继续原有完整自动流程", { error: error instanceof Error ? error.message : String(error) }, "error");
-  }
-  return false;
-}
-
 async function runCasual(runId: string, line: LinePack, recovery: RunRecovery) {
+  await log(runId, "workflow", "工作流：普通对话流程", { workflow: "casual" }, "result");
+  // 普通对话仍先校字、择优，最后才检查实际波形是否适用两端/三段对话对齐。
+  // 完整JP使用500ms、中文使用250ms分隔；两边必须同为2段或3段，不能按字幕标点猜段数。
+  // 复用85%～115%逐段缩放、300ms警告/错误、250ms最小间隔和三段中段居中规则。
+  // 不适用则保留原候选；已命中但不能合理对齐则待复核，不能整体变速掩盖错误。
+  // 这里不调用ASR/模型、不改台词、不切情绪；只编辑最终选中稿，兜底择优也复用这一入口。
+  recovery.assemble = async (candidate) => {
+    if (candidate.assembledId) return candidate.assembledId;
+    const jpFile = await readFile(dataFile(`jp/${line.stem}.mp3`)).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (!jpFile || !candidate.clip.audio_path) return candidate.clip.id;
+    const jp = await audioToMonoWav(jpFile);
+    const cn = await audioToMonoWav(await readFile(dataFile(candidate.clip.audio_path)));
+    const aligned = alignZeroShotParts(cn, jp);
+    if (!aligned) {
+      await log(runId,"casual-final-alignment","最终波形未同时符合两段/三段，保留原候选",{ttsId:candidate.clip.id},"result");
+      return candidate.clip.id;
+    }
+    const required = aligned.meta.requiredParts!;
+    await log(runId,"casual-final-alignment",`普通对话最终编辑：${required===3?"三段对话工作流":"两端对话工作流"}，逐段缩放后对齐总时长`,{ttsId:candidate.clip.id,...aligned.meta},"result");
+    if (!aligned.meta.pass) throw new PartAssemblyError(aligned.meta.reason || "普通对话逐段对齐不合格");
+    const actual = decodeWavMono(aligned.audio), reference = decodeWavMono(jp);
+    const target = reference.samples.length/reference.sampleRate;
+    const actualS = actual.samples.length/actual.sampleRate;
+    if (!assemblyLengthPass(actualS,target) || !inspectFinal(aligned.audio,required,aligned.meta.splitRegions).pass)
+      throw new PartAssemblyError("普通对话逐段编辑后总长或分段检查不合格");
+    const plan: OnoPlan = {enabled:false,reason:"普通对话最终波形分段对齐",thinking:"",speech:[{startMs:0,endMs:target*1000}],onomatopoeia:[],ambient:[],cnTtsText:candidate.clip.tts_text,originalCnTtsText:line.text_zh||"",jpSpeechText:line.text_jp||"",subtitleRestore:subtitleRestorePlan(line.text_zh||"",line.text_zh||"")};
+    const fit = {version:required===3?"three-parts-exact-assembly-v1":"two-parts-exact-assembly-v1",target,actual_s:actualS,wav_s:actualS,scales:{body:1},splitRegions:aligned.meta.splitRegions,gaps_s:aligned.meta.gapsSeconds};
+    const id = await saveSplicedEdit(runId,line.stem,candidate.clip.id,aligned.audio,plan,[{src:"tts",startMs:0,endMs:null}],{workflow:"casual-part-alignment",auto_run_gap_alignment:aligned.meta,fit});
+    candidate.assembledId=id;
+    await log(runId,"splice",`普通对话 #${candidate.clip.id} 分段编辑成 #${id}，最终 ${actualS.toFixed(3)}s / 目标 ${target.toFixed(3)}s`,{sourceId:candidate.clip.id,splicedId:id,fit},"result");
+    return id;
+  };
   const rules = await lexicon();
   const passing: { clip: TtsClip; asr: string; reason: string; pronunciationNotes: string[] }[] = [];
   // 自动运行始终从游戏原中文字幕开始，不读取手动 TTS 输入框、历史 TTS 或锁定字幕。
@@ -852,7 +909,8 @@ async function runCasual(runId: string, line: LinePack, recovery: RunRecovery) {
     ttsId: chosen.clip.id, dur_s: chosen.clip.dur_s, jp_dur_s: target,
     pronunciationNotes: chosen.pronunciationNotes,
   }, "result");
-  await finish(runId, "passed", null, chosen.clip.id);
+  const selected = recovery.candidates.find(candidate=>candidate.clip.id===chosen.clip.id)!;
+  await finish(runId, "passed", null, await recovery.assemble(selected));
 }
 
 async function pickPassedClip(
@@ -866,7 +924,7 @@ async function pickPassedClip(
   // 仍然先比较读音疑点；只有同等疑点的候选才比较两节的时序。
   const rhythmRank = rankByRhythm(fewestPronunciationIssues(passed));
   const best = rhythmRank.items;
-  await log(runId,"two-parts-rhythm-rank","同等读音疑点下，按两段时长及第二节开口排序，50ms内留给模型择优",rhythmRank.metrics,"result");
+  await log(runId,"two-parts-rhythm-rank","同等读音疑点下，按各段时长及开口位置排序，50ms内留给模型择优",rhythmRank.metrics,"result");
   await log(runId, "quality", `保留读音疑点最少的 ${best.length} 条候选`, {
     candidates: passed.map((row) => ({ ttsId: row.clip.id, pronunciationNotes: row.pronunciationNotes })),
     shortlisted: best.map((row) => row.clip.id),
@@ -892,11 +950,12 @@ async function pickPassedClip(
 }
 
 /** 共用原声保存：仅在已选定原声线路后调用；完整复制MP3并附原中文字幕。
- * 不切分、不转码、不拉伸、不调用TTS/中文ASR，也不自动锁定。
+ * 不切分、不转码、不拉伸、不调用TTS/中文ASR。只有明确含♪的唱歌分支自动锁定。
  * 进入条件由调用者明确记录：有官方字幕但Seed空，或无官方字幕且中文经模型判为全拟声。
  */
-async function runOriginalJapanese(runId: string, line: LinePack, original: Buffer, route: { workflow: string; reason: string }) {
-  const subtitle = twoLineSubtitle(line.text_zh || "");
+async function runOriginalJapanese(runId: string, line: LinePack, original: Buffer, route: { workflow: string; reason: string; lock?: boolean }) {
+  await log(runId, "workflow", `工作流：保留日文原声；${route.reason}`, { workflow: route.workflow }, "result");
+  const subtitle = route.lock ? singingSubtitle(line.text_zh || "") : twoLineSubtitle(line.text_zh || "");
   const label = subtitle || line.text_jp || "（日文原声）";
   const [record] = await sql<{ id: string }[]>`
     INSERT INTO line_tts_versions (
@@ -920,9 +979,14 @@ async function runOriginalJapanese(runId: string, line: LinePack, original: Buff
       completed_at = now(), error = NULL
     FROM line_meta m WHERE v.id = ${record.id} AND m.stem = v.stem
   `;
-  await log(runId, route.workflow, `${route.reason}；保存完整日文原声为 #${record.id}，附原中文字幕`, {
+  if(route.lock)await sql.begin(async tx=>{
+    await tx`SELECT stem FROM lines WHERE stem=${line.stem} FOR UPDATE`;
+    await tx`UPDATE line_tts_versions SET review_state='candidate',used_at=NULL WHERE stem=${line.stem} AND review_state IN ('locked','abnormal')`;
+    await tx`UPDATE line_tts_versions SET review_state='locked',used_at=now() WHERE id=${record.id} AND status='ready'`;
+  });
+  await log(runId, route.workflow, `${route.reason}；保存完整日文原声为 #${record.id}，附${route.lock?"括号歌词并锁定":"原中文字幕"}`, {
     selectedId: record.id, source: `jp/${line.stem}.mp3`, subtitleText: subtitle,
-    skipTts: true, skipChineseAsr: true, skipSegmentation: true, skipRewrite: true,
+    skipTts: true, skipChineseAsr: true, skipSegmentation: true, skipRewrite: true,locked:!!route.lock,
   }, "result");
   // 原字幕直接附上，不再走最后补引号的模型调用；沿用统一结束逻辑登记主音频。
   await finish(runId, "passed", null, record.id, { preserveSubtitle: true });
@@ -1038,7 +1102,7 @@ async function generateFeedbackCandidates(runId: string, line: LinePack, recover
  * 全轮择优后只编辑一次，仍待人工复核；建议字数不影响合格判定。
  */
 async function runWholeLineFallback(runId: string, line: LinePack, recovery: RunRecovery, jpWav: Buffer, reason = "日文字幕与 ASR 字轴无法可靠对齐") {
-  await log(runId, "whole-line-fallback", `${reason}，进入独立整句降级线路`, {
+  await log(runId, "whole-line-fallback", `工作流：整体 fallback（整句降级）；${reason}`, {
     reference: `jp/${line.stem}.mp3`, text: line.text_zh, skipChineseAsr: true,
     skipReview: true, skipRewrite: false, skipSegmentation: true,
   }, "result");
@@ -1077,7 +1141,7 @@ async function runWholeLineFallback(runId: string, line: LinePack, recovery: Run
  */
 async function runCurrentScriptFallback(runId: string, line: LinePack, recovery: RunRecovery,
   script: string, extra: NonNullable<Parameters<typeof generateClone>[3]>, target: number | null, reason: string, subtitles: (draft: string) => Promise<{ subtitleText: string; finalSubtitleText: string }>) {
-  await log(runId, "current-script-fallback", "改稿重试耗尽，从本轮台词进入三轮反馈改稿 TTS 线路", {
+  await log(runId, "current-script-fallback", "工作流：当前稿 fallback；改稿重试耗尽，从本轮台词进入三轮反馈改稿 TTS 线路", {
     script, reference: extra.promptPath, reason,
   }, "result");
   const reference = await audioToMonoWav(await readFile(dataFile(extra.promptPath || `jp/${line.stem}.mp3`)));
@@ -1115,9 +1179,8 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
     return;
   }
   const jpAsr = jpHit.result;
-  const durationMs = Math.round((line.jp_dur_s && line.jp_dur_s > 0
-    ? line.jp_dur_s
-    : decodeWavMono(jpWav).samples.length / decodeWavMono(jpWav).sampleRate) * 1000);
+  // 切片边界以实际解码长度为准；DB旧MP3时长可能差几毫秒，不能把文件尾误判为正文内部。
+  const durationMs = Math.round(decodeWavMono(jpWav).samples.length / decodeWavMono(jpWav).sampleRate * 1000);
   await log(runId, "asr", jpHit.cached
     ? `日文（缓存）：${jpAsr.text || "（空）"}`
     : `日文：${jpAsr.text || "（空）"}`, {
@@ -1139,10 +1202,18 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
   // 切片对象使用ASR自己的字幕与字轴，避免官方字幕的汉字/假名写法差异阻断定位。
   // 官方日文仍传给模型作语义依据，并用于参考正文/拍数；绝不将ASR误字回填字幕。
   let subtitleClauses = alignJapaneseClauses(jpAsr.text, asrWords);
+  const conservativeSplit = splitAsrClausesByOriginalPauses({ ...decodedJp, textJp: line.text_jp || "",
+    asrText: jpAsr.text, words: asrWords, clauses: subtitleClauses });
+  subtitleClauses = conservativeSplit.clauses;
+  if (conservativeSplit.splits.length) await log(runId, "asr-clause-conservative-split",
+    "原日文分隔与至少1秒真实静音共同确认ASR漏切，先补切再分类拟声",
+    { splits: conservativeSplit.splits, clauses: subtitleClauses }, "result");
   await log(runId, "asr-clauses", "以 ASR 字幕建立切片，官方字幕用于语义核对", {
     source: "seed-asr", asrText: jpAsr.text, originalTextJp: line.text_jp, clauses: subtitleClauses,
   });
   let missingFragment: ReturnType<typeof recoverMissingFragment> = null;
+  let confirmedAmbient: ReturnType<typeof recoverCompleteTextAmbient> = null;
+  let integratedInternalSound: { startMs: number; endMs: number } | null = null;
   const audioBlocks = missingAudioBlocks({ ...decodedJp, words: asrWords });
   // 漏识别补救不限头尾：只有一块独立有声缺口才询问模型；两块及以上直接降级。
   // 是否缺字幕、缺几块以及前后对应均由模型按语义判断，代码不再删首段猜缺文。
@@ -1155,6 +1226,14 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
       await log(runId, "missing-fragment", "发现唯一候选声音，请模型核对是否恰好缺一块对应字幕（句首/句中/句尾）", { audioBlocks });
       const decision = await classifyMissingFragment(line.text_jp || "", line.text_zh || "", jpAsr, audioBlocks);
       await log(runId, "missing-fragment", `模型判断：${decision.kind}；${decision.reason}`, { audioBlocks, decision }, "think");
+      confirmedAmbient=recoverCompleteTextAmbient({decision,words:asrWords,blocks:audioBlocks,...decodedJp});
+      const internal = internalAmbientEvidence({ ...decodedJp, words: asrWords }, audioBlocks[0]);
+      if (internal && !internal.pass && decision.missing_text_blocks === 0 && decision.audio_blocks === 1
+        && decision.kind !== "onomatopoeia" && !decision.matched_jp.trim() && !decision.matched_zh.trim()) {
+        integratedInternalSound = internal.gap;
+        await log(runId, "internal-sound-body", "句中声音未满足>500ms且两侧各≥150ms真实静音，归入正文整体，不提取或拼回", internal, "result");
+      }
+      if(confirmedAmbient)await log(runId,"missing-fragment-ambient","模型确认字幕完整，唯一字轴外声音按环境音处理，继续正常工作流",{decision,ambient:confirmedAmbient},"result");
       missingFragment = recoverMissingFragment({ decision, textJp: line.text_jp || "", textZh: line.text_zh || "", words: asrWords, blocks: audioBlocks, ...decodedJp });
       if (missingFragment) {
         subtitleClauses = missingFragment.subtitleClauses;
@@ -1164,7 +1243,7 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
       await log(runId, "missing-fragment", "唯一片段补救不可用，进入整句降级线路", { error: error instanceof Error ? error.message : String(error) }, "error");
     }
     // 不确定/非拟声/多块缺文/切口不成立，都不能继续猜测，仍保证降级线路输出一条音频。
-    if (!missingFragment) {
+    if (!missingFragment && !confirmedAmbient && !integratedInternalSound) {
       await runWholeLineFallback(runId, line, recovery, jpWav, "未能确认唯一缺失拟声与唯一声音缺口对应");
       return;
     }
@@ -1184,7 +1263,8 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
       textEn: line.text_en || "",
       durationMs,
       jpAsr,
-      subtitleClauses: missingFragment?.bodyClauses,
+      subtitleClauses: missingFragment?.bodyClauses ?? subtitleClauses,
+      clauseSplitEvidence: missingFragment ? undefined : conservativeSplit.splits,
     });
   } catch (error) {
     // 分类服务未能给出可用结果，切换独立整句降级线路，仍生成最终编辑产物。
@@ -1204,27 +1284,29 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
   });
   const segments = segmentPerformanceAudio({
     ...decodedJp,
-    speech: plan.speech,
+    speech: [...plan.speech, ...(integratedInternalSound ? [integratedInternalSound] : [])],
+    ambient: confirmedAmbient?[confirmedAmbient]:[],
     words: asrWords,
     onomatopoeia: refined.onomatopoeia,
-    subtitleClauses,
+    // 声学校正允许越过首字ASR点最多50ms；保护连续正文时使用已校正的共享边界，
+    // 不再用原ASR起点把合法切口误当成“切进连续正文”。原字轴仍在日志中保留。
+    subtitleClauses: refined.clauses,
   });
   plan.speech = segments.filter((span) => span.kind === "speech");
   plan.onomatopoeia = segments.filter((span) => span.kind === "onomatopoeia");
-  // Sound outside ASR words is not evidence of environmental audio. Preserve
-  // uncertain material for review rather than automatically splicing it in.
-  plan.ambient = [];
+  // 仅保留有零缺文与独立切口证据的环境音，其他未对应声音不得自动删除。
+  plan.ambient = segments.filter((span)=>span.kind==="ambient");
   // 已确认的短拟声也必须从参考中删除，不再用时长门槛绕过清理。
   plan.enabled = plan.onomatopoeia.length > 0 || plan.ambient.length > 0;
   const unknown = segments.filter((span) => span.kind === "unknown");
-  const segmentLabels = { speech: "正文", silence: "停顿", onomatopoeia: "拟声", unknown: "待判定声音" };
+  const segmentLabels = { speech: "正文", silence: "停顿", onomatopoeia: "拟声", ambient:"环境音", unknown: "待判定声音" };
   await log(runId, "segment", segments.map((span) => (
     `${segmentLabels[span.kind]} ${(span.startMs / 1000).toFixed(2)}–${(span.endMs / 1000).toFixed(2)}s`
   )).join("；"), {
     segments, subtitleClauses, acousticSubtitleClauses: refined.clauses,
     boundaryRefinements: refined.adjustments,
     silencePeakRatio: SEGMENT_SILENCE_RATIO, minSilenceMs: SEGMENT_MIN_SILENCE_MS,
-    ambient: [],
+    ambient: plan.ambient,
   }, "result");
   if (unknown.length || !plan.speech.length) {
     // 波形切分还有未知块（包括ASR与解码长度差造成的短尾）或没有可靠正文时，不能猜成环境音。
@@ -1246,25 +1328,25 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
   const reference = buildSpeechReference(jpWav, pcm, plan);
   const promptTiming = wavTiming(reference.audio);
   const referenceTextJp = plan.jpSpeechText;
-  // 豁免条件取“或”：短于6字，或者纯摩拉语速严格低于3拍/秒。
+  // 拍数比豁免条件取“或”：日文正文8字以内，或者纯摩拉语速严格低于3拍/秒。
+  // 这与中文绝对语速硬门槛独立：中文正文至少6个汉字才检查9音节/秒上限。
   // 语速只用已去掉拟声/环境音且裁过首尾的真实参考；长静音不参与分母。
   const speakingTime = measurePerformanceSpeakingTime({ ...decodeWavMono(reference.audio), startS: promptTiming.start, endS: promptTiming.end });
   const speechSeconds = speakingTime && speakingTime.speechSeconds > 0 ? speakingTime.speechSeconds : null;
   const characterLimit = performanceCharacterLimit(referenceTextJp, speechSeconds);
-  const shortLine = shortPerformancePolicy(referenceTextJp, NORMAL_JP_CN_RATIO, speechSeconds);
+  const shortLine = shortPerformancePolicy(referenceTextJp);
   let referenceBeats: BeatResult | null = null;
   try { referenceBeats = await countBeats(referenceTextJp, plan.cnTtsText, true); }
   catch (error) {
       // 测拍服务失败不能变成“慢速豁免”；维持普通检查，后续沿用已有失败/重试处理。
     await log(runId, "speech-rate", "日文摩拉数不可用，不启用慢速豁免", { error: error instanceof Error ? error.message : String(error) }, "error");
   }
-  // 短句也请求独立纯摩拉读音，确保“既短又慢”时仍能提示接近摩拉数增字。
-  // 两条件同时成立时采用慢速改稿目标，字数上限统一用净时长与日文含标点字符数的较大值。
+  // 8字以内优先走无字数限制的短句线路，不能被慢速分支重新要求凑摩拉或字符上限。
   const speechReading = referenceBeats?.jpSpeech ?? referenceBeats?.jp;
   const slow = slowPerformancePolicy(speechReading?.status === "ok" ? speechReading.mora : null, speechSeconds);
-  const slowLine = slow ? { ...slow, max: characterLimit.max } : null;
-  // 短/慢句共用新上限；慢速句只设上限，原“接近摩拉数”目标仍是表达偏好。
-  const characterPolicy = slowLine ? { jpCharacters: spokenCharacters(referenceTextJp), min: 1, max: characterLimit.max } : shortLine;
+  const slowLine = !shortLine && slow ? { ...slow, max: characterLimit.max } : null;
+  // 仅超过8字的慢速句保留既有字符上限。
+  const characterPolicy = slowLine ? { jpCharacters: spokenCharacters(referenceTextJp), min: 1, max: characterLimit.max } : null;
   const ignoreBeat = Boolean(shortLine || slowLine);
   // 正常线路的动态豁免：校字可靠且整轮实测明显偏短后保持开启，不能增字后又被比压回旧稿。
   // 短句/日文慢速沿用原有独立规则；此标志不改变它们的字符上限、波形检查口径。
@@ -1282,7 +1364,7 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
     sourceSubtitle: line.text_zh, sourceScript, cleanBody: plan.cnTtsText, ...subtitlePlan,
   }, "result");
   if (!script.trim()) throw new Error("没有中文稿，无法合成");
-  const promptPath = path.posix.join("tts", line.stem, `auto-run-${runId}-prompt.wav`);
+  const promptPath = path.posix.join("tts", line.stem, `auto-run-${runId}-${currentChatModel() ?? "primary"}-prompt.wav`);
   await mkdir(path.dirname(dataFile(promptPath)), { recursive: true });
   await writeFile(dataFile(promptPath), reference.audio);
   await sql`UPDATE line_auto_runs SET reference_audio_path = ${promptPath}, reference_text_jp = ${referenceTextJp}
@@ -1295,8 +1377,8 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
     referencePath: promptPath, sha256: referenceHit.stored.sha256,
     text: referenceAsr.text, utterances: referenceAsr.raw, cached: referenceHit.cached,
   }, "asr");
-  if (shortLine && !slowLine) await log(runId, "short-policy", `日文正文 ${shortLine.jpCharacters} 字：不检查拍数比，中文限 ${shortLine.min}–${shortLine.max} 字，按波形有效发声长度检查 0.85–1.15`, {
-    ...shortLine, characterLimit, referencePath: promptPath, referenceTiming: promptTiming,
+  if (shortLine && !slowLine) await log(runId, "short-policy", `日文正文 ${shortLine.jpCharacters} 字：不检查拍数比，不设中文字数上下限或目标，按净发声长度检查：比例0.85–1.15或绝对偏差≤${SHORT_NET_SPEAKING_TOLERANCE_MS}ms即通过`, {
+    ...shortLine, absoluteToleranceMs: SHORT_NET_SPEAKING_TOLERANCE_MS, characterLimit: null, referencePath: promptPath, referenceTiming: promptTiming,
   }, "result");
   await log(runId, "speech-rate", slowLine
     ? `日文正文 ${slowLine.moraPerSecond.toFixed(3)} 拍/秒，低于3：不检查拍数比；改稿中文尽量补到 ${slowLine.target} 字`
@@ -1349,16 +1431,16 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
       onomatopoeia: plan.onomatopoeia, ambient: plan.ambient, speech: plan.speech,
       cnAsr, cnAudio: decoded, cnTtsText: candidate.clip.tts_text,
     });
-    const mixed = assemblePreserved(jpWav, ttsWav, plan, splice.pieces, line.jp_dur_s || ttsDurMs / 1000, reference.audio);
+    const mixed = assemblePreserved(jpWav, ttsWav, plan, splice.pieces, line.jp_dur_s || ttsDurMs / 1000, reference.audio, candidate.clip.conversion_meta?.auto_run_gap_alignment?.splitRegions);
     const id = await saveSplicedEdit(runId, line.stem, candidate.clip.id, mixed.audio, plan, splice.pieces, { fit: mixed.fit, boundaries: splice.boundaries, cutMethod: splice.cutMethod,
       // 主音频也带上逐段正确/警告状态，不能只有子候选才知道为什么还存在余差。
       ...(candidate.clip.conversion_meta?.auto_run_gap_alignment ? {auto_run_gap_alignment:candidate.clip.conversion_meta.auto_run_gap_alignment} : {}),
-      ...((requiredTwoParts || plan.enabled) ? {two_parts_assembly:{status:"correct",exact_length:true,target_seconds:mixed.fit.target,actual_seconds:mixed.fit.actual_s}} : {}),
-      beat_policy: { enabled: !(ignoreBeat || durationBeatReference), exemption: durationBeatReference ? "actual-short" : slowLine ? "slow" : shortLine ? "short" : null, durationLine, slowLine, character_limit: characterPolicy ? characterLimit : null },
+      ...((requiredSplit || plan.onomatopoeia.length>0) ? {two_parts_assembly:{requiredParts:requiredPartCount,status:"correct",exact_length:Math.abs(mixed.fit.actual_s-mixed.fit.target)<=1/decodeWavMono(mixed.audio).sampleRate,tolerance_seconds:ASSEMBLY_LENGTH_TOLERANCE_S,delta_seconds:mixed.fit.actual_s-mixed.fit.target,target_seconds:mixed.fit.target,actual_seconds:mixed.fit.actual_s}} : {}),
+      beat_policy: { enabled: !(ignoreBeat || durationBeatReference || candidate.normalSpeedBeat?.exempt), normal_speed: candidate.normalSpeedBeat ?? null, exemption: candidate.normalSpeedBeat?.exempt ? "normal-cn-net-speed" : durationBeatReference ? "actual-short" : slowLine ? "slow" : shortLine ? "short" : null, durationLine, slowLine, character_limit: characterPolicy ? characterLimit : null },
       ...(candidate.workflow ? { workflow: candidate.workflow, manual_review_required: true, quality_review: "manual-required" } : {}),
     });
     candidate.assembledId = id;
-    await log(runId, "splice", `选定正文 #${candidate.clip.id} 编辑成 #${id}，${plan.enabled ? "保留情绪原声并调整间隔" : requiredTwoParts ? "逐段缩放后填充间隔" : "整段拉伸"}，最终 ${mixed.fit.actual_s.toFixed(3)}s / 目标 ${mixed.fit.target.toFixed(3)}s`, {
+    await log(runId, "splice", `选定正文 #${candidate.clip.id} 编辑成 #${id}，${plan.enabled ? "保留情绪原声并调整间隔" : requiredSplit ? "逐段缩放后填充间隔" : "整段拉伸"}，最终 ${mixed.fit.actual_s.toFixed(3)}s / 目标 ${mixed.fit.target.toFixed(3)}s`, {
       sourceId: candidate.clip.id, splicedId: id, fit: mixed.fit, ok: mixed.ok,
       boundaries: splice.boundaries, cutMethod: splice.cutMethod,
     }, "result");
@@ -1370,22 +1452,35 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
     try {
       const formatted = await formatSubtitle(draft);
       if (formatted !== autoRunSubtitle(draft) && !loggedSubtitleLayouts.has(draft)) {
-        await log(runId, "subtitle-layout", "单独调用模型按语义分成两行，原文字保持不变", { source: draft, subtitle: formatted }, "result");
+        await log(runId, "subtitle-layout", "本地排成两行，暂存原稿标点，最终分行后再清行末", { source: draft, subtitle: formatted }, "result");
         loggedSubtitleLayouts.add(draft);
       }
       return formatted;
     } catch (error) {
       // 字幕分行服务失败不能阻断已经授权的音频生成；保留原文，并明确记录待检查原因。
-      await log(runId, "subtitle-layout", "模型字幕分行失败，保留原文并继续生成音频", { error: error instanceof Error ? error.message : String(error), source: draft }, "error");
+      await log(runId, "subtitle-layout", "本地字幕分行失败，保留原文并继续生成音频", { error: error instanceof Error ? error.message : String(error), source: draft }, "error");
       return autoRunSubtitle(draft);
     }
   };
   const failNotes: string[] = [];
-  // 两段正文线路硬门槛：参考恰好两节时，中文也必须两节。无论总时长/拍数多合适都不能绕过。
-  const requiredTwoParts = countParts(reference.audio, 0.35) === 2;
+  // 二/三段正文线路硬门槛：参考确认段数后中文必须对应。无论总时长/拍数多合适都不能绕过。
+  const requiredPartCount=countParts(reference.audio,TWO_PART_JP_GAP_S);
+  const requiredSplit=[2,3].includes(requiredPartCount);
+  // 拟声分类只决定保留/删除哪些声音，不能据此推断两段/三段工作流。
+  // 等真实处理后参考按波形完成分段后才记录实际线路；后续若降级，降级入口会另记一次。
+  await log(runId, "workflow", `工作流：${requiredPartCount === 2 ? "两段说话" : requiredPartCount === 3 ? "三段说话" : "普通流程"}；处理后日文参考检测到 ${requiredPartCount} 段正文${plan.enabled ? "（已去拟声/环境音）" : ""}`, {
+    workflow: requiredSplit ? `${requiredPartCount}-part-speech` : "performance-normal",
+    requiredPartCount, minReferenceGapMs: TWO_PART_JP_GAP_S * 1000,
+    onomatopoeiaCount: plan.onomatopoeia.length, ambientCount: plan.ambient.length,
+  }, "result");
+  let ttsBatches = 0;
+  const policyForBatch=(batch:number)=>bodyScriptPolicy(plan.cnTtsText,batch,requiredPartCount);
   let rhythmAttempts = 0;
   let originalPunctuationAttempts = 0;
   // 警告可用稿跨额外一轮保留；不能因为尝试改善反而丢掉已有答案。
+  let polishAttempted = false;
+  let polishValidationPending = false;
+  let polishScriptPolicy: BodyScriptPolicy | undefined;
   let warningRetryUsed = false;
   const warningPool: Parameters<typeof pickPassedClip>[3] = [];
   const meaningContext = await loadRewriteContext(line.stem, sourceScript, referenceTextJp);
@@ -1395,13 +1490,27 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
   const beatCache = new Map<string, { result: BeatResult | null; error: string | null }>();
   if (referenceBeats) beatCache.set(plan.cnTtsText, { result: referenceBeats, error: null });
   for (let round = 1; round <= AUTO_RUN_MAX_ROUNDS; round += 1) {
-    await log(runId, "tts", plan.enabled ? `第 ${round} 次合成（无拟声/环境音正文）` : `第 ${round} 次合成`);
+    // 短句前三批strict，第4批放开片内停顿；长句从首批按行定义大分片。
+    // 以实际合成批次计数，结构重试round--不会把“第4批”倒退回去。音频硬门槛不变。
+    const scriptPolicy=polishValidationPending ? polishScriptPolicy! : policyForBatch(ttsBatches+1);
+    setBodyScriptPolicy(scriptPolicy);
+    if(requiredSplit && !validBodyScript(script,requiredPartCount,scriptPolicy)){
+      let repaired=false,lastError:unknown;
+      for(let attempt=1;attempt<=3;attempt++)try{
+        script=await repairTwoParts({stem:line.stem,script,textJp:referenceTextJp,textEn:line.text_en||"",referenceAudio:reference.audio,round,history:rhythmHistory,allowRewrite:requiredPartCount===3,feedback:(scriptPolicy==="lines" ? `请整理为${requiredPartCount}行，每行代表一个目标分片；保留并可调整行内逗号、句号、省略号等来控制时长和语气，禁止为凑唯一停顿删掉自然标点。只整理标点与分行，不改正文。` : `必须整理成${requiredPartCount}个语义部分，必须且只能有${requiredPartCount-1}处句中停顿。两段只调标点不改正文；三段允许忠实原意重写。每部分内部不得再插停顿。`)+(lastError ? "上次失败必须纠正："+String(lastError) : "")});
+        subtitleDraft=script;repaired=true;break;
+      }catch(error){lastError=error;await log(runId,"two-parts-single-pause","分片台词整理失败，重新请求",{attempt,error:String(error)},"error");}
+      if(!repaired)throw lastError;
+      await log(runId,"two-parts-single-pause",`朗读稿已按${scriptPolicy}协议整理为${requiredPartCount}个目标分片`,{script,scriptPolicy},"result");
+    }
+    ttsBatches++;
+    await log(runId, "tts", `累计第${ttsBatches}批合成，常规第${round}轮${plan.enabled?"（无拟声/环境音正文）":""}`,{batch:ttsBatches,round,scriptPolicy,polish:polishValidationPending});
     const bodySubtitle = await prepareSubtitle(subtitleDraft);
     if (plan.enabled || subtitleText !== null || bodySubtitle !== sourceScript.trim()) subtitleText = bodySubtitle;
     const finalSubtitleText = plan.enabled
       ? await prepareSubtitle(restorePerformanceSubtitle(subtitlePlan, subtitleDraft)) : subtitleText;
     const clips = await generateClone(runId, line.stem, script, {
-      ...cloneExtra, subtitleText, finalSubtitleText,
+      ...cloneExtra, subtitleText, finalSubtitleText, bodyScriptPolicy:scriptPolicy,
     });
     await log(runId, "tts", `合成 ${clips.length} 条`, {
       ids: clips.map((row) => row.id),
@@ -1414,11 +1523,13 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
       pronunciationNotes: string[];
     }[] = [];
     let textPassedCount = 0;
+    let chineseSpeedOutOfBand = false;
     let rhythmMismatchCount = 0;
     let rhythmCorrectCount = 0;
     const punctuationEligible: unknown[] = [];
     const rhythmResults: {ttsId:string;actualParts:number;script:string}[] = [];
     let beatOutOfBand = false;
+    const normalSpeedEvidence: { candidateId: string; script: string; rate: number; netSeconds: number; referenceSeconds: number; candidateSeconds: number }[] = [];
     let shortCharactersOutOfBand = false;
     const reliableWaveforms: { referenceSeconds: number; candidateSeconds: number; script: string; ttsId: string }[] = [];
     const roundRatios: number[] = [];
@@ -1432,18 +1543,61 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
 
       const candidateAudio = await audioToMonoWav(await readFile(dataFile(clip.audio_path)));
       const savedTiming = wavTiming(candidateAudio);
-      const actualParts = countParts(candidateAudio);
-      rememberRhythm(clip.id,candidateAudio,clip.spoken_text);
+      const candidateText = clip.spoken_text;
+      let beat = beatCache.get(candidateText);
+      if (!beat) {
+        try { beat = { result: await countBeats(referenceTextJp, candidateText), error: null }; }
+        catch (error) { beat = { result: null, error: error instanceof Error ? error.message : String(error) }; }
+        beatCache.set(candidateText, beat);
+      }
+      const candidateNet = measurePerformanceSpeakingTime({...decodeWavMono(candidateAudio),startS:savedTiming.start,endS:savedTiming.end});
+      // 兜底只比较实际时长，正文必须与去情绪后的JP净发声匹配，不能拿整句文件总长（含情绪/静音）评分。
+      // 净时长比和拍数比仍独立筛选，兜底不把两个无量纲偏差相加冒充“音频更合适”。
+      candidate.durationDeviation = candidateNet && speakingTime
+        ? Math.abs(candidateNet.speechSeconds-speakingTime.speechSeconds)
+        : Math.abs(savedTiming.speech-(plan.enabled?promptTiming.speech:wavTiming(jpWav).speech));
+      const normalSpeedBeat = measureNormalSpeedBeatExemption(decodeWavMono(candidateAudio), candidateText, beat.result?.cn.han);
+      candidate.normalSpeedBeat = normalSpeedBeat;
+
+      const splitRegions=clip.conversion_meta?.auto_run_gap_alignment?.splitRegions;
+      const actualParts = countParts(candidateAudio, .25, splitRegions);
+      rememberRhythm(clip.id,candidateAudio,clip.spoken_text,splitRegions);
       const partCheck=alignmentCheck(clip);
-      const twoPartsOk = (!requiredTwoParts || actualParts === 2) && partCheck.pass;
+      const partsOk = (!requiredSplit || actualParts === requiredPartCount) && partCheck.pass;
       await log(runId,"two-parts-part-stretch","逐段85%～115%拉伸后检查300ms余差",{ttsId:clip.id,...partCheck},"result");
-      if (!twoPartsOk) rhythmMismatchCount++;
+      if (!partsOk) rhythmMismatchCount++;
       else rhythmCorrectCount++;
       rhythmResults.push({ttsId:clip.id,actualParts,script:clip.spoken_text});
-      await log(runId, "two-parts-two-parts", "两段正文：两节结构硬检查", {ttsId:clip.id,required:requiredTwoParts?2:null,actual:actualParts,pass:twoPartsOk}, "result");
-      if(!twoPartsOk){
+      await log(runId, "two-parts-two-parts", "正文分段：对应段数硬检查", {ttsId:clip.id,required:requiredSplit?requiredPartCount:null,actual:actualParts,pass:partsOk}, "result");
+      const feedbackDraftId = createHash("sha256").update(candidateText).digest("hex");
+      const regroup = clip.conversion_meta?.two_parts_regroup;
+      const feedbackPartTexts = regroup?.consistent === true ? regroup.groups?.map(group =>
+        group.map(index => regroup.segments.find(segment => segment.index === index)?.text ?? "").join("")) : undefined;
+      const feedbackInput: AttemptInput = {draftId:feedbackDraftId,
+        script:normalizeScript(script).spokenText===candidateText?script:candidateText,
+        requiredChecks:["text",...(requiredSplit?["parts" as const]:[]),"length","beat"],
+        measurement:{draftId:feedbackDraftId,audioId:clip.id,netRate:normalSpeedBeat.rate,
+          hardSpeed:checkChineseSpeakingSpeed(candidateText,candidateNet?.speechSeconds??null,beat.result?.cn.han),
+          ...(characterPolicy?{characters:{count:spokenCharacters(candidateText),min:characterPolicy.min,max:characterPolicy.max}}:{}),
+          ...(requiredSplit?{parts:{required:requiredPartCount,actual:actualParts,texts:feedbackPartTexts,checks:"parts" in partCheck?partCheck.parts:[],boundaryPass:clip.conversion_meta?.two_parts_regroup?.consistent===false?false:undefined,layoutPass:partCheck.reason?.includes("无法让")?false:undefined}}:{}),
+          length:{pass:clip.speech_pass===true,deltaSeconds:savedTiming.speech-(plan.enabled?promptTiming.speech:wavTiming(jpWav).speech)},
+          beat:{enabled:!(ignoreBeat||durationBeatReference),ratio:beat.result?.normalizedRatio??null,...autoBeatBand(referenceTextJp)}}};
+      if(!partsOk){
+        // 分段归组已校验全文与本稿一致（含近音容忍）时复用结论；否则只认免费Qwen逐字一致。
+        // 不把“啊/呀”等已确认的近音重新降级成待验证；未知结果仍不猜通过，更不据漏读盲目加字。
+        try {
+          if (clip.conversion_meta?.two_parts_regroup?.consistent === true || clip.conversion_meta?.two_parts_regroup?.textConsistent === true) {
+            feedbackInput.measurement!.text={pass:true};
+          } else {
+            const local=await asrQwen(clip);
+            const compact=(text:string)=>text.replace(/[\s\p{P}\p{S}]/gu,"");
+            if(compact(local.text)===compact(candidateText))feedbackInput.measurement!.text={pass:true};
+          }
+        } catch(error) { await log(runId,"attempt-feedback","结构失败候选本地校字不可用，不推断字数方向",{ttsId:clip.id,error:String(error)},"error"); }
+        await saveAttemptFeedback(runId,candidate,feedbackInput);
+
         // 结构已经不合格，无需再付费校字/判比；保留音频用于最后待人工兜底。
-        candidate.reviewed=true;candidate.hardIssueCount=1000;candidate.reason="两节结构不符合";
+        candidate.reviewed=true;candidate.hardIssueCount=1000;candidate.reason="正文段数不符合";
         continue;
       }
       await log(runId,"asr",`#${clip.id} 结构通过，送本地 Qwen 校字`);
@@ -1463,7 +1617,8 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
       const lengthFact = `#${clip.id} 中文实际发声 ${savedTiming.speech.toFixed(3)}s，合成阶段时长误差 ${lengthError.toFixed(3)}s，要求 ±${LENGTH_SLACK_S}s：${lengthOk ? "过关" : "不过"}`;
       roundLengths.push(lengthFact);
       await log(runId, "length", lengthFact, { ttsId: clip.id, ok: lengthOk, candidateSpeechS: savedTiming.speech, referenceWaveformSpeechS: targetSpeech, waveformDeltaS: delta, lengthErrorS: lengthError, slackS: LENGTH_SLACK_S }, "result");
-      const waveformComparison = compareWaveformSpans(promptTiming, savedTiming, { low: PACE_LOW, high: PACE_HIGH });
+      // 同一份去情绪正文参考；净发声双方均扣长静音，拼装的留白不能让“比”虚假合格。
+      const waveformComparison = compareNetSpeakingTimes(speakingTime, candidateNet, { low: PACE_LOW, high: PACE_HIGH, ...(shortLine ? { absoluteToleranceMs: SHORT_NET_SPEAKING_TOLERANCE_MS } : {}) });
       const comparison = ignoreBeat || enablePace ? waveformComparison : { ...waveformComparison, enabled: false, pass: true };
       const cnSpan = comparison.cnSpan;
       const ratio = comparison.spanRatio;
@@ -1474,24 +1629,21 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
       candidate.paceDeviation = enablePace ? (ratio == null ? null : Math.abs(ratio - 1)) : 0;
       // 拍数“比”是另一种指标：用匹配本次参考的正文和该候选实际朗读稿计算。
       // 缓存只针对相同文字；不可用时记 null/error，不伪造 0；拍数和跨度分别检查。
-      const candidateText = clip.spoken_text;
-      let beat = beatCache.get(candidateText);
-      if (!beat) {
-        try { beat = { result: await countBeats(referenceTextJp, candidateText), error: null }; }
-        catch (error) { beat = { result: null, error: error instanceof Error ? error.message : String(error) }; }
-        beatCache.set(candidateText, beat);
-      }
       // 短句或实测慢速任一成立便豁免；比值只作诊断，不参与淘汰、改稿和兜底评分。
-      const beatCheck = ignoreBeat || durationBeatReference ? { enabled: false, ratio: null, pass: true, deviation: 0 } : checkAutoBeat(beat.result, referenceTextJp);
+      const beatCheck = ignoreBeat || durationBeatReference || normalSpeedBeat.exempt ? { enabled: false, ratio: null, pass: true, deviation: 0 } : checkAutoBeat(beat.result, referenceTextJp);
+      const chineseSpeed=checkChineseSpeakingSpeed(candidateText,candidateNet?.speechSeconds??null,beat.result?.cn.han);
+      if(!chineseSpeed.pass)chineseSpeedOutOfBand=true;
+      await sql`UPDATE line_tts_versions SET conversion_meta=COALESCE(conversion_meta,'{}'::jsonb)||${sql.json({chinese_speed:chineseSpeed,normal_speed_beat:normalSpeedBeat,beat_policy:{enabled:beatCheck.enabled,exemption:normalSpeedBeat.exempt?"normal-cn-net-speed":durationBeatReference?"actual-short":slowLine?"slow":shortLine?"short":null}})} WHERE id=${clip.id}`;
+      await log(runId,"chinese-speed",`#${clip.id} 中文${chineseSpeed.hanCharacters}字，净语速${chineseSpeed.rate?.toFixed(3)??"不可测"}音节/秒：${!chineseSpeed.enabled?"不足6字豁免":chineseSpeed.pass?"过关":"超过9.0硬上限"}`,{ttsId:clip.id,...chineseSpeed},"result");
       const characters = characterPolicy ? checkShortCharacters(characterPolicy, candidateText) : null;
       if (characters && !characters.pass) shortCharactersOutOfBand = true;
       if (characters) await log(runId, "short-text", `#${clip.id} ${slowLine ? "慢速句" : "短句"}正文 ${characters.characters} 字，要求 ${characters.min}–${characters.max} 字${characters.pass ? "，过关" : "，不过"}`, { ttsId: clip.id, ...characters }, "result");
       candidate.characterDeviation = characters ? Math.max(characters.min - characters.characters, 0, characters.characters - characters.max) : 0;
       candidate.beatDeviation = beatCheck.deviation;
       if (beatCheck.enabled && !beatCheck.pass && beatCheck.deviation !== null) beatOutOfBand = true;
-      await log(runId, "beat", durationBeatReference ? `#${clip.id} 拍数比 ${beat.result?.normalizedRatio?.toFixed(3) ?? "不可计算"} 仅供参考，不参与淘汰或评分` : !beatCheck.enabled ? `#${clip.id} ${durationBeatReference ? "实测偏短，拍数比仅供参考" : slowLine ? "日文慢速低于3拍/秒" : "日文短句"}，不计算拍数比`
+      await log(runId, "beat", normalSpeedBeat.exempt ? `#${clip.id} 中文净语速 ${normalSpeedBeat.rate!.toFixed(3)} 音节/秒在${normalSpeedBeat.low}–${normalSpeedBeat.high}内，拍数比 ${beat.result?.normalizedRatio?.toFixed(3) ?? "不可计算"} 忽略，不参与淘汰、改稿或评分` : durationBeatReference ? `#${clip.id} 拍数比 ${beat.result?.normalizedRatio?.toFixed(3) ?? "不可计算"} 仅供参考，不参与淘汰或评分` : !beatCheck.enabled ? `#${clip.id} ${durationBeatReference ? "实测偏短，拍数比仅供参考" : slowLine ? "日文慢速低于3拍/秒" : "日文短句"}，不计算拍数比`
         : `#${clip.id} 拍数比 ${beatCheck.ratio?.toFixed(3) ?? "不可计算"} ${beatCheck.pass ? "过关" : `不过，要求 ${autoBeatBand(referenceTextJp).low}–${autoBeatBand(referenceTextJp).high}`}`, {
-        ttsId: clip.id, ...beatCheck, referenceRatio: beat.result?.normalizedRatio ?? null, error: beat.error, exemption: durationBeatReference ? "actual-short" : slowLine ? "slow" : shortLine ? "short" : null, slowLine,
+        ttsId: clip.id, ...beatCheck, referenceRatio: beat.result?.normalizedRatio ?? null, error: beat.error, normalSpeedBeat, exemption: normalSpeedBeat.exempt ? "normal-cn-net-speed" : durationBeatReference ? "actual-short" : slowLine ? "slow" : shortLine ? "short" : null, slowLine,
       }, "result");
       await saveAutoRunComparison(runId, clip, referenceHit.stored, { path: clip.audio_path, sha256: createHash("sha256").update(await readFile(dataFile(clip.audio_path))).digest("hex") }, comparison, referenceTextJp, candidateText, beat);
       await log(runId, "asr", `#${clip.id} 本地 Qwen：${asr.text || "（空）"}`, {
@@ -1503,7 +1655,7 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
       const judged = await judgeSpokenText({ spoken: clip.spoken_text, asr: asr.text, lexicon: rules });
       Object.assign(candidate, {
         reviewed: true,
-        hardIssueCount: judged.missing.length + judged.extra.length + judged.repeated.length + judged.unrelated.length,
+        hardIssueCount: judged.missing.length + judged.extra.length + judged.repeated.length + judged.unrelated.length + (chineseSpeed.pass ? 0 : 1),
         pronunciationIssueCount: judged.pronunciationIssueCount,
         reason: judged.reason,
       });
@@ -1513,35 +1665,56 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
         missing: judged.missing, extra: judged.extra, repeated: judged.repeated, unrelated: judged.unrelated,
         pronunciationNotes: judged.pronunciationNotes, pronunciationIssueCount: judged.pronunciationIssueCount,
       }, "think");
-      if(twoPartsOk && judged.ok && lengthOk && pace.ok && (!characters || characters.pass) && beatCheck.enabled && !beatCheck.pass)
+      feedbackInput.measurement!.text={pass:judged.ok,missing:judged.missing,extra:judged.extra,repeated:judged.repeated,unrelated:judged.unrelated};
+      feedbackInput.measurement!.hardSpeed={enabled:chineseSpeed.enabled,pass:chineseSpeed.pass};
+      feedbackInput.measurement!.characters=characters?{count:characters.characters,min:characters.min,max:characters.max}:undefined;
+      feedbackInput.measurement!.netLength=comparison.enabled?{pass:pace.ok,deltaSeconds:comparison.cnSpan&&comparison.jpSpan?(comparison.cnSpan.span-comparison.jpSpan.span)/1000:NaN}:undefined;
+      await saveAttemptFeedback(runId,candidate,feedbackInput);
+      if(partsOk && judged.ok && chineseSpeed.pass && lengthOk && pace.ok && (!characters || characters.pass) && beatCheck.enabled && !beatCheck.pass)
         punctuationEligible.push({ttsId:clip.id,script:clip.spoken_text,normalizedRatio:beatCheck.ratio,band:autoBeatBand(referenceTextJp)});
-      if (judged.ok && twoPartsOk) {
+      if (judged.ok && partsOk && normalSpeedBeat.exempt) normalSpeedEvidence.push({candidateId:clip.id,script:candidateText,rate:normalSpeedBeat.rate!,netSeconds:normalSpeedBeat.netSeconds,referenceSeconds:speakingTime?.speechSeconds??0,candidateSeconds:candidateNet?.speechSeconds??0});
+      if (judged.ok && partsOk) {
         textPassedCount += 1;
-        reliableWaveforms.push({ referenceSeconds: promptTiming.speech, candidateSeconds: savedTiming.speech, script: clip.tts_text, ttsId: clip.id });
+        reliableWaveforms.push({ referenceSeconds: speakingTime?.speechSeconds ?? 0, candidateSeconds: candidateNet?.speechSeconds ?? 0, script: clip.tts_text, ttsId: clip.id });
       }
       await log(runId, "pace", ignoreBeat
-        ? `#${clip.id} ${slowLine ? "慢速句" : "短句"}有效发声长度比 ${ratio?.toFixed(3) ?? "不可计算"} ${pace.ok ? "过关" : "不过，要求 0.85–1.15"}`
+        ? `#${clip.id} ${slowLine ? "慢速句" : "短句"}有效发声长度比 ${ratio?.toFixed(3) ?? "不可计算"} ${pace.ok ? "过关" : "不过"}，要求比例0.85–1.15${shortLine ? `或绝对偏差≤${SHORT_NET_SPEAKING_TOLERANCE_MS}ms` : ""}`
         : enablePace
         ? (pace.ok ? `#${clip.id} 语速 ${ratio?.toFixed(3)} 过关` : `#${clip.id} 语速 ${ratio == null ? "没有跨度" : ratio.toFixed(3)} 不过`)
         : `#${clip.id} 日文短句，语速不卡`, {
         ttsId: clip.id, enabled: enablePace, ok: pace.ok, ratio, metricVersion: comparison.metricVersion,
+        deltaMs: comparison.deltaMs, absoluteToleranceMs: comparison.absoluteToleranceMs, ratioPass: comparison.ratioPass, absolutePass: comparison.absolutePass,
         referenceSpanMs: comparison.jpSpan?.span, candidateSpanMs: comparison.cnSpan?.span,
       }, "result");
-      if (twoPartsOk && judged.ok && lengthOk && pace.ok && beatCheck.pass && (!characters || characters.pass)) passed.push({ clip, asr, paceRatio: ratio, pronunciationNotes: judged.pronunciationNotes });
-      else failNotes.push(`${lengthFact}；字:${judged.ok ? "过" : judged.reason} 语速:${pace.ok ? "过" : (ratio?.toFixed(3) ?? "无")} 拍数比:${durationBeatReference ? "实测偏短仅参考" : ignoreBeat ? (slowLine ? "慢速不检查" : "短句不检查") : `${beatCheck.ratio?.toFixed(3) ?? "无"}(${beatCheck.pass ? "过" : "不过"})`}${characters ? ` 字数:${characters.characters}(${characters.pass ? "过" : "不过"}，要求${characters.min}–${characters.max})` : ""}`);
+      if (partsOk && judged.ok && chineseSpeed.pass && lengthOk && pace.ok && beatCheck.pass && (!characters || characters.pass)) passed.push({ clip, asr, paceRatio: ratio, pronunciationNotes: judged.pronunciationNotes });
+      else failNotes.push(`中文净语速${chineseSpeed.rate?.toFixed(3)??"不可测"}音节/秒：${chineseSpeed.pass?"过关":"超9.0，必须放慢或精简，不能加静音伪装"}；${lengthFact}；字:${judged.ok ? "过" : judged.reason} 语速:${pace.ok ? "过" : (ratio?.toFixed(3) ?? "无")} 拍数比:${normalSpeedBeat.exempt ? `中文净语速${normalSpeedBeat.low}–${normalSpeedBeat.high}，忽略` : durationBeatReference ? "实测偏短仅参考" : ignoreBeat ? (slowLine ? "慢速不检查" : "短句不检查") : `${beatCheck.ratio?.toFixed(3) ?? "无"}(${beatCheck.pass ? "过" : "不过"})`}${characters ? ` 字数:${characters.characters}(${characters.pass ? "过" : "不过"}，要求${characters.min}–${characters.max})` : ""}`);
     }
-    if(warningPool.length){
+    // 润色只验证这一批；不再次进入结构重试或常规改稿，旧合格成品不混入新稿候选。
+    if (polishValidationPending && !passed.length) {
+      await finishWithFallback(runId,recovery,"等字数润色音频未通过完整验收");
+      return;
+    }
+    if(warningPool.length && !polishValidationPending){
       for(const saved of warningPool)if(!passed.some(x=>x.clip.id===saved.clip.id))passed.push(saved);
     }
+    // 本批结束后的所有改稿提示使用下一批协议，短句第3批失败后即可开始放开停顿。
+    setBodyScriptPolicy(policyForBatch(ttsBatches+1));
     // 结构错误优先修标点，不让缺停顿造成的偏短进入增字反馈。
     // 三条全不符合结构才改断句；结构重试独立计数，不能消耗三轮语义改写预算。
-    if (requiredTwoParts && !passed.length && rhythmMismatchCount > 0 && rhythmCorrectCount === 0) {
+    if (requiredSplit && !passed.length && rhythmMismatchCount > 0 && rhythmCorrectCount === 0) {
       rhythmAttempts++;
       rhythmHistory.push({attempt:rhythmAttempts,script,results:rhythmResults});
-      await log(runId,"two-parts-pause-retry","两节结构或逐段时长未过：优先调整断句，必要时据分段余差自然调整正文",{round,rhythmAttempts,rhythmMismatchCount,maxBatches:10},"result");
+      await log(runId,"two-parts-pause-retry","分段结构或逐段时长未过：优先调整断句，必要时据分段余差自然调整正文",{round,rhythmAttempts,rhythmMismatchCount,maxBatches:10},"result");
       if(rhythmAttempts >= 10) break;
+      // 逐段ASR证据不符/分组无法执行时，原稿重TTS，不拿缺字音频去改台词。
+      if(clips.every(x=>x.conversion_meta?.two_parts_regroup?.consistent===false)){
+        await log(runId,"two-parts-regroup-retry","逐段核对不一致或分组无效：保持当前台词直接重新TTS",{rhythmAttempts},"result");
+        round--;continue;
+      }
       try {
-        script = await repairTwoParts({stem:line.stem,script,textJp:referenceTextJp,textEn:line.text_en||"",referenceAudio:reference.audio,round,history:rhythmHistory,allowRewrite:rhythmResults.some(x=>x.actualParts===2)});
+        const allowRewrite = allowBodyRewrite(ttsBatches, rhythmResults.map(x => x.actualParts), requiredPartCount);
+        await log(runId,"two-parts-rewrite-permission",allowRewrite ? "允许调整正文和重组台词" : "尚未满3批且段数均不正确，本轮只调整标点和分段",{completedBatches:ttsBatches,nextBatch:ttsBatches+1,requiredParts:requiredPartCount,actualParts:rhythmResults.map(x=>x.actualParts),allowRewrite},"result");
+        script = await repairTwoParts({stem:line.stem,script,textJp:referenceTextJp,textEn:line.text_en||"",referenceAudio:reference.audio,round,history:rhythmHistory,allowRewrite});
         subtitleDraft=script;
         await log(runId,"two-parts-pause-script","模型返回新朗读稿；最终字幕另行整理",{round,script},"result");
       } catch(error) {
@@ -1552,14 +1725,14 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
     }
     // 原字、结构、校字和时长已合格但比未过，先给自然标点两次机会。
     // 比仍按原区间淘汰，不把本轮实验变成放宽比值的实验。
-    if(requiredTwoParts && !passed.length && punctuationEligible.length && originalPunctuationAttempts < 2
+    if(requiredSplit && !passed.length && punctuationEligible.length && originalPunctuationAttempts < 2
       && script.replace(/[\p{P}\p{Z}\s]/gu,"") === plan.cnTtsText.replace(/[\p{P}\p{Z}\s]/gu,"")) {
       originalPunctuationAttempts++;
-      await log(runId,"two-parts-original-punctuation","原字已过校字、长度和两节检查，仅比未过：先尝试自然断句，不增删字",{attempt:originalPunctuationAttempts,evidence:punctuationEligible},"result");
+      await log(runId,"two-parts-original-punctuation","原字已过校字、长度和分段检查，仅比未过：先尝试自然断句，不增删字",{attempt:originalPunctuationAttempts,evidence:punctuationEligible},"result");
       try {
         const previousScript=script;
         const adjusted=await repairTwoParts({stem:line.stem,script,textJp:referenceTextJp,textEn:line.text_en||"",referenceAudio:reference.audio,round,history:rhythmHistory,
-          feedback:"目前已有恰好两节、校字与实测时长合格的音频，只有拍数比不合格。保留原字，只调整一个自然语义停顿或标点，尝试让比进入给定范围。不堆标点凑数，不增加新的长停顿。如果当前稿已经最自然、没有可行调整，可以原样返回。",beatEvidence:punctuationEligible});
+          feedback:"目前已有目标分片数、校字与实测时长合格的音频，只有拍数比不合格。保留原字，遵守当前scriptPolicy调整自然标点；按行模式须保留目标行数，允许片内轻微停顿调时长。不堆标点凑数。如果没有可行调整可原样返回。",beatEvidence:punctuationEligible});
         await log(runId,"two-parts-original-punctuation","原字标点尝试返回",{before:previousScript,script:adjusted,attempt:originalPunctuationAttempts},"result");
         rhythmHistory.push({type:"original-punctuation",script:adjusted,evidence:punctuationEligible});
         if(adjusted!==previousScript){script=adjusted;round--;continue;}
@@ -1568,7 +1741,15 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
     if (!ignoreBeat && !durationBeatReference && clearlyShortSpeakingRound(reliableWaveforms)) {
       durationBeatReference = true;
       // 从这一刻起，所有历史候选的比偏差也清零，三轮后兜底不能再次按比把增字稿淘汰。
-      for (const candidate of recovery.candidates) candidate.beatDeviation = 0;
+      for (const candidate of recovery.candidates) {
+        candidate.beatDeviation = 0;
+        // 全句策略切换也要同步历史退回原因，避免一边要求按时长增字，一边仍按旧比值要求减字。
+        if (candidate.attemptInput?.measurement?.beat) {
+          const feedback = structuredClone(candidate.attemptInput);
+          feedback.measurement!.beat!.enabled = false;
+          await saveAttemptFeedback(runId, candidate, feedback);
+        }
+      }
       beatOutOfBand = false;
       await log(runId, "beat-reference", "校字通过的候选均实测明显偏短：后续拍数比只作参考，改稿按实际发声长度增字", {
         round, evidence: reliableWaveforms, minShortfallS: LENGTH_SLACK_S, maxLengthRatio: PACE_LOW,
@@ -1579,10 +1760,10 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
       const best = reliableWaveforms.reduce((a, b) => Math.abs(a.candidateSeconds-a.referenceSeconds) <= Math.abs(b.candidateSeconds-b.referenceSeconds) ? a : b);
       durationLine = durationRewritePolicy(best.script, best.referenceSeconds, best.candidateSeconds);
     }
-    if(passed.length && requiredTwoParts){
+    if(passed.length && requiredSplit){
       const correct=passed.filter(x=>alignmentCheck(x.clip).status==='correct');
       if(correct.length)passed.splice(0,passed.length,...correct);
-      else if(!warningRetryUsed && passed.every(x=>alignmentCheck(x.clip).status==='warning')){
+      else if(!polishValidationPending && !warningRetryUsed && passed.every(x=>alignmentCheck(x.clip).status==='warning')){
         warningRetryUsed=true;warningPool.push(...passed);
         await log(runId,"two-parts-warning-retry","仅有警告候选，保留现稿并额外请模型尝试一轮；失败仍选回可用稿",{ids:passed.map(x=>x.clip.id),extraRounds:1},"result");
         try{
@@ -1599,19 +1780,24 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
       if(!selected || !recovery.assemble)throw Error("选定候选缺少编辑上下文");
       let splicedId:string;
       try {
-        // 两段线路最终必须等长；不能拿候选阶段的300ms警告容差代替成品门槛。
+        // 成品仍尽量等长，正负50ms可接受；不能拿候选阶段的300ms警告容差代替成品门槛。
         splicedId=await recovery.assemble(selected);
-        const [finalRow]=await sql<{audio_path:string}[]>`SELECT audio_path FROM line_tts_versions WHERE id=${splicedId}`;
+        const [finalRow]=await sql<{audio_path:string;conversion_meta:{fit?:{splitRegions?:import("./speech-segments").SpeechSplitRegion[]}}}[]>`SELECT audio_path,conversion_meta FROM line_tts_versions WHERE id=${splicedId}`;
         const finalAudio=await readFile(dataFile(finalRow.audio_path));
-        const finalCheck=inspectFinal(finalAudio,requiredTwoParts && !plan.enabled);
-        if(requiredTwoParts){
+        const finalCheck=inspectFinal(finalAudio,requiredSplit && !plan.enabled ? requiredPartCount : false, finalRow.conversion_meta?.fit?.splitRegions);
+        if(requiredSplit){
           const got=decodeWavMono(finalAudio),original=decodeWavMono(jpWav);
-          const delta=got.samples.length/got.sampleRate-original.samples.length/original.sampleRate;
-          if(Math.abs(delta)>1/got.sampleRate || !finalCheck.pass)throw new PartAssemblyError("最终组装未等长或两段结构被破坏，升级错误");
+          if(!assemblyLengthPass(got.samples.length/got.sampleRate,original.samples.length/original.sampleRate) || !finalCheck.pass)throw new PartAssemblyError("最终总长误差超过50ms或分段结构被破坏，升级错误");
         }
-        await log(runId,"two-parts-final-structure","最终复查结构及等长硬门槛",finalCheck,"result");
+        await log(runId,"two-parts-final-structure","最终复查结构及总长（容差50ms）",{...finalCheck,toleranceSeconds:ASSEMBLY_LENGTH_TOLERANCE_S},"result");
       } catch(error) {
         if(!(error instanceof PartAssemblyError))throw error;
+        if(selected.attemptInput){
+          const feedback=structuredClone(selected.attemptInput);
+          feedback.requiredChecks=[...new Set([...feedback.requiredChecks,"assembly" as const])];
+          feedback.measurement!.assembly={pass:false,failure:String(error).includes("250ms")?"cannot-fit-gaps":"unknown"};
+          await saveAttemptFeedback(runId,selected,feedback);
+        }
         // 即便先前只是警告，拼不成等长成品也不可作为合格成品；清除可用池并反馈模型。
         selected.hardIssueCount=1000;selected.reason=String(error);selected.assembledId=undefined;
         const oldMeta=chosen.clip.conversion_meta?.auto_run_gap_alignment;
@@ -1619,19 +1805,43 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
         await sql`UPDATE line_tts_versions SET conversion_meta=COALESCE(conversion_meta,'{}'::jsonb)||${sql.json({speech_pass:false,two_parts_assembly:{status:"error",reason:String(error)},...(oldMeta?{auto_run_gap_alignment:oldMeta}:{})})} WHERE id=${chosen.clip.id}`;
         warningPool.splice(0,warningPool.length);rhythmAttempts++;
         await log(runId,"two-parts-assembly-error","无法组装等长：由警告/正确升级错误，重新请模型调整",{ttsId:chosen.clip.id,error:String(error),attempt:rhythmAttempts},"error");
+        if (polishValidationPending) {
+          await finishWithFallback(runId,recovery,"润色候选最终组装未通过："+String(error));
+          return;
+        }
         if(rhythmAttempts>=10)break;
         try{
-          script=await repairTwoParts({stem:line.stem,script:chosen.clip.spoken_text,textJp:referenceTextJp,textEn:line.text_en||"",referenceAudio:reference.audio,round,history:rhythmHistory,allowRewrite:true,feedback:"最终组装失败，已升级错误："+String(error)+(requiredTwoParts?"。必须保留中心意思、恰好两段正文并保留至少250ms中间静音，最终与日文原音频等长。请据各段测量调整断句或表达。":"。情绪原声已保留，本轮只调整正文，不能重新加入情绪词，也不能把单段正文硬拆成两段。必须让最终组装与日文原音频等长。")});
+          script=await repairTwoParts({stem:line.stem,script:chosen.clip.spoken_text,textJp:referenceTextJp,textEn:line.text_en||"",referenceAudio:reference.audio,round,history:rhythmHistory,allowRewrite:true,feedback:"最终组装失败，已升级错误："+String(error)+(requiredSplit?"。必须保留中心意思、恰好指定段数正文并让每处中间静音至少250ms，最终尽量与日文原音频等长，总长误差允许50ms。请据各段测量调整断句或表达。":"。情绪原声已保留，本轮只调整正文，不能重新加入情绪词，也不能把单段正文硬拆成两段。必须让最终组装总长与日文原音频的误差不超过50ms。")});
           subtitleDraft=script;
         }catch(rewriteError){await log(runId,"two-parts-assembly-rewrite","等长改稿失败，保留现稿继续尝试",{error:String(rewriteError)},"error");}
         round--;continue;
       }
+      if (!polishAttempted) {
+        polishAttempted = true;
+        // 必须先保存并复查成品，润色失败才有已验证的回退，而非未经装配的正文候选。
+        recovery.acceptedFinalId = splicedId;
+        const [sourceMeta] = await sql<{conversion_meta:{body_script_policy?:BodyScriptPolicy;body_grouping_script?:string}}[]>`SELECT conversion_meta FROM line_tts_versions WHERE id=${chosen.clip.id}`;
+        const policy = sourceMeta?.conversion_meta?.body_script_policy ?? scriptPolicy;
+        const source = sourceMeta?.conversion_meta?.body_grouping_script ?? selected.attemptInput?.script ?? chosen.clip.tts_text;
+        try {
+          const polished = await polishAcceptedScript({stem:line.stem,script:source,requiredParts:requiredPartCount,policy,
+            textJp:line.text_jp||"",textZh:line.text_zh||"",textEn:line.text_en||""});
+          await log(runId,"accepted-script-polish",polished.changed ? "合格稿逐段等字数润色，额外一批TTS完整复验" : "润色后保留原合格稿",{...polished,sourceId:chosen.clip.id,acceptedId:splicedId,sourceScript:source,requiredParts:requiredPartCount,scriptPolicy:policy},"result");
+          if (polished.changed) {
+            script=polished.script;subtitleDraft=script;polishScriptPolicy=polished.policy;polishValidationPending=true;
+            round--;continue;
+          }
+        } catch(error) {
+          await log(runId,"accepted-script-polish","润色不可用，保留原合格成品",{acceptedId:splicedId,error:String(error)},"error");
+        }
+      }
+      if (polishValidationPending) await log(runId,"polish-validated","润色稿已通过核字、结构、时长、语速、拍数及最终组装复验",{originalId:recovery.acceptedFinalId,selectedId:splicedId},"result");
       await finish(runId, "passed", null, splicedId);
       return;
     }
     if (round === AUTO_RUN_MAX_ROUNDS) break;
-    const shortDirection = ignoreBeat || durationBeatReference ? shortAudioDirection(roundRatios, PACE_LOW, PACE_HIGH) : null;
-    if (shouldRetrySameScript(textPassedCount) && !beatOutOfBand && !shortCharactersOutOfBand && !shortDirection) {
+    const shortDirection = ignoreBeat || durationBeatReference ? shortAudioDirection(roundRatios, PACE_LOW, PACE_HIGH, shortLine && speechSeconds ? { referenceSeconds: speechSeconds, toleranceMs: SHORT_NET_SPEAKING_TOLERANCE_MS } : undefined) : null;
+    if (shouldRetrySameScript(textPassedCount) && !chineseSpeedOutOfBand && !beatOutOfBand && !shortCharactersOutOfBand && !shortDirection) {
       // 全部有缺字等硬伤时，只淘汰候选并按原稿重试。不能随机漏读一次，
       // 就擅自改写本来正确的台词；但已实测拍数比越界说明稿长不合适，仍须改稿。
       // 短句整轮实测偏短/偏长也必须改字，不能因 ASR 失败绕过时长反馈。
@@ -1639,7 +1849,15 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
       await log(runId, "retry", "本轮校字全部未过，保留原稿重新合成", { round, failNotes });
       continue;
     }
-    await log(runId, "rewrite", durationBeatReference ? "实测偏短后的改稿：比仅参考，字数建议不强制，以发声时长为准" : slowLine ? "日文慢速：忽略拍数比，中文字符数尽量补到纯摩拉数，并按实际发声长度改稿" : shortLine ? "短句按有效发声长度和字符上下限改写，不按拍数比选稿" : beatOutOfBand ? "拍数比越界，五次改写正文并重新合成" : "校字有合格候选但语速或拍数比不可用，五次改写正文");
+    if (slowLine) {
+      const conflict = slowMoraTargetConflict(slowLine, script, reliableWaveforms);
+      if (conflict) {
+        // 本次运行触发后不再恢复摩拉等字目标，防止下一稿又被拉回旧字数；上限仍保留。
+        slowLine.durationDirection = conflict;
+        await log(runId,"slow-mora-conflict",`慢速句字数与时长方向冲突，撤掉摩拉等字目标，按实测${conflict === "longer" ? "增字/延长" : "减字/缩短"}`,{direction:conflict,characters:spokenCharacters(script),jpMora:slowLine.jpMora,measurements:reliableWaveforms},"result");
+      }
+    }
+    await log(runId, "rewrite", hasAttemptHistory() ? "按已有尝试和退回原因改一稿，再TTS实测" : durationBeatReference ? "实测偏短后的改稿：比仅参考，字数建议不强制，以发声时长为准" : slowLine ? slowLine.durationDirection ? "慢速句已撤掉摩拉等字目标，以实测发声时长改稿" : "日文慢速：忽略拍数比，中文字符数尽量补到纯摩拉数，并按实际发声长度改稿" : shortLine ? "短句按有效发声长度改写，不设中文字数限制，不按拍数比选稿" : beatOutOfBand ? "拍数比越界，五次改写正文并重新合成" : "校字有合格候选但语速或拍数比不可用，五次改写正文");
     const ctx = await loadRewriteContext(line.stem, script, referenceTextJp);
     let draft: Awaited<ReturnType<typeof rewriteFive>>;
     try {
@@ -1656,6 +1874,8 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
         jpAsr: referenceAsr,
         failNotes,
         durationLine,
+        attemptHistoryMode: hasAttemptHistory(),
+        normalSpeedLine: normalSpeedEvidence.length ? normalSpeedEvidence[0] : undefined,
         extraUser: durationBeatReference ? [
           "本句已触发实测偏短豁免：拍数比只作参考，先前日志中的比过关/不过关不再是限制。",
           ...roundLengths,
@@ -1663,27 +1883,28 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
           "校字、实际音频时长和语速检查仍须通过，最终编辑只在选定之后进行。",
         ].join("\n") : slowLine ? [
           `日文刻意慢速：${slowLine.jpMora} 摩拉，正文发声 ${slowLine.speechSeconds.toFixed(3)} 秒，${slowLine.moraPerSecond.toFixed(3)} 拍/秒。不检查拍数比。`,
-          `本轮当前正文 ${script} 共 ${spokenCharacters(script)} 字；请把中文正文补到接近或等于 ${slowLine.target} 字，不足时必须增加自然表达，不能按常规比值继续缩字。`,
+          slowLine.durationDirection ? `本轮正文 ${script} 共 ${spokenCharacters(script)} 字；程序已检测到字数与时长方向冲突，取消日文摩拉等字目标。请按本轮实际时长反馈自然增减字或调整断句，不要凑回日文拍数。` : `本轮当前正文 ${script} 共 ${spokenCharacters(script)} 字；请把中文正文补到接近或等于 ${slowLine.target} 字，不足时必须增加自然表达，不能按常规比值继续缩字。`,
           ...roundLengths,
-          ...roundSpans.map(row => `#${row.ttsId} 日文参考波形跨度 ${row.jpSeconds.toFixed(3)} 秒，中文 ${row.cnSeconds.toFixed(3)} 秒。`),
+          ...roundSpans.map(row => `#${row.ttsId} 日文正文净发声 ${row.jpSeconds.toFixed(3)} 秒，中文 ${row.cnSeconds.toFixed(3)} 秒。`),
           `正文上限${slowLine.max}字（标点/空白不计），取max(日文非引号字符${characterLimit.jpLimitCharacters}, floor(净发声${speechSeconds?.toFixed(3)}秒×3.5)=${characterLimit.durationLimit})。优先保全语义，允许自然标点停顿，不能拆词或逐字堆标点。`,
           "仍须通过校字、候选时长及波形发声长度检查；不能加首尾静音或恢复拟声充长。标点作用需实际TTS验证；最终拉伸在选定候选后进行。",
         ].join("\n") : shortLine ? [
-          "以下是裁剪后参考和已裁首尾静音的中文候选的波形实测。字数上下限只是约束，请据此判断该增字还是减字，再自行写台词。",
+          "以下是裁剪后参考和已裁首尾静音的中文候选的波形实测。不设中文字数上下限或目标；已有自然准确的短句不要为凑字扩写。",
+          `短句净发声长度满足中文/日文0.85–1.15，或中日绝对偏差不超过${SHORT_NET_SPEAKING_TOLERANCE_MS}ms，任一即通过；已在绝对容差内时，不要仅因比例越界缩短或扩写台词。`,
           ...roundSpans.map((row) => `#${row.ttsId}：日文实际发声 ${row.jpSeconds.toFixed(3)} 秒，中文实际发声 ${row.cnSeconds.toFixed(3)} 秒，中文/日文长度比 ${row.ratio.toFixed(3)}。`),
-          shortDirection === "longer" ? "中文实际发声明显偏短：在上限内增加正文字符、补全自然表达；达到上限时用自然语义停顿，不要求强行增字或删掉核心含义。"
+          shortDirection === "longer" ? "中文实际发声明显偏短：优先保留自然准确的表达，可调整自然断句和停顿；只有语义确有不足时才补全，不能为字数填充。"
             : shortDirection === "shorter" ? "中文实际发声明显偏长：下一稿应减少正文字符，保留原意和问句。"
               : "没有一致的时长方向，请结合逐条实测、原意和校字结果选择表达。",
-          `正文限制 ${shortLine.min}–${shortLine.max} 字，上限=max(日文含非引号标点${characterLimit.jpLimitCharacters}字, floor(净发声${speechSeconds?.toFixed(3)}秒×3.5)=${characterLimit.durationLimit})；中文标点、空白不计字数。鼓励在自然语义边界用标点留出停顿，不能拆词逐字堆标点、加首尾静音或恢复拟声充长。`,
+          "鼓励自然语义停顿，不能拆词逐字堆标点、加首尾静音或恢复拟声充长；不按日文字数推算中文长度。",
         ].join("\n") : [
           ...roundLengths,
-          ...roundSpans.map((row) => `#${row.ttsId} 日文参考波形发声跨度 ${row.jpSeconds.toFixed(3)}s，中文 ${row.cnSeconds.toFixed(3)}s。`),
+          ...roundSpans.map((row) => `#${row.ttsId} 日文正文净发声 ${row.jpSeconds.toFixed(3)}s，中文 ${row.cnSeconds.toFixed(3)}s。`),
           "候选音频先按发声长度与日文相差不超过 200ms 检查，再选最好的一条进入编辑。",
           "如中文实测偏短，应增加汉字并补全自然表达；偏长则减少汉字。不能用静音或堆标点充长。",
           "最终编辑拉伸在选定后单独执行，不是本轮候选长度过关的依据。",
         ].join("\n"),
         slowLine: slowLine ?? undefined,
-        shortLine: shortLine ? { ...shortLine, target: shortRewriteTarget(shortLine, script, shortDirection) } : undefined,
+        shortLine: shortLine ?? undefined,
         measure: (text) => countBeats(referenceTextJp, text),
         onRetry: async (event) => {
           await log(runId, "rewrite-retry", `第 ${event.draftNumber} 稿返回失败，重试 ${event.nextAttempt - 1}/3`, event, "error");
@@ -1706,9 +1927,10 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
     }, "think");
     subtitleDraft = draft.text;
     subtitleText = autoRunSubtitle(draft.text);
-    script = normalizeScript(draft.text, plan.enabled ? plan.cnTtsText : line.text_zh || undefined).ttsText;
+    // 分行稿在送clone前保留原始行边界；clone内部负责把换行转为TTS标点。
+    script = policyForBatch(ttsBatches+1)==="lines" ? draft.text : normalizeScript(draft.text, plan.enabled ? plan.cnTtsText : line.text_zh || undefined).ttsText;
   }
-  const failReason = durationBeatReference ? "三次都没过校字、候选时长或语速（实测偏短后拍数比仅参考）" : slowLine ? "三次都没过校字、候选时长或慢速句有效发声长度（已忽略拍数比）" : shortLine ? "三次都没过校字、候选时长、短句有效发声长度或字符上下限" : "三次都没过校字、候选时长、语速和拍数比";
+  const failReason = durationBeatReference ? "三次都没过校字、候选时长或语速（实测偏短后拍数比仅参考）" : slowLine ? "三次都没过校字、候选时长或慢速句有效发声长度（已忽略拍数比）" : shortLine ? "三次都没过校字、候选时长、短句有效发声长度" : "三次都没过校字、候选时长、语速和拍数比";
   await log(runId, "fail", failReason, { failNotes }, "error");
   await finishWithFallback(runId, recovery, failReason);
 }

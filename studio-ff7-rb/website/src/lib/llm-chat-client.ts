@@ -1,25 +1,26 @@
+import { currentChatModel } from "./llm-model-context";
 import { setTimeout as delay } from "node:timers/promises";
 import { beginLlmCall, recordLlmCall } from "./llm-metrics";
 import { loggedSelfHostedChatFetch, type SelfHostedOptions } from "./llm-self-hosted";
-import { volcengineChatBody, volcengineLlmConfig } from "./llm-volcengine";
+import { volcengineChatBody, volcengineLlmConfig, type VolcengineCallOptions } from "./llm-volcengine";
 
 export type ChatModelId = "primary" | "volcengine" | "self-hosted";
 export type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
 /** 三套连接独立配置、独立记账；自部署仍只能由调用方显式选择。 */
 export const CHAT_MODELS = [
-  { id: "primary", name: "现用云端模型", transport: "standard" },
-  { id: "volcengine", name: "火山 Agent Plan", transport: "standard" },
+  { id: "primary", name: "官方GLM（GLM 5.3）", transport: "standard" },
+  { id: "volcengine", name: "火山（DeepSeek V4.1 Flash）", transport: "standard" },
   { id: "self-hosted", name: "自部署开源模型", transport: "guarded-stream" },
 ] as const;
 
-/** 仅创作/改写台词走火山；分类、校字、候选择优、断行和补引号都沿用原连接。
- * 统一按任务路由，覆盖自动五稿、整体fallback和手动改写，避免只改一个按钮漏掉其他路径。
- * 显式指定模型优先，供独立实验和自部署模型调用；配置缺失时不得自动回退。
+/** 默认所有线上任务使用官方GLM 5.3；自动流程整轮失败后才切火山DeepSeek。
+ * primary 为“官方GLM”（GLM 5.3 / REWRITE_LLM_*）；连接与火山独立。
+ * 改写、校字、择优、分段修复、润色、补引号等共用此路由，单次请求不跨连接回退。
+ * 字幕排版为本地函数；自部署仍只能显式选择。连接配置缺失直接报错。
  */
 export function chatModelForTask(task = "unspecified", explicit?: ChatModelId): ChatModelId {
-  if (explicit) return explicit;
-  return ["script-rewrite", "fallback-duration-rewrite", "manual-rewrite", "prompt-trial-script-rewrite"].includes(task)
-    ? "volcengine" : "primary";
+  void task; // 保留任务参数兼容调用方，当前所有任务统一默认火山。
+  return explicit ?? currentChatModel() ?? "primary";
 }
 
 export function chatModelConfigured(modelId: ChatModelId) {
@@ -30,8 +31,14 @@ export function chatModelConfigured(modelId: ChatModelId) {
 
 export type ChatCallOptions = {
   messages: ChatMessage[]; modelId?: ChatModelId; temperature?: number; maxTokens?: number;
+  /** 独立慢推理实验可延长等待；默认仍120秒，不改变线上现有超时。 */
+  timeoutMs?: number;
   task?: string; promptKeys?: string[]; stem?: string; attempts?: number; signal?: AbortSignal;
   json?: boolean; selfHosted?: SelfHostedOptions;
+  /** 仅modelId=volcengine时使用，允许同一套餐连接并发测试不同模型。 */
+  volcengine?: VolcengineCallOptions;
+  /** 仅自部署调用可显式关闭思考；默认true，避免影响既有TTS/实验任务。 */
+  selfHostedThinking?: boolean;
 };
 
 /** 只压缩送给模型阅读的数字：模板渲染后的正文、内嵌JSON和历史消息统一四舍五入到最多三位。
@@ -101,7 +108,7 @@ function checkedInteger(value: number, min: number, max: number, name: string) {
   return value;
 }
 
-/** 通用模型入口。改稿任务走volcengine，其余默认primary；self-hosted显式选择，默认medium思考。
+/** 通用模型入口。所有任务默认官方GLM，自动失败轮通过上下文切火山；自部署显式选择，默认medium思考。
  * 输入为已完成模板替换的消息。数字压缩和数据库快照都在最终HTTP入口完成。
  */
 export async function callChatCompletion(input: ChatCallOptions) {
@@ -109,7 +116,8 @@ export async function callChatCompletion(input: ChatCallOptions) {
   if (!CHAT_MODELS.some(model => model.id === modelId)) throw new Error("未知大模型");
   const local = modelId === "self-hosted";
   const volcengine = modelId === "volcengine";
-  const volc = volcengineLlmConfig();
+  if (input.volcengine && !volcengine) throw new Error("火山模型选项必须显式选择volcengine连接");
+  const volc = volcengineLlmConfig(input.volcengine);
   const base = local ? process.env.SELF_HOSTED_LLM_URL : volcengine ? volc.base : process.env.REWRITE_LLM_URL;
   const key = local ? process.env.SELF_HOSTED_LLM_KEY : volcengine ? volc.key : process.env.REWRITE_LLM_KEY;
   const model = local ? process.env.SELF_HOSTED_LLM_MODEL : volcengine ? volc.model : process.env.REWRITE_LLM_MODEL || "glm-5.3";
@@ -118,13 +126,17 @@ export async function callChatCompletion(input: ChatCallOptions) {
   const url = `${base.replace(/\/$/, "")}/chat/completions`;
   if (!["http:", "https:"].includes(new URL(url).protocol)) throw new Error("模型接口协议无效");
   const attempts = checkedInteger(input.attempts ?? input.selfHosted?.maxAttempts ?? 3, 1, 10, "请求尝试次数");
+  const timeoutMs = checkedInteger(input.timeoutMs ?? 120000, 1, 1800000, "请求超时");
   const maxTokens = checkedInteger(input.maxTokens ?? (local ? 16384 : 4096), 1, 131072, "输出上限");
   const temperature = input.temperature ?? (local ? 1 : 0.2);
   if (!Number.isFinite(temperature) || temperature < 0 || temperature > 2) throw new Error("模型温度无效");
   const messages = input.messages.map(message => ({ role: message.role, content: message.content }));
-  const body = JSON.stringify(volcengine ? volcengineChatBody({ model, messages, temperature, maxTokens, json: input.json !== false }) : { model, messages, temperature,
-    ...(local ? { max_completion_tokens: maxTokens, reasoning_effort: "medium", top_p: 0.95, top_k: 20,
-      chat_template_kwargs: { enable_thinking: true, reasoning_effort: "medium", preserve_thinking: true } }
+  const body = JSON.stringify(volcengine ? volcengineChatBody({ model, messages, temperature, maxTokens, json: input.json !== false, thinking: input.volcengine?.thinking, reasoningEffort: input.volcengine?.reasoningEffort }) : { model, messages, temperature,
+    ...(local ? { max_completion_tokens: maxTokens, top_p: 0.95, top_k: 20,
+      // 不思考时完全去掉medium和preserve_thinking，不能让兼容模板重新打开思考。
+      ...(input.selfHostedThinking === false
+        ? { chat_template_kwargs: { enable_thinking: false } }
+        : { reasoning_effort: "medium", chat_template_kwargs: { enable_thinking: true, reasoning_effort: "medium", preserve_thinking: true } }) }
       : { max_tokens: maxTokens, thinking: { type: "disabled" } }),
     stream: local,
     ...(input.json === false ? {} : { response_format: { type: "json_object" } }),
@@ -136,7 +148,7 @@ export async function callChatCompletion(input: ChatCallOptions) {
   // 本地适配器自己负责逐次流式重试；这里不再外套同样的三次HTTP重试。
   for (let attempt = 1; attempt <= (local ? 1 : attempts); attempt += 1) {
     const signal = local ? input.signal : input.signal
-      ? AbortSignal.any([input.signal, AbortSignal.timeout(120000)]) : AbortSignal.timeout(120000);
+      ? AbortSignal.any([input.signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs);
     let response: Response;
     try {
       response = await loggedChatFetch(url, { method: "POST", headers, cache: "no-store", signal, body },

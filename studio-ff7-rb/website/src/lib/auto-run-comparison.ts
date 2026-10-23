@@ -42,3 +42,20 @@ export function compareWaveformSpans(reference: { start: number; end: number }, 
   return { metricVersion: "waveform-cn-span-over-jp-reference-v1", jpSpan, cnSpan, spanRatio, enabled: true,
     pass: spanRatio !== null && spanRatio >= rule.low - 1e-9 && spanRatio <= rule.high + 1e-9 };
 }
+
+/** 净发声时长比：情绪已经从参考和TTS正文中移除，再扣除双方波形长静音。
+ * span字段在本版本明确保存净发声毫秒，start/end只是原包络证据，span!=end-start。
+ * 不改变拍数比normalizedRatio公式，也不改变旧版本记录的含义；缺测量不能按总长充数。
+ */
+export function compareNetSpeakingTimes(reference: { startMs:number;endMs:number;speechSeconds:number;pauseSeconds:number } | null,
+ candidate: { startMs:number;endMs:number;speechSeconds:number;pauseSeconds:number } | null,rule:{low:number;high:number;absoluteToleranceMs?:number}) {
+ const span=(value:typeof reference)=>value&&Number.isFinite(value.speechSeconds)&&value.speechSeconds>0
+   ? {start:value.startMs,end:value.endMs,span:value.speechSeconds*1000,pauseMs:value.pauseSeconds*1000,envelopeMs:value.endMs-value.startMs}:null;
+ const jpSpan=span(reference),cnSpan=span(candidate),spanRatio=jpSpan&&cnSpan?cnSpan.span/jpSpan.span:null;
+ const deltaMs=jpSpan&&cnSpan?cnSpan.span-jpSpan.span:null;
+ const absoluteToleranceMs=Number.isFinite(rule.absoluteToleranceMs)&&rule.absoluteToleranceMs!>=0?rule.absoluteToleranceMs!:0;
+ const ratioPass=spanRatio!==null&&spanRatio>=rule.low-1e-9&&spanRatio<=rule.high+1e-9;
+ const absolutePass=deltaMs!==null&&Math.abs(deltaMs)<=absoluteToleranceMs+1e-6;
+ return {metricVersion:"waveform-cn-net-over-jp-clean-reference-v1",jpSpan,cnSpan,spanRatio,enabled:true,
+  deltaMs,absoluteToleranceMs,ratioPass,absolutePass,pass:ratioPass||absolutePass};
+}

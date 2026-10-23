@@ -4,6 +4,7 @@ import { parseJsonObject, rewriteChat } from "./auto-run-llm";
 import type { SeedAsrResult } from "./seed-asr";
 import { alignJapaneseClauses, chineseSpliceClauses, type BoundaryRefinement, type SegmentSpan } from "./speech-segmentation";
 import { requireDeletionOnlyScript } from "./tts-reference";
+import { ORIGINAL_VOICE_REUSE_POLICY } from "./onomatopoeia-reuse-policy";
 
 export type TimeSpan = { startMs: number; endMs: number; text?: string };
 
@@ -75,6 +76,7 @@ export async function planOnomatopoeia(input: {
   jpAsr: SeedAsrResult;
   /** 唯一漏识别拟声补救已分左右ASR正文，复用其字轴，防止再次跨缺口对齐。 */
   subtitleClauses?: SegmentSpan[];
+  clauseSplitEvidence?: unknown[];
 }): Promise<OnoPlan> {
   const sourceScript = input.ttsText ?? input.textZh;
   const words = input.jpAsr.words.length ? input.jpAsr.words : input.jpAsr.utterances.flatMap((row) => row.words);
@@ -112,6 +114,15 @@ export async function planOnomatopoeia(input: {
         "独立成段的感叹、笑声、叹气可以保留原声演出，不要求必须是笑声。正常词句仍归 speech。没有需保留原声的声音时原样返回 tts_text。",
         "required_original_indexes 是程序确认要保留原声的独立感叹，必须归入 onomatopoeia；中文稿中的对应句首感叹及关联标点从 cn_tts_text 删除。即使它有感叹语义，也不能以不是笑声为由改为正文。",
         "original_cn_tts_text 是从 text_zh 删除同一批保留原声的拟声后得到的原版正文，必须独立处理，保留原正文所有字、标点和段落。不能拿改稿 cn_tts_text 代替：例如原字幕哦哦，诱饵吗！、改稿哦！诱饵！，分别返回原正文诱饵吗！和改稿正文诱饵！。原拟声字幕将从 text_zh 恢复，不能缩字、改字。",
+        // 与迁移071及提示词库保持一致：拟声是保留原声的工程分类，不按语法词性判断。
+        // 正式请求使用数据库最新启用模板；这里保留可审阅的源码定义，不能绕过提示词管理。
+        "分类优先规则（工程上的保留原声，与语法词性无关）：",
+        "onomatopoeia 是“独立情绪/非正文发声，保留原日文演出”的工程标签，不限于语言学上的拟声词。叹词、感叹词、语气词即使有字幕、具有感叹语义、位于句首或能与中文字幕逐字对应，也不能据此归为speech。",
+        "先判断一个完整ASR文字段是否仅为独立的情绪发声，再判断能否与中文对应。对于独立成段、无普通词句内容，且中文有兼容发声的感叹（例如日文「あ／ああ／あ～」与中文“啊／啊～”，「おお」与“哦”，「うん」与“嗯”），优先归入onomatopoeia，原声保留；从中日正文及中文TTS稿删除对应语气词和关联标点，最终字幕由程序恢复。",
+        "反例纠正：官方「あ～ 完全にだましにきてる」、中文“啊～根本就是在骗人”，若ASR已分成「ああ」和「完全に騙しに来てる」，前段应归onomatopoeia，后段归speech。中日「あ～／啊～」对应正是保留原声的依据，不是将它当正文重新TTS的理由。",
+        "仍不可拆开完整ASR段；语气和正文混在同一个不可拆ASR段时不得猜切。正常词句、呼叫人名、明确招呼/征询的「ねえ／ねぇ／ねー」以及词内「わからねえ」等继续按正文处理，不能因含有某个假名就当拟声。已有独立情绪应答可保留的规则仍有效。",
+        "返回前检查：若将独立啊/哦/嗯类段归speech，不能仅以“属于字幕的一部分”“能与中文对应”“是句首叹词”作为理由，必须有它实际承载普通正文内容或符合明确排除项的证据。",
+        ORIGINAL_VOICE_REUSE_POLICY,
         "只输出 JSON：unparseable 是否无法解析；original_jp_speech_text 去掉已确认拟声后的官方日文正文；original_cn_tts_text 去掉拟声后的原中文字幕正文；speech_clause_indexes 正文段 index 数组；onomatopoeia_clause_indexes 拟声段 index 数组；cn_tts_text 去掉拟声后的中文朗读稿；reason 一句话；thinking。",
       ].join("\n"), promptKey: "onomatopoeia-plan.system", promptValues: {},
     },
@@ -119,6 +130,7 @@ export async function planOnomatopoeia(input: {
       role: "user",
       content: JSON.stringify({
         slice_text_source: "seed-asr",
+        conservative_split_evidence: input.clauseSplitEvidence?.length ? input.clauseSplitEvidence : undefined,
         asr_text: input.jpAsr.text,
         text_jp: input.textJp,
         text_zh: input.textZh,
@@ -131,6 +143,7 @@ export async function planOnomatopoeia(input: {
         subtitle_clauses: clauses.map((span, index) => ({ index, text: span.text })),
       }), promptKey: "onomatopoeia-plan.input", promptValues: {"input_json": JSON.stringify({
         slice_text_source: "seed-asr",
+        conservative_split_evidence: input.clauseSplitEvidence?.length ? input.clauseSplitEvidence : undefined,
         asr_text: input.jpAsr.text,
         text_jp: input.textJp,
         text_zh: input.textZh,

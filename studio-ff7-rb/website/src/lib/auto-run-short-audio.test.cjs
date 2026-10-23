@@ -4,10 +4,10 @@ const assert = require('node:assert/strict');
 const { readFileSync } = require('node:fs');
 const Module = require('node:module');
 const ts = require('typescript');
-const { shortPerformancePolicy, checkShortCharacters, shortRewriteTarget, shortAudioDirection } = require('./auto-run-script-policy.ts');
+const { shortPerformancePolicy, shortAudioDirection, SHORT_NET_SPEAKING_TOLERANCE_MS } = require('./auto-run-script-policy.ts');
 const { compareWaveformSpans } = require('./auto-run-comparison.ts');
 const loaded = new Module(__filename);
-loaded.require = id => require(id.startsWith('./') ? `${id}.ts` : id);
+loaded.require = id => id==='./tts-pronunciation-db' ? {} : require(id.startsWith('./') ? `${id}.ts` : id);
 loaded._compile(ts.transpileModule(readFileSync(`${__dirname}/tts-gpu.ts`, 'utf8'), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
 }).outputText, `${__dirname}/tts-gpu.ts`);
@@ -21,26 +21,11 @@ function wav(samples, sampleRate = 1000) {
   b.write('data', 36); b.writeUInt32LE(samples.length * 2, 40);
   samples.forEach((v,i) => b.writeInt16LE(v,44+i*2)); return b;
 }
-test('short policy counts only cleaned Japanese body, counts non-quote punctuation for its cap, and includes six/seven-character lines and excludes eight-character lines', () => {
-  const policy = shortPerformancePolicy('オトリか！', ratio);
-  assert.deepEqual(policy, { jpCharacters: 4, min: 3, max: 5 });
-  assert.equal(checkShortCharacters(policy, '诱饵！').pass, false);
-  assert.equal(checkShortCharacters(policy, '诱饵吗！').pass, true);
-  assert.equal(checkShortCharacters(policy, '原来是诱饵！').pass, true);
-  assert.equal(checkShortCharacters(policy, '这原来是诱饵！').pass, false);
-  assert.equal(checkShortCharacters(policy, '诱[停顿=300]饵吗！').characters, 3);
-  assert.equal(shortPerformancePolicy('甲乙丙丁戊己庚辛', ratio), null);
-  assert.equal(shortPerformancePolicy('？！', ratio), null);
-  for (let n=1;n<8;n++) {
-    const p=shortPerformancePolicy('あ'.repeat(n),ratio);
-    assert.ok(p.min>=1 && p.min<=p.max && p.max===n);
-  }
-});
-test('shorter or longer rewrite target responds to real duration feedback within character limits', () => {
-  const p=shortPerformancePolicy('オトリか',ratio);
-  assert.equal(shortRewriteTarget(p,'诱饵吗','longer'),4);
-  assert.equal(shortRewriteTarget(p,'诱饵吗','shorter'),3);
-  assert.equal(shortRewriteTarget(p,'诱饵','shorter'),3);
+test('日文正文1至8字含8字仅标记短句，不产生中文字数上下限或目标', () => {
+  for(let n=1;n<=8;n++) assert.deepEqual(shortPerformancePolicy('あ'.repeat(n)), {jpCharacters:n});
+  assert.deepEqual(shortPerformancePolicy('「どうしたの？」'), {jpCharacters:5});
+  assert.equal(shortPerformancePolicy('甲乙丙丁戊己庚辛壬'), null);
+  assert.equal(shortPerformancePolicy('？！'), null);
 });
 test('cap head and tail separately without touching internal silence, weak onset or body PCM', () => {
   const body=[100,10000,0,0,0,10000,100]; // 1% weak phonemes must survive
@@ -73,11 +58,17 @@ test('waveform duration gate includes endpoints and rejects missing or invalid s
   for (const end of [.849,1.151,0,NaN]) assert.equal(compareWaveformSpans({start:0,end:1},{start:0,end},{low:.85,high:1.15}).pass,false);
 });
 
-test('five short rewrites select by allowed character length even when an invalid two-character draft has a perfect beat ratio', async () => {
+test('短句五稿不按中文字数或拍数比筛选和排序，允许保留两字自然表达', async () => {
   const loadTs = name => {
     if(!name.startsWith('./'))return require(name);
+    if(name==='./auto-run-two-parts')return{performanceRewriteMessages:m=>m};
+    if(name==='./rewrite-translation-reference')return{withTranslationReferences:async m=>m};
+    if(name==='./llm-chat-client')return{callChatCompletion:async input=>{
+      const response=await global.fetch('http://test.invalid',{method:'POST',body:JSON.stringify(input)});
+      const result=await response.json();return{content:result.choices[0].message.content,thinking:''};
+    }};
     if(name==='./prompt-store')return require('./prompt-test-store.cjs');
- if(name==='./llm-metrics') return {beginLlmCall:async()=> 'test-log',recordLlmCall:async()=>{}};
+ if(name==='./llm-metrics') return {currentLlmStem:()=>undefined,beginLlmCall:async()=> 'test-log',recordLlmCall:async()=>{}};
     if(name==='./tts-gpu') return loaded.exports;
     if(name==='./auto-run-script-policy') return require('./auto-run-script-policy.ts');
     if(name==='./beats') return require('./beats.ts');
@@ -103,8 +94,9 @@ test('five short rewrites select by allowed character length even when an invali
     const measure=async text=>({jp:{units:null},cn:{units:[...text.replace(/\p{P}/gu,'')].length},normalizedRatio:text==='诱饵！'?1:9});
     const result=await loadTs('./auto-run-llm').rewriteFive({speaker:'',show:null,textJp:'オトリか！',textEn:'A decoy!',
       original:'诱饵吗！',current:'诱饵！',beats:await measure('诱饵！'),before:[],after:[],jpAsr:{raw:[]},failNotes:['中文发声偏短'],
-      shortLine:{jpCharacters:4,min:3,max:4,target:3},measure});
-    assert.equal(result.text,'诱饵吗！');
+      shortLine:{jpCharacters:4},measure});
+    assert.equal(result.text,'诱饵！');
+    assert.equal(result.target,null);
     assert.equal(result.pickedInBand,true);
     assert.equal(index,5);
   } finally {
@@ -115,9 +107,7 @@ test('five short rewrites select by allowed character length even when an invali
 });
 
 test('known short duration failure requires a longer draft even if ASR also failed', () => {
-  const policy=shortPerformancePolicy('オトリか',ratio);
   assert.equal(shortAudioDirection([.634],.85,1.15),'longer');
-  assert.equal(shortRewriteTarget(policy,'诱饵吗？',shortAudioDirection([.634],.85,1.15)),4);
   assert.equal(shortAudioDirection([1.3,1.4],.85,1.15),'shorter');
   for(const ratios of [[],[.8,1.2],[.9],[NaN]]) assert.equal(shortAudioDirection(ratios,.85,1.15),null);
 });
@@ -126,9 +116,8 @@ const {performanceCharacterLimit}=require('./auto-run-script-policy.ts');
 test('1600 cap is max(7 Japanese non-quote characters, floor(2.301 seconds times 3.5)) = 8, preserving full meaning',()=>{
  const limit=performanceCharacterLimit('さて 正解は～？',2.301);
  assert.deepEqual(limit,{jpLimitCharacters:7,durationLimit:8,speechSeconds:2.301,max:8});
- const p=shortPerformancePolicy('さて 正解は～？',ratio,2.301);assert.deepEqual(p,{jpCharacters:5,min:4,max:8});
- assert.equal(checkShortCharacters(p,'那么，正确答案是……？').characters,7);assert.equal(checkShortCharacters(p,'那么，正确答案是……？').pass,true);
- assert.equal(checkShortCharacters(p,'那么真正正确答案是？').pass,false);
+ const p=shortPerformancePolicy('さて 正解は～？');assert.deepEqual(p,{jpCharacters:5});
+
 });
 test('Japanese punctuation counts once, quote styles and whitespace never consume cap, and unknown time never invents duration',()=>{
  for(const [a,b] of [['「','」'],['『','』'],['“','”'],['‘','’'],['"','"'],["'","'"],['｢','｣'],['＂','＂']])assert.equal(performanceCharacterLimit(`${a}さて${b} \n正解は～？`).max,7);
@@ -140,4 +129,14 @@ test('long internal silence cannot inflate the 3.5 characters per second allowan
  const samples=new Float32Array(5000);samples.fill(.5,0,1000);samples.fill(.5,4000,5000);
  const measured=require('./speech-segmentation.ts').measurePerformanceSpeakingTime({samples,sampleRate:1000,startS:0,endS:5});
  assert.equal(measured.speechSeconds,2);assert.equal(performanceCharacterLimit('あ～',measured.speechSeconds).max,7);
+});
+
+test('做得到在150ms内不再触发缩稿，超过容差及慢速长句仍遵守比例方向',()=>{
+ const rule={referenceSeconds:.326625,toleranceMs:SHORT_NET_SPEAKING_TOLERANCE_MS};
+ const ratios=[394.5,407.4166666667,460.2916666667].map(ms=>ms/326.625);
+ assert.equal(shortAudioDirection(ratios,.85,1.15,rule),null);
+ assert.equal(shortAudioDirection([476.626/326.625],.85,1.15,rule),'shorter');
+ assert.equal(shortAudioDirection([176.625/326.625],.85,1.15,rule),null);
+ assert.equal(shortAudioDirection([176.624/326.625],.85,1.15,rule),'longer');
+ assert.equal(shortAudioDirection(ratios,.85,1.15),'shorter');
 });

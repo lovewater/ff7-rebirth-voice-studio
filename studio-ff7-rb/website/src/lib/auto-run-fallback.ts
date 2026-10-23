@@ -9,17 +9,18 @@ export type FallbackQuality = {
 };
 
 /** 仅在正常筛选没有结果时使用，不放宽“通过”标准。
- * 汇总所有轮次：已校验优先、正文硬伤少优先，短句再比较字符越界数，然后比较跨度与拍数比的合计偏差、读音疑点、总时长。
- * 硬伤数是校字证据条数，不是缺失字数；未知指标排在已知指标之后，相同则保留先生成的。
+ * 净发声时长比与拍数“比”是独立维度，各自在正常筛选中按原阈值/豁免判断。
+ * 全轮均不合格后，先保留已校验、正文硬伤最少的，再只按实际时长误差（秒）择优。
+ * 禁止把拍数比偏差与时长比偏差相加，也不让字符越界或轻微读音疑点覆盖时长选择。
+ * durationDeviation必须与本次实际参考匹配：场景正文用去情绪参考的净发声差，整句降级用整句发声跨度差。
+ * 硬伤数是校字证据条数，不是缺失字数；未知时长排在已知之后，时长相同再比较读音疑点，仍同分保留较早的。
  */
 export function closestFallback<T extends FallbackQuality>(candidates: T[]): T | null {
   const score = (row: T) => [
     row.reviewed ? 0 : 1,
     row.hardIssueCount,
-    row.characterDeviation ?? 0,
-    (row.paceDeviation ?? Infinity) + (row.beatDeviation === undefined ? 0 : row.beatDeviation ?? Infinity),
+    typeof row.durationDeviation === "number" && Number.isFinite(row.durationDeviation) ? row.durationDeviation : Infinity,
     row.pronunciationIssueCount,
-    row.durationDeviation ?? Infinity,
   ];
   return candidates.reduce<T | null>((best, row) => {
     if (!best) return row;

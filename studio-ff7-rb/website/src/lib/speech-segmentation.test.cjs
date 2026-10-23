@@ -164,6 +164,25 @@ test('laugh boundary moves to the short valley, keeping weak speech onset after 
   assert.equal(result.clauses[1].endMs, 2500);
 });
 
+test('首字ASR起点前200ms后50ms内识别宽平底低谷，取中点而非退回首字', () => {
+  const input = boundaryInput([{ startMs: 0, endMs: 2000, text: '笑' }]);
+  input.samples = Float32Array.from([...sound(1840), ...silence(100), ...sound(560)]);
+  const result = refinePerformanceBoundaries(input), cut = result.adjustments[0];
+  assert.equal(cut.reason, 'energy-valley');
+  assert.equal(cut.searchStartMs, 1800); assert.equal(cut.searchEndMs, 2050);
+  assert.ok(cut.cutMs >= 1885 && cut.cutMs <= 1895);
+  assert.equal(result.onomatopoeia[0].endMs, cut.cutMs);
+});
+
+test('首字ASR早报时可向后修正50ms，校正后的字幕边界仍可安全切分', () => {
+  const input = boundaryInput([{ startMs: 0, endMs: 2000, text: '笑' }]);
+  input.samples = Float32Array.from([...sound(2010), ...silence(30), ...sound(460)]);
+  const result = refinePerformanceBoundaries(input), cut = result.adjustments[0];
+  assert.equal(cut.reason, 'energy-valley'); assert.ok(cut.cutMs > 2000 && cut.cutMs <= 2050);
+  assert.doesNotThrow(() => segmentPerformanceAudio({ ...input, words: [], speech: [input.subtitleClauses[1]],
+    onomatopoeia: result.onomatopoeia, subtitleClauses: result.clauses }));
+});
+
 test('no clear two-sided valley means no arbitrary fixed backward shift', () => {
   const input = boundaryInput([{ startMs: 0, endMs: 2000 }]);
   input.samples = Float32Array.from(sound(2500));
@@ -235,3 +254,20 @@ test('speaking-rate measurement respects trimmed reference bounds and invalid/si
  assert.equal(measurePerformanceSpeakingTime({samples,sampleRate:0,startS:0,endS:4}),null);
  assert.equal(measurePerformanceSpeakingTime({samples:new Float32Array(2000),sampleRate:1000,startS:0,endS:2}).speechSeconds,0);
 });
+
+const {splitAsrClausesByOriginalPauses:conservativeSplit}=require('./speech-segmentation.ts');
+function missedPause(ms=1200){const words=[{text:'フ',start:100,end:200},{text:'ッ',start:200,end:300},{text:'弱',start:ms+350,end:ms+450},{text:'虫',start:ms+450,end:ms+550},{text:'か',start:ms+550,end:ms+700}];return {samples:Float32Array.from([...sound(300),...silence(ms),...sound(500)]),sampleRate:1000,textJp:'ふっ 弱虫か',asrText:'フッ弱虫か。',words,clauses:alignJapaneseClauses('フッ弱虫か。',words)};}
+test('原字幕有分隔且真实静音至少1秒时，先补切未分段ASR并保留ASR文字',()=>{const x=missedPause();const r=conservativeSplit(x);assert.deepEqual(r.clauses.map(c=>c.text),['フッ','弱虫か']);assert.equal(r.splits.length,1);assert.equal(r.splits[0].silence.endMs-r.splits[0].silence.startMs,1200);assert.equal(r.splits[0].cutMs,900);});
+test('不足1秒、无原字幕分隔、正文不一致及只有字轴空档均不补切',()=>{
+ for(const ms of [500,990])assert.equal(conservativeSplit(missedPause(ms)).splits.length,0);
+ for(const mutate of [x=>x.textJp='ふっ弱虫か',x=>x.textJp='ふっ 強虫か',x=>x.samples.fill(.5),x=>x.words[1].start=150,x=>x.words[1].end=NaN,x=>{x.words=[{text:'フッ弱虫か',start:100,end:1900}];x.clauses=alignJapaneseClauses(x.asrText,x.words);}]){const x=missedPause();mutate(x);assert.equal(conservativeSplit(x).splits.length,0);}
+});
+test('原字幕的空格、换行、标点分隔均可作对应依据；ASR已有分界则不重复切',()=>{
+ for(const separator of [' ','\n','、']){const x=missedPause();x.textJp='ふっ'+separator+'弱虫か';assert.equal(conservativeSplit(x).splits.length,1);}
+ const x=missedPause();x.asrText='フッ 弱虫か。';x.clauses=alignJapaneseClauses(x.asrText,x.words);const r=conservativeSplit(x);assert.equal(r.splits.length,0);assert.deepEqual(r.clauses,x.clauses);
+});
+test('长停顿在原字幕分界之外不能授权补切；只补确认的边界不改其余ASR分段',()=>{
+ const x=missedPause();x.words=[{text:'フ',start:100,end:150},{text:'ッ',start:150,end:200},{text:'弱',start:200,end:300},{text:'虫',start:1600,end:1750},{text:'か',start:1750,end:1900}];x.clauses=alignJapaneseClauses(x.asrText,x.words);assert.equal(conservativeSplit(x).splits.length,0);
+});
+
+test("恰好1秒满足用户的至少1秒门槛",()=>{assert.equal(conservativeSplit(missedPause(1000)).splits.length,1);});

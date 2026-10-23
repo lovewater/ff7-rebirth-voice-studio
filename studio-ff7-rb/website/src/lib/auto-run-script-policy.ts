@@ -46,7 +46,7 @@ export function checkAutoBeat(result: { jp: { status: string }; normalizedRatio:
   };
 }
 
-export type ShortPerformancePolicy = { jpCharacters: number; min: number; max: number };
+export type ShortPerformancePolicy = { jpCharacters: number };
 export function spokenCharacters(text: string) {
   return [...text.replace(/\[停顿=\d{1,4}\]/g, "").replace(/[\s\p{P}\p{S}]/gu, "")].length;
 }
@@ -67,41 +67,54 @@ export function performanceCharacterLimit(textJp: string, speechSeconds: number 
   return { jpLimitCharacters, durationLimit, speechSeconds, max: Math.max(jpLimitCharacters, durationLimit ?? 0) };
 }
 
-/** 少于八个纯正文字符仍豁免拍数比；最低字数继续按原合格带推算。
- * 只放宽上限为统一的净时长/日文含标点上限，不用汉字书写长度截断“正确答案”等核心信息。
- * 进入短句线路的判断不受标点数影响，堆标点不能让短句变成普通句。
+/** 自动场景日文正文1～8字（含8字）不设中文字数上下限或目标，不为凑字扩写。
+ * 标点和空白不改变门槛；音频校字、实测时长检查仍独立执行。
  */
-export function shortPerformancePolicy(textJp: string, normalRatio: number, speechSeconds: number | null = null): ShortPerformancePolicy | null {
+export function shortPerformancePolicy(textJp: string): ShortPerformancePolicy | null {
   const jpCharacters = spokenCharacters(textJp);
-  if (!jpCharacters || jpCharacters >= 8) return null;
-  return { jpCharacters, min: Math.min(jpCharacters, Math.max(1, Math.ceil(jpCharacters / (normalRatio * AUTO_BEAT_HIGH)))), max: performanceCharacterLimit(textJp, speechSeconds).max };
+  return jpCharacters > 0 && jpCharacters <= 8 ? { jpCharacters } : null;
 }
 
-export function checkShortCharacters(policy: ShortPerformancePolicy, text: string) {
+/** 仅供超过8字的慢速句检查既有中文字数上限。 */
+export function checkShortCharacters(policy: { jpCharacters: number; min: number; max: number }, text: string) {
   const characters = spokenCharacters(text);
   return { characters, ...policy, pass: characters >= policy.min && characters <= policy.max };
-}
-
-/** 无音频的改稿只能按时长反馈调整字数，不能宣称预测出声音长度。
- * 偏短优先增加一字、偏长优先减少一字；多稿同字数时保留生成顺序，不按拍数比打分。
- */
-export function shortRewriteTarget(policy: ShortPerformancePolicy, current: string, direction: "longer" | "shorter" | null) {
-  const count = spokenCharacters(current);
-  return Math.max(policy.min, Math.min(policy.max, count + (direction === "longer" ? 1 : direction === "shorter" ? -1 : 0)));
 }
 
 /** 整轮候选都实测偏短/偏长时，即使校字也失败，时长证据仍有效，须调整稿长。
  * 有合适时长或方向相互冲突时，不用一次 ASR 失败推断应增字还是减字。
  */
-export function shortAudioDirection(ratios: number[], low: number, high: number): "longer" | "shorter" | null {
+export const SHORT_NET_SPEAKING_TOLERANCE_MS = 150;
+
+export function shortAudioDirection(ratios: number[], low: number, high: number, absoluteRule?: { referenceSeconds: number; toleranceMs: number }): "longer" | "shorter" | null {
   if (!ratios.length) return null;
+  // 有候选落在短句绝对容差内时，不能因比例越界再要求增删字。
+  if (absoluteRule && Number.isFinite(absoluteRule.referenceSeconds) && absoluteRule.referenceSeconds > 0
+    && Number.isFinite(absoluteRule.toleranceMs) && absoluteRule.toleranceMs >= 0
+    && ratios.some(ratio => Number.isFinite(ratio) && ratio > 0
+      && Math.abs((ratio - 1) * absoluteRule.referenceSeconds * 1000) <= absoluteRule.toleranceMs + 1e-6)) return null;
   if (ratios.every((ratio) => Number.isFinite(ratio) && ratio > 0 && ratio < low)) return "longer";
   if (ratios.every((ratio) => Number.isFinite(ratio) && ratio > high)) return "shorter";
   return null;
 }
 
 export const SLOW_JP_MORA_PER_SECOND = 3;
-export type SlowPerformancePolicy = { jpMora: number; speechSeconds: number; moraPerSecond: number; target: number; max?: number };
+export type SlowPerformancePolicy = { jpMora: number; speechSeconds: number; moraPerSecond: number; target: number; max?: number;
+  durationDirection?: "longer" | "shorter" };
+
+/** 仅有真实、同方向的整轮波形证据才撤掉“一拍一字”偏好。
+ * 字数>=摩拉仍短 / 字数<=摩拉仍长（均包含相等），且每条净时长差都超过200ms。
+ * 空证据、非法时长、长短混杂或已在容差内均不触发，不能仅因字数猜测音频。
+ */
+export function slowMoraTargetConflict(policy: SlowPerformancePolicy, text: string,
+  rows: { referenceSeconds: number; candidateSeconds: number }[]): "longer" | "shorter" | null {
+  if (!rows.length || rows.some(r => !Number.isFinite(r.referenceSeconds) || !Number.isFinite(r.candidateSeconds)
+    || r.referenceSeconds <= 0 || r.candidateSeconds <= 0)) return null;
+  const characters = spokenCharacters(text);
+  if (characters >= policy.jpMora && rows.every(r => r.referenceSeconds-r.candidateSeconds > .2+1e-9)) return "longer";
+  if (characters <= policy.jpMora && rows.every(r => r.candidateSeconds-r.referenceSeconds > .2+1e-9)) return "shorter";
+  return null;
+}
 
 /** 短句或慢速满足任一条件即可豁免拍数比，慢速分支本身不设日文字数门槛。
  * 只用可靠的纯摩拉数（不含标点停顿拍）÷裁后正文发声秒数；严格 <3，等于3不豁免。
@@ -134,4 +147,20 @@ export function durationRewritePolicy(script: string, referenceSeconds: number, 
   const currentCharacters = spokenCharacters(script);
   return { currentCharacters, referenceSeconds, candidateSeconds,
     target: Math.max(1, Math.round(currentCharacters * referenceSeconds / candidateSeconds)) };
+}
+
+/** 中文绝对语速硬上限：正文至少6个汉字才启用，<6字（如“是谁”）情绪短句豁免。
+ * 参照C3010_MAIN_0700_1300_00_big原中文约9.25音节/秒，取9.0作为稍保守上限。
+ * rate=中文音节/扣情绪与长静音后的净发声秒数；静音不能稀释语速。
+ * 此限制独立于拍数比、短/慢句豁免及最终总长，其他指标合格不能覆盖超速。
+ */
+export const CHINESE_MAX_SYLLABLES_PER_SECOND = 9;
+export const CHINESE_SPEED_MIN_HAN = 6;
+export function checkChineseSpeakingSpeed(text:string,netSeconds:number|null,syllables?:number|null){
+ const hanCharacters=[...text.matchAll(/\p{Script=Han}/gu)].length;
+ const units=syllables!=null&&Number.isFinite(syllables)&&syllables>0?syllables:hanCharacters;
+ const enabled=hanCharacters>=CHINESE_SPEED_MIN_HAN;
+ const rate=netSeconds!=null&&Number.isFinite(netSeconds)&&netSeconds>0?units/netSeconds:null;
+ return {enabled,hanCharacters,syllables:units,netSeconds,rate,max:CHINESE_MAX_SYLLABLES_PER_SECOND,
+  pass:!enabled||(rate!==null&&rate<=CHINESE_MAX_SYLLABLES_PER_SECOND+1e-9)};
 }

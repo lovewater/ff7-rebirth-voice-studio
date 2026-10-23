@@ -1,7 +1,11 @@
 const {test}=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs'),Module=require('node:module'),ts=require('typescript');
 const m=new Module(__filename);
-m.require=id=>id==='./auto-run-rules'?require('./auto-run-rules.ts'):require(id);
+m.require=id=>{
+ if(id==='./auto-run-rules')return require('./auto-run-rules.ts');
+ if(id==='./speech-part-timeline'){const t=new Module(__filename);t._compile(ts.transpileModule(fs.readFileSync(`${__dirname}/speech-part-timeline.ts`,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,__filename);return t.exports;}
+ return require(id);
+};
 m._compile(ts.transpileModule(fs.readFileSync(`${__dirname}/gap-only-align.ts`,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,`${__dirname}/gap-only-align.ts`);
 const {singleInternalGap:detect,gapOnlyAlignmentPlan:plan,alignSingleGap:align}=m.exports;
 function wave(sr,segments){
@@ -38,4 +42,21 @@ test('cannot fit voice blocks: reject rather than trim speech or stretch it',()=
 test('reject pure silence and invalid samples without exposing advanced alignment',()=>{
  for(const samples of [new Float32Array(),new Float32Array(2000),Float32Array.of(NaN),Float32Array.of(Infinity)])assert.equal(detect({samples,sampleRate:1000}),null);
  assert.equal(detect({...jp(),sampleRate:0}),null);
+});
+test('三段对话工作流只改留白，中段中心对齐日文中段，原PCM和输入不变',()=>{
+ const ref=wave(1000,[[.1,0],[.5,1],[.4,0],[.8,1],[.6,0],[.7,1],[.2,0]]);
+ for(const sr of [1000,2000]){
+  const edit=wave(sr,[[.3,0],[.4,1],[.3,0],[.6,1],[.3,0],[.5,1],[.2,0]]),before=edit.samples.slice(),p=plan(ref,edit),out=align(ref,edit);
+  assert.equal(p.partCount,3);assert.equal(out.length,Math.round(ref.samples.length*sr/1000));
+  assert.ok(Math.abs((p.starts[1]+(p.parts[1].end-p.parts[1].start)/2)/sr-1.4)<=1/sr);
+  p.parts.forEach((part,i)=>assert.deepEqual(out.subarray(p.starts[i],p.starts[i]+part.end-part.start),edit.samples.subarray(part.start,part.end)));
+  assert.deepEqual(edit.samples,before);assert.ok(p.gaps.every(n=>n>=.25*sr));
+  assert.equal(p.starts[0],.1*sr);assert.equal(p.starts[2]+p.parts[2].end-p.parts[2].start,3.1*sr);
+ }
+});
+test('两三段不匹配、四段或三段装不下不能启动高级对齐',()=>{
+ const three=wave(1000,[[.3,1],[.3,0],[.3,1],[.3,0],[.3,1]]);
+ const four=wave(1000,[[.3,1],[.3,0],[.3,1],[.3,0],[.3,1],[.3,0],[.3,1]]);
+ const huge=wave(1000,[[1,1],[.3,0],[1,1],[.3,0],[1,1]]);
+ assert.equal(plan(three,cn()),null);assert.equal(plan(four,four),null);assert.equal(plan(three,huge),null);
 });

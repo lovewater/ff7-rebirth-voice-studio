@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-require-imports */
 const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),Module=require('node:module'),ts=require('typescript');
-function compile(file,overrides){const m=new Module(__filename);m.require=id=>overrides[id]??(id.startsWith('./')?{}:require(id));m._compile((overrides['test-fetch']?'const fetch=require("test-fetch");\n':'')+ts.transpileModule(fs.readFileSync(`${__dirname}/${file}`,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText+(file==='auto-run.ts'?'\nexports.__runQuickOriginal=runQuickOriginal;':''),`${__dirname}/${file}`);return m.exports;}
+function compile(file,overrides){const m=new Module(__filename);m.require=id=>overrides[id]??(id==='./auto-run-model-policy'?{runAutoRunModels:input=>input.attempt(),captureAutoRunOutcome:()=>false}:id==='./shushu-emotion'?require('./shushu-emotion.ts'):id==='./singing-original'?{isSingingLine:()=>false}:id.startsWith('./')?{}:require(id));m._compile((overrides['test-fetch']?'const fetch=require("test-fetch");\n':'')+ts.transpileModule(fs.readFileSync(`${__dirname}/${file}`,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText+(file==='auto-run.ts'?'\nexports.__setWorkflows=(performance,casual)=>{runPerformance=performance;runCasual=casual;};exports.__setOriginal=fn=>{runOriginalJapanese=fn;};':''),`${__dirname}/${file}`);return m.exports;}
 const quickModule=()=>compile('auto-run-quick.ts',{'./timing':compile('timing.ts',{}),'./spoken-text-review':compile('spoken-text-review.ts',{}),'./auto-run-script-policy':require('./auto-run-script-policy.ts'),'./beats':require('./beats.ts')});
 const normal={id:'7',audio_path:'tts/example.wav',spoken_text:'完整的中文台词',tts_text:'完整的中文台词',review_state:"candidate",passed:false,start_s:.1,end_s:3.1,dur_s:3.3,speech_s:3,jp_start_s:.1,jp_end_s:3.1,jp_dur_s:3.3,jp_speech_s:3};
 function startHarness(rows,extra={}){
@@ -84,46 +84,43 @@ test('API passes explicit manual force through to background execution',async()=
  assert.deepEqual(h.calls,[['TEST',{forceGenerate:true}],['99','TEST',{forceGenerate:true}]]);
 });
 
-for(const beatRatio of [1,1.458])test('first quick batch only reaches model selection when both timing and beat pass: '+beatRatio,async()=>{
- const line={stem:'TEST',text_zh:'完整台词',text_jp:'これは通常速度の台詞です',text_en:'English',dialogue_mode:'scene'},events=[],updates=[];
- const sql=async(parts,...args)=>{
-  const q=parts.join('?');
+// 真实执行入口回归：新句没有历史/修改稿，也不能先生成原稿并提前通过。
+for(const forceGenerate of [false,true])for(const performance of [false,true])test(`自动运行直接进入完整${performance?'表演':'普通对话'}流程 force=${forceGenerate}`,async()=>{
+ const events=[],workflows=[],line={stem:'TEST',text_zh:'原字幕',dialogue_mode:performance?'scene':'field'};
+ const sql=async(parts,...args)=>{const q=parts.join('?');
   if(q.includes('SELECT l.stem'))return[line];
-  if(q.includes('SELECT count(*)::int AS count'))return[{count:0}];
-  if(q.includes('SELECT id::text AS id, tts_text'))return['1','2'].map(id=>({id,tts_text:'完整台词',spoken_text:'完整台词',dur_s:3.3,audio_path:`tts/${id}.wav`,speech_pass:true,speech_score:0}));
-  if(q.includes('SELECT jp_start_s'))return[{jp_start_s:.1,jp_end_s:3.1,jp_dur_s:3.3,jp_speech_s:3}];
-  if(q.includes('FROM pronunciations'))return[];
-  if(q.includes('SELECT stem FROM line_auto_runs'))return[{stem:'TEST'}];
-  if(q.includes('original_subtitle'))return[{id:'2',subtitle_text:null,original_subtitle:'完整台词'}];
-  if(q.includes('INSERT INTO line_auto_run_events'))events.push(args);
-  if(q.includes('UPDATE line_auto_runs SET status'))updates.push(args);
+  if(q.includes('INSERT INTO line_auto_run_events'))events.push({step:args[1],message:args[3]});
+  if(q.includes('SELECT count(*)'))throw Error('不得进入原稿快速生成');
   return[];
- };
- sql.json=value=>value;sql.begin=async fn=>fn(sql);
- const quick=quickModule();
- let clones=0,judges=0;
- const originalFetch=global.fetch;
- global.fetch=async(url,options)=>{if(url.endsWith('/beats'))return Response.json({results:[{jp:{status:'ok',mora:30},normalizedRatio:beatRatio}]});clones++;assert.match(url,/tts\/clone$/);const body=JSON.parse(options.body);assert.equal(body.ttsText,line.text_zh);assert.equal(body.promptLang,'jp');assert.equal(body.promptPath,undefined);return{ok:true,json:async()=>({ids:['1','2']})};};
- try{
-  const api=compile('auto-run.ts',{
-   './db':{sql},'node:fs/promises':{readFile:async()=>Buffer.from('mock wav')},'./auto-run-quick':quick,
-   './auto-run-rules':{isPerformanceMode:()=>true},'./audio-splice':{audioToMonoWav:async data=>data},
-   './tts-gpu':{wavTiming:()=>({start:.1,end:3.1,duration:3.3,speech:3})},'./qwen-asr':{qwenAsr:async()=>({text:'完整台词'})},
-   './wav-stretch':{decodeWavMono:()=>({sampleRate:1000,samples:new Float32Array(3000)})},'./speech-segmentation':{measurePerformanceSpeakingTime:()=>({speechSeconds:3})},
-   './llm-metrics':{withLlmMetrics:(_r,_s,fn)=>fn(),llmMetricsForRun:()=>({tokens:null,speed:null})},
-   './auto-run-llm':{parseJsonObject:JSON.parse,rewriteChat:async messages=>{judges++;assert.equal(messages[0].promptKey,'quick-pick.system');return{thinking:'选2',content:JSON.stringify({reviews:['1','2'].map(ttsId=>({ttsId,pass:true,missing:[],extra:[],repeated:[],unrelated:[],pronunciationNotes:[],reason:'完整'})),ranking:['2','1'],reason:'断句自然'})};}}
-  });
-  if(beatRatio>1.15){assert.equal(await api.__runQuickOriginal('99',line,{candidates:[]}),false);assert.equal(clones,1);assert.equal(judges,0);assert.equal(updates.length,0);assert.ok(events.some(args=>args[1]==='quick-beat'&&args[4].pass===false));return;}
-  await api.executeAutoRun('99','TEST',{forceGenerate:false});
-  assert.equal(clones,1);assert.equal(judges,1);
-  assert.ok(events.some(args=>args[1]==='quick-pick'));assert.deepEqual(updates.at(-1),['passed',null,'2','99']);
- }finally{global.fetch=originalFetch;}
+ };sql.json=x=>x;
+ const api=compile('auto-run.ts',{
+  './db':{sql},'./auto-run-rules':{isPerformanceMode:()=>performance},
+  './llm-metrics':{withLlmMetrics:(_r,_s,fn)=>fn()},
+  './auto-run-two-parts':{withTwoPartContext:fn=>fn()},
+  'test-fetch':async()=>{throw Error('在完整工作流之前不得TTS或请求择优模型');}
+ });
+ api.__setWorkflows(async(...args)=>workflows.push(['performance',...args]),async(...args)=>workflows.push(['casual',...args]));
+ await api.executeAutoRun('99','TEST',{forceGenerate});
+ assert.equal(workflows.length,1);assert.equal(workflows[0][0],performance?'performance':'casual');
+ assert.ok(events.some(e=>e.step==='workflow-entry'));
+ assert.equal(events.some(e=>['quick-start','quick-pick','quick-timing'].includes(e.step)),false);
 });
 
-test('quick generation and reuse accept .75–1.10 only for 8–11 JP characters',()=>{
+test('成品复用8字以内无字数门槛，9–11字仍采用原比值范围',()=>{
  const {quickBeatPass}=quickModule();
- const input={textJp:'甲乙丙丁戊己庚辛',spoken:'完整中文台词',speechSeconds:2,beats:{jp:{status:'ok',mora:10},jpSpeech:{status:'ok',mora:10},normalizedRatio:.8}};
+ const input={textJp:'甲乙丙丁戊己庚辛壬',spoken:'完整中文台词',speechSeconds:2,beats:{jp:{status:'ok',mora:10},jpSpeech:{status:'ok',mora:10},normalizedRatio:.8}};
  assert.equal(quickBeatPass(input).pass,true);
+ for(const spoken of ['怎么了','这是一句自然且完整的中文表达无需字数上限'])assert.equal(quickBeatPass({...input,textJp:'甲乙丙丁戊己庚辛',spoken,beats:{...input.beats,normalizedRatio:3}}).pass,true);
  assert.equal(quickBeatPass({...input,beats:{...input.beats,normalizedRatio:1.11}}).pass,false);
  assert.equal(quickBeatPass({...input,textJp:'甲乙丙丁戊己庚辛壬癸子丑'}).pass,false);
+});
+
+for(const performance of [false,true])test(`纯咻在ASR/TTS/模型调用前直接分流原声，场景=${performance}`,async()=>{
+ const calls=[],line={stem:'TEST',text_jp:'シュシュシュ',text_zh:'咻咻咻！',dialogue_mode:performance?'scene':'field'};
+ const sql=async parts=>parts.join('?').includes('SELECT l.stem')?[line]:[];sql.json=x=>x;
+ const api=compile('auto-run.ts',{'./db':{sql},'./auto-run-rules':{isPerformanceMode:()=>performance},'node:fs/promises':{readFile:async file=>{calls.push(['read',file]);return Buffer.from('original');}},'./llm-metrics':{withLlmMetrics:(_r,_s,fn)=>fn()},'./auto-run-two-parts':{withTwoPartContext:fn=>fn()}});
+ api.__setWorkflows(async()=>{throw Error('不得进入Seed');},async()=>{throw Error('不得进入TTS');});
+ api.__setOriginal(async(run,line,audio,route)=>calls.push(['original',audio.toString(),route.workflow]));
+ await api.executeAutoRun('99','TEST',{forceGenerate:true});
+ assert.equal(calls.length,2);assert.deepEqual(calls[1],['original','original','xiu-only-original']);
 });

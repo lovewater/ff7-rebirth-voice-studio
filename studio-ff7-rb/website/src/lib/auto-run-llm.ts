@@ -1,3 +1,6 @@
+import type { VolcengineCallOptions } from "./llm-volcengine";
+import { withTranslationReferences } from "./rewrite-translation-reference";
+import { currentLlmStem } from "./llm-metrics";
 import { performanceRewriteMessages } from "./auto-run-two-parts";
 import { withRewriteNumberHint } from "./rewrite-number-hint";
 import { resolvePromptMessages } from "./prompt-store";
@@ -5,7 +8,7 @@ import type { PromptMessage } from "./prompt-template";
 import type { DurationRewritePolicy } from "./auto-run-script-policy";
 import { retryRewriteDraft, type RewriteRetryEvent } from "./auto-run-rewrite-retry";
 import { callChatCompletion, type ChatModelId } from "./llm-chat-client";
-import { performanceSegmentationHint, checkShortCharacters, spokenCharacters, type ShortPerformancePolicy, type SlowPerformancePolicy } from "./auto-run-script-policy";
+import { performanceSegmentationHint, spokenCharacters, type ShortPerformancePolicy, type SlowPerformancePolicy } from "./auto-run-script-policy";
 import { NORMAL_JP_CN_RATIO, type BeatResult } from "./beats";
 import { parseRewrite, performanceLabel, rewriteMessages, rewritePace, REWRITE_COUNT, type ShowEvidence, type ShowLine } from "./rewrite-prompt";
 import { normalizeScript } from "./tts-gpu";
@@ -16,10 +19,13 @@ export { loggedChatFetch, roundLlmInputText, CHAT_MODELS, chatModelForTask, chat
 
 /** 业务模板入口：按任务选择模型；可选参数只用于显式覆盖，模板和访问日志始终统一处理。 */
 export async function rewriteChat(messages: PromptMessage[], temperature = 0.2, task = "unspecified", httpTries = 3,
-  options: { modelId?: ChatModelId; signal?: AbortSignal; stem?: string } = {}) {
-  messages = withRewriteNumberHint(performanceRewriteMessages(messages, task));
+  options: { modelId?: ChatModelId; signal?: AbortSignal; stem?: string; volcengine?: VolcengineCallOptions } = {}) {
+  messages = performanceRewriteMessages(messages, task);
+  // 自动正常/降级/分段改稿与手动改稿共用参考入口，不能遗漏某条重写支路。
+  messages = await withTranslationReferences(messages, task, options.stem ?? currentLlmStem());
+  messages = withRewriteNumberHint(messages);
   return callChatCompletion({ messages: await resolvePromptMessages(messages), temperature, task,
-    attempts: httpTries, modelId: options.modelId, signal: options.signal, stem: options.stem,
+    attempts: httpTries, modelId: options.modelId, volcengine: options.volcengine, signal: options.signal, stem: options.stem,
     promptKeys: [...new Set(messages.flatMap(message => message.promptKey ? [message.promptKey] : []))] });
 }
 
@@ -112,9 +118,11 @@ export async function rewriteFive(input: {
   jpAsr: SeedAsrResult;
   failNotes: string[];
   extraUser?: string;
-  shortLine?: ShortPerformancePolicy & { target: number };
+  shortLine?: ShortPerformancePolicy;
   slowLine?: SlowPerformancePolicy;
   durationLine?: DurationRewritePolicy;
+  attemptHistoryMode?: boolean;
+  normalSpeedLine?: { candidateId: string; script: string; rate: number; netSeconds: number; referenceSeconds: number; candidateSeconds: number };
   measure: (text: string) => Promise<BeatResult>;
   onRetry?: (event: RewriteRetryEvent) => Promise<void>;
 }) {
@@ -129,7 +137,7 @@ export async function rewriteFive(input: {
     beats: BeatResult | null;
     spoken: BeatResult | null;
   }[] = [];
-  for (let attempt = 0; attempt < REWRITE_COUNT; attempt += 1) {
+  for (let attempt = 0; attempt < (input.attemptHistoryMode || input.normalSpeedLine ? 1 : REWRITE_COUNT); attempt += 1) {
     const messages = rewriteMessages({
       attempt,
       speaker: input.speaker,
@@ -146,19 +154,21 @@ export async function rewriteFive(input: {
       shortLine: input.shortLine,
       slowLine: input.slowLine,
       durationLine: input.durationLine,
+      normalSpeedLine: input.normalSpeedLine,
+      attemptHistoryMode: input.attemptHistoryMode,
     });
     messages.push({
       role: "user",
       content: [
         "额外参考：日文 Seed-ASR 的音节、语速和停顿。改稿时把这些时间信息考虑进去，但仍然只输出原来的改写 JSON。",
-        input.extraUser || "",
+        input.attemptHistoryMode ? "已有尝试及问题由独立历史段提供。只提出一个新稿，不能给未合成的新稿套用旧音频结论。" : input.extraUser || "",
         JSON.stringify({
           jpAsr: input.jpAsr.raw,
-          failNotes: input.failNotes,
+          failNotes: input.attemptHistoryMode ? [] : input.failNotes,
         }),
-      ].filter(Boolean).join("\n"), promptKey: "rewrite.audio-feedback", promptValues: {"audio_feedback": input.extraUser ? input.extraUser + "\n" : "","input_json": JSON.stringify({
+      ].filter(Boolean).join("\n"), promptKey: "rewrite.audio-feedback", promptValues: {"audio_feedback": input.attemptHistoryMode ? "按已有尝试和综合改进方向修改，不把未合成的新稿当作已过关。\n" : input.extraUser ? input.extraUser + "\n" : "","input_json": JSON.stringify({
           jpAsr: input.jpAsr.raw,
-          failNotes: input.failNotes,
+          failNotes: input.attemptHistoryMode ? [] : input.failNotes,
         })},
     });
     // 正常五稿中的单稿：网络/截断/JSON 或 text 校验失败最多重试三次。
@@ -172,7 +182,7 @@ export async function rewriteFive(input: {
       try { return await input.measure(text); }
       catch (error) {
         // 实测偏短分支中拍数仅供诊断，服务不可用也不能阻断自然增字稿；未知仍记null。
-        if (input.durationLine) return null;
+        if (input.attemptHistoryMode || input.durationLine || input.normalSpeedLine) return null;
         throw error;
       }
     };
@@ -193,9 +203,9 @@ export async function rewriteFive(input: {
   }
   const shortLine = input.shortLine;
   const slowLine = input.slowLine;
-  // 慢速稿不以常规拍数比筛掉，按中文字符数到纯摩拉目标的距离排序。
-  const inBand = drafts.filter((row) => input.durationLine ? true : slowLine ? slowLine.max == null || (spokenCharacters(row.text) <= slowLine.max && spokenCharacters(normalizeScript(row.text, input.original).ttsText) <= slowLine.max) : shortLine
-    ? checkShortCharacters(shortLine, row.text).pass && checkShortCharacters(shortLine, normalizeScript(row.text, input.original).ttsText).pass
+  // 慢速稿不以常规拍数比筛掉；默认按摩拉目标排序，程序已确认时长冲突后撤销该评分。
+  const inBand = drafts.filter((row) => input.attemptHistoryMode ? true : input.normalSpeedLine ? true : input.durationLine ? true : slowLine ? slowLine.max == null || (spokenCharacters(row.text) <= slowLine.max && spokenCharacters(normalizeScript(row.text, input.original).ttsText) <= slowLine.max) : shortLine
+    ? true
     : (
     row.beats?.normalizedRatio != null
     && rewritePace(row.beats?.normalizedRatio, input.textJp) === "正常"
@@ -204,12 +214,14 @@ export async function rewriteFive(input: {
   ));
   const pool = inBand.length ? inBand : drafts;
   const chosen = pool.reduce((best, row) => {
-    const score = (item: typeof row) => input.durationLine
+    const score = (item: typeof row) => input.attemptHistoryMode || input.normalSpeedLine ? 0 : input.durationLine
       ? Math.abs(spokenCharacters(normalizeScript(item.text, input.original).ttsText) - input.durationLine.target)
+      : slowLine?.durationDirection
+      ? 0 // 已撤掉摩拉目标：保留首个合法候选，不再暗中按接近旧目标挑回去。
       : slowLine
       ? Math.abs(spokenCharacters(normalizeScript(item.text, input.original).ttsText) - slowLine.target)
       : shortLine
-      ? Math.abs(spokenCharacters(item.text) - shortLine.target)
+      ? 0 // 短句不按字数目标排序，保留生成顺序。
       : Math.abs((item.beats?.normalizedRatio ?? 1) - 1);
     return score(row) < score(best) ? row : best;
   });
@@ -221,7 +233,7 @@ export async function rewriteFive(input: {
       spokenRatio: row.spoken?.normalizedRatio ?? null,
     })),
     pickedInBand: inBand.includes(chosen),
-    target: input.durationLine ? input.durationLine.target : slowLine ? slowLine.target : shortLine ? shortLine.target : input.beats.jp.units! / NORMAL_JP_CN_RATIO,
+    target: input.attemptHistoryMode || input.normalSpeedLine ? null : input.durationLine ? input.durationLine.target : slowLine?.durationDirection ? null : slowLine ? slowLine.target : shortLine ? null : input.beats.jp.units! / NORMAL_JP_CN_RATIO,
   };
 }
 

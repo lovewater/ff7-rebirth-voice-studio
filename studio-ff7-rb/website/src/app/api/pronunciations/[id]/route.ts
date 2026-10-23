@@ -9,22 +9,25 @@ export async function PATCH(
 ) {
   const id = Number((await ctx.params).id);
   if (!Number.isInteger(id) || id <= 0) return NextResponse.json({ error: "bad id" }, { status: 400 });
+  const [entry] = await sql<{ usage: string }[]>`SELECT usage FROM pronunciations WHERE id = ${id}`;
+  if (entry?.usage === "tts_pinyin") return NextResponse.json({ error: "TTS 拼音词库仅供展示" }, { status: 403 });
   const body = (await req.json().catch(() => ({}))) as { src?: string; dst?: string; note?: string };
   const src = (body.src ?? "").trim();
   const dst = body.dst ?? "";
   const note = (body.note ?? "").trim() || null;
   if (!src) return NextResponse.json({ error: "原文不能为空" }, { status: 400 });
+  if (src.length > 80 || dst.length > 80) return NextResponse.json({ error: "原文/替换最长 80 字" }, { status: 400 });
   try {
     const rows = await sql`
       UPDATE pronunciations SET src = ${src}, dst = ${dst}, note = ${note}
-      WHERE id = ${id}
+      WHERE id = ${id} AND usage = 'reference'
       RETURNING id
     `;
     if (!rows.length) return NextResponse.json({ error: "不存在" }, { status: 404 });
     return NextResponse.json({ ok: true });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (message.includes("pronunciations_src_key")) {
+    if (message.includes("pronunciations_src_key") || message.includes("pronunciations_usage_src_key")) {
       return NextResponse.json({ error: "这条原文已经有了" }, { status: 409 });
     }
     return NextResponse.json({ error: message }, { status: 500 });
@@ -37,6 +40,8 @@ export async function DELETE(
 ) {
   const id = Number((await ctx.params).id);
   if (!Number.isInteger(id) || id <= 0) return NextResponse.json({ error: "bad id" }, { status: 400 });
-  await sql`DELETE FROM pronunciations WHERE id = ${id}`;
+  const [entry] = await sql<{ usage: string }[]>`SELECT usage FROM pronunciations WHERE id = ${id}`;
+  if (entry?.usage === "tts_pinyin") return NextResponse.json({ error: "TTS 拼音词库仅供展示" }, { status: 403 });
+  await sql`DELETE FROM pronunciations WHERE id = ${id} AND usage = 'reference'`;
   return NextResponse.json({ ok: true });
 }

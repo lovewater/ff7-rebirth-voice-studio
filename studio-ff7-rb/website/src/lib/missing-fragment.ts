@@ -147,3 +147,57 @@ export function recoverMissingFragment(input: {
     bodyClauses: [...leftClauses, ...rightClauses],
     subtitleClauses: [...leftClauses, fragment, ...rightClauses], boundaries: [leftCut, rightCut].filter(Boolean) };
 }
+
+/** 官方字幕由模型确认完整时，唯一独立字轴外声音按环境音处理。
+ * 不靠kind猜测：模型可能同时返回speech/unknown和“没有缺文”，后者才是这个分支的条件。
+ * 仅一块声音、零缺文、没有声称找到了缺失词，且双侧能量谷可靠才允许删除；
+ * 删除区间严格夹在相邻ASR词之间，绝不为了清环境音切进已识别正文。多块/有缺文仍fallback。
+ */
+/** 句中环境音按完整字轴间隙的真实波形检查，不沿用两侧180ms的候选屏蔽区。
+ * 10ms帧峰值低于全局峰值5%为静音；声音块内不足150ms的停顿不拆块。
+ * 声音跨度必须严格>500ms，前后各有至少150ms连续静音，才允许独立保留。
+ */
+export function internalAmbientEvidence(input: { samples: Float32Array; sampleRate: number; words: Word[] }, block: SegmentSpan) {
+  const before = input.words.findLastIndex(w => w.end <= block.startMs);
+  const after = input.words.findIndex(w => w.start >= block.endMs);
+  if (before < 0 || after !== before + 1) return null; // 只约束正文中间，头尾沿用原规则。
+  const gap = { startMs: input.words[before].end, endMs: input.words[after].start };
+  const frame = Math.max(1, Math.round(input.sampleRate * .01));
+  let peak = 0;
+  for (const sample of input.samples) peak = Math.max(peak, Math.abs(sample));
+  const groups: SegmentSpan[] = [];
+  if (peak > 1e-8) for (let i = Math.ceil(gap.startMs * input.sampleRate / 1000 / frame) * frame;
+    i + frame <= Math.floor(gap.endMs * input.sampleRate / 1000); i += frame) {
+    let local = 0;
+    for (let j = i; j < i + frame; j++) local = Math.max(local, Math.abs(input.samples[j]));
+    if (local < peak * .05) continue;
+    const startMs = i / input.sampleRate * 1000, endMs = (i + frame) / input.sampleRate * 1000;
+    const last = groups.at(-1);
+    if (last && startMs - last.endMs < 150 - 1e-6) last.endMs = endMs;
+    else groups.push({ startMs, endMs });
+  }
+  const matches = groups.filter(g => g.startMs < block.endMs && block.startMs < g.endMs);
+  const sound = matches.length === 1 ? matches[0] : null;
+  const index = sound ? groups.indexOf(sound) : -1;
+  const durationMs = sound ? sound.endMs - sound.startMs : 0;
+  const leadingSilenceMs = sound ? sound.startMs - (groups[index - 1]?.endMs ?? gap.startMs) : 0;
+  const trailingSilenceMs = sound ? (groups[index + 1]?.startMs ?? gap.endMs) - sound.endMs : 0;
+  return { gap, sound, durationMs, leadingSilenceMs, trailingSilenceMs,
+    pass: durationMs > 500 + 1e-6 && leadingSilenceMs >= 150 - 1e-6 && trailingSilenceMs >= 150 - 1e-6,
+    frameMs: 10, peakRatio: .05 };
+}
+
+export function recoverCompleteTextAmbient(input:{decision:FragmentDecision;blocks:SegmentSpan[];words:Word[];samples:Float32Array;sampleRate:number}):SegmentSpan|null {
+  const {decision:d,words,blocks}=input;
+  if(blocks.length!==1||d.audio_blocks!==1||d.missing_text_blocks!==0||d.kind==="onomatopoeia"||d.matched_jp.trim()||d.matched_zh.trim()||!words.length)return null;
+  const block=blocks[0],before=words.findLastIndex(w=>w.end<=block.startMs),after=words.findIndex(w=>w.start>=block.endMs);
+  if(before>=0&&after>=0&&after!==before+1)return null;
+  const internal = internalAmbientEvidence(input, block);
+  if (internal && !internal.pass) return null;
+  const cuts=fragmentBoundaries(input,block,before<0?null:before,after<0?null:after);
+  if(!cuts)return null;
+  const startMs=Math.max(before<0?0:words[before].end,cuts.leftCut?.cutMs??0);
+  const endMs=Math.min(after<0?input.samples.length/input.sampleRate*1000:words[after].start,cuts.rightCut?.cutMs??cuts.right);
+  if(startMs>block.startMs||endMs<block.endMs||endMs<=startMs)return null;
+  return {startMs,endMs};
+}

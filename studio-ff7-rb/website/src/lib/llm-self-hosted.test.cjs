@@ -135,13 +135,13 @@ test('concurrent invocations share four slots and queued cancellation never star
  });
  assert.equal(peak,4);assert.equal(c.requests.length,4);
 });
-test('generic model registry exposes self-hosted explicitly while preserving primary as default',async()=>{
+test('generic registry keeps self-hosted and official GLM explicitly selectable',async()=>{
  const c=client(),api=loadLlmModule('llm-chat-client',c.metrics);const names=['SELF_HOSTED_LLM_URL','SELF_HOSTED_LLM_MODEL','SELF_HOSTED_LLM_KEY','REWRITE_LLM_URL','REWRITE_LLM_KEY'],old=Object.fromEntries(names.map(k=>[k,process.env[k]]));
  Object.assign(process.env,{SELF_HOSTED_LLM_URL:'http://local.invalid/v1',SELF_HOSTED_LLM_MODEL:'local-model',SELF_HOSTED_LLM_KEY:'private-local',REWRITE_LLM_URL:'http://cloud.invalid/v1',REWRITE_LLM_KEY:'private-cloud'});
  try{
   await mocked(async(url,init)=>{const b=JSON.parse(init.body);if(url.includes('local')){assert.equal(b.temperature,1);assert.equal(b.reasoning_effort,'medium');assert.equal(b.chat_template_kwargs.enable_thinking,true);assert.equal(b.max_completion_tokens,16384);assert.match(b.messages[0].content,/0.123/);assert.doesNotMatch(b.messages[0].content,/123456/);return response(completed());}assert.equal(b.stream,false);assert.deepEqual(b.thinking,{type:'disabled'});return new Response(JSON.stringify({choices:[{message:{content:'{}'}}]}));},async()=>{
    await api.callChatCompletion({modelId:'self-hosted',messages:[{role:'user',content:'比0.123456'}],selfHosted:opts});
-   await api.callChatCompletion({messages:[{role:'user',content:'旧流程'}]});
+   await api.callChatCompletion({modelId:'primary',messages:[{role:'user',content:'旧流程'}]});
   });
   assert.doesNotMatch(JSON.stringify(c.records),/private-local|private-cloud/);assert.equal(api.CHAT_MODELS.length,3);
  }finally{for(const k of names)if(old[k]===undefined)delete process.env[k];else process.env[k]=old[k];}
@@ -172,3 +172,17 @@ test('reasoning aliases are supported, an empty primary alias falls back, and du
  const c=client(),r=await c.loggedSelfHostedChatFetch('http://local.invalid',{body:body()},meta(),opts);
  assert.equal((await r.json()).choices[0].message.reasoning_content,'兼容思考'+'哈'.repeat(9));assert.equal(c.records[0].status,'success');
 }));
+
+test('explicit selfHostedThinking false removes every medium/preserve setting and retains JSON plus token cap',async()=>{
+ const names=['SELF_HOSTED_LLM_URL','SELF_HOSTED_LLM_MODEL','SELF_HOSTED_LLM_KEY'];
+ const old=Object.fromEntries(names.map(k=>[k,process.env[k]]));
+ Object.assign(process.env,{SELF_HOSTED_LLM_URL:'http://local.invalid/v1',SELF_HOSTED_LLM_MODEL:'local-test',SELF_HOSTED_LLM_KEY:'test'});
+ try{
+  const api=loadLlmModule('llm-chat-client',{beginLlmCall:async()=> '1',recordLlmCall:async()=>{}});
+  await mocked(async(url,init)=>{
+   const b=JSON.parse(init.body);assert.equal(b.max_completion_tokens,128);assert.deepEqual(b.response_format,{type:'json_object'});
+   assert.deepEqual(b.chat_template_kwargs,{enable_thinking:false});assert.equal(Object.hasOwn(b,'reasoning_effort'),false);
+   return response(completed('{"translation":"测试"}',''));
+  },()=>api.callChatCompletion({modelId:'self-hosted',messages:[],selfHostedThinking:false,maxTokens:128,selfHosted:opts}));
+ }finally{for(const k of names)if(old[k]===undefined)delete process.env[k];else process.env[k]=old[k];}
+});

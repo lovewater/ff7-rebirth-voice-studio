@@ -1,0 +1,272 @@
+{
+  "description": "IndexTTS 2.0 多音字词库：只替换高置信度的了(liǎo)，长词优先。不处理歧义大的得了/明了/知了/单独不了。",
+  "rules": [
+    {
+      "word": "了解",
+      "replacement": "LIAO3解",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "了不起",
+      "replacement": "LIAO3不起",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "了不得",
+      "replacement": "LIAO3不得",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "不得了",
+      "replacement": "不得LIAO3",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "了结",
+      "replacement": "LIAO3结",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "了断",
+      "replacement": "LIAO3断",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "了却",
+      "replacement": "LIAO3却",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "一目了然",
+      "replacement": "一目LIAO3然",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "了如指掌",
+      "replacement": "LIAO3如指掌",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "直截了当",
+      "replacement": "直截LIAO3当",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "直接了当",
+      "replacement": "直接LIAO3当",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "简单明了",
+      "replacement": "简单明LIAO3",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "简洁明了",
+      "replacement": "简洁明LIAO3",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "尚不明了",
+      "replacement": "尚不明LIAO3",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "了得",
+      "replacement": "LIAO3得",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "受不了",
+      "replacement": "受不LIAO3",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "大不了",
+      "replacement": "大不LIAO3",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "免不了",
+      "replacement": "免不LIAO3",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "少不了",
+      "replacement": "少不LIAO3",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "忘不了",
+      "replacement": "忘不LIAO3",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "忍不了",
+      "replacement": "忍不LIAO3",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "饶不了",
+      "replacement": "饶不LIAO3",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "逃不了",
+      "replacement": "逃不LIAO3",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "跑不了",
+      "replacement": "跑不LIAO3",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "赢不了",
+      "replacement": "赢不LIAO3",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "输不了",
+      "replacement": "输不LIAO3",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "救不了",
+      "replacement": "救不LIAO3",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "帮不了",
+      "replacement": "帮不LIAO3",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "做不了",
+      "replacement": "做不LIAO3",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "办不了",
+      "replacement": "办不LIAO3",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "动不了",
+      "replacement": "动不LIAO3",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "活不了",
+      "replacement": "活不LIAO3",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "死不了",
+      "replacement": "死不LIAO3",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "吃不了",
+      "replacement": "吃不LIAO3",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "喝不了",
+      "replacement": "喝不LIAO3",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "睡不了",
+      "replacement": "睡不LIAO3",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "走不了",
+      "replacement": "走不LIAO3",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "回不了",
+      "replacement": "回不LIAO3",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "去不了",
+      "replacement": "去不LIAO3",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "来不了",
+      "replacement": "来不LIAO3",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "找不了",
+      "replacement": "找不LIAO3",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "看不了",
+      "replacement": "看不LIAO3",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "听不了",
+      "replacement": "听不LIAO3",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "说不了",
+      "replacement": "说不LIAO3",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "用不了",
+      "replacement": "用不LIAO3",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "管不了",
+      "replacement": "管不LIAO3",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "挡不了",
+      "replacement": "挡不LIAO3",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "躲不了",
+      "replacement": "躲不LIAO3",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "撑不了",
+      "replacement": "撑不LIAO3",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    },
+    {
+      "word": "撑得了",
+      "replacement": "撑得LIAO3",
+      "note": "了读第三声 liǎo；仅在合成输入中替换"
+    }
+  ],
+  "excludePrefixes": [
+    "赢得了解放",
+    "为了解开",
+    "为了解放",
+    "为了解除",
+    "为了解决",
+    "为了解救",
+    "为了解散",
+    "为了解冻",
+    "为了解锁",
+    "为了解脱",
+    "为了解围",
+    "为了解压",
+    "为了解雇",
+    "为了得到",
+    "为了得"
+  ]
+}

@@ -1,0 +1,3 @@
+-- 仅至少6个汉字启用中文绝对净语速上限；短情绪句不受此约束。
+INSERT INTO prompt_templates(key,name,"desc",prompt,role,enable,category,placeholders,source_path,seed_hash) VALUES
+('rewrite.chinese-speed-limit','中文绝对语速 · 长句硬上限','自动改稿时额外强调。正文>=6个汉字才启用，净发声不含情绪和连续长静音；中文音节数/净发声秒数不得超过9.0。少于6个汉字如“是谁”豁免，不因情绪表达很快而强制拉长。无占位符。','中文正文至少6个汉字时，实际合成音频的净语速不得超过9.0音节/秒；不满6个汉字（例如“是谁”）完全豁免该绝对上限。音节数及净发声由程序实测；净发声不含已保留情绪原声、首尾静音与内部长静音。即使拍数比和总时长合格也不能超速。收到超速反馈时优先自然精简冗余、调整表达让正文读得清楚，保持原始日中字幕中心意思；不能通过堆标点、补静音或添加重复内容伪装放慢，也不能声称尚未合成的台词已经达标。','user',true,'字幕改写','[]'::jsonb,'src/lib/auto-run-script-policy.ts','chinese-speed-limit-v1') ON CONFLICT(seed_hash) DO NOTHING;

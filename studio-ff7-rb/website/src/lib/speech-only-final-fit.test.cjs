@@ -5,7 +5,9 @@ const {readFileSync}=require('node:fs');
 const path=require('node:path'),Module=require('node:module'),ts=require('typescript');
 const cache=new Map();
 function load(name){
- if(name.startsWith('node:'))return require(name);
+ if(!name.startsWith('.'))return require(name);
+ if(name.endsWith('.json'))return require(path.resolve(__dirname,name));
+ if(name==='./db')return {sql:()=>{throw Error('DSP单测禁止数据库调用')}};
  const filename=path.resolve(__dirname,name+'.ts');
  if(cache.has(filename))return cache.get(filename).exports;
  const m=new Module(filename);cache.set(filename,m);m.require=load;

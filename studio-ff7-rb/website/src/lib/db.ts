@@ -28,6 +28,8 @@ export type LineRow = {
   text_jp: string | null;
   text_zh: string | null;
   text_en: string | null;
+  translate_zh_jp?: string | null;
+  translate_zh_en?: string | null;
   subtitle_italic: boolean;
   script: string | null;
   name_zh: string | null;

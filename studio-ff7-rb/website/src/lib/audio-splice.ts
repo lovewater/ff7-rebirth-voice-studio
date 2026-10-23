@@ -376,7 +376,7 @@ export function applyScales(segs: MixSeg[], scales: Record<string, number>) {
       return { ...seg, scale: duration / Math.max(seg.duration, 1e-6), buffer: silenceWav(sampleRate, duration), duration };
     }
     const scale = clampForKind(seg.kind, scales[seg.id] ?? seg.scale ?? 1);
-    if (Math.abs(scale - 1) < 0.002) return { ...seg, scale };
+    if (scale === 1) return { ...seg, scale };
     return { ...seg, scale, buffer: stretchWav(seg.buffer, scale), duration: seg.duration * scale };
   });
 }

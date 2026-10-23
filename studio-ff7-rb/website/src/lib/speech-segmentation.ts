@@ -1,14 +1,14 @@
 // ASR word gaps are not acoustic gaps. Only sustained waveform silence may
 // separate connected speech; unassigned sound is unknown, never ambient by default.
 export type SegmentSpan = { startMs: number; endMs: number; text?: string };
-export type AudioSegment = SegmentSpan & { kind: "speech" | "silence" | "onomatopoeia" | "unknown" };
+export type AudioSegment = SegmentSpan & { kind: "speech" | "silence" | "onomatopoeia" | "ambient" | "unknown" };
 
 export const SEGMENT_FRAME_MS = 10;
 export const SEGMENT_SILENCE_RATIO = 0.05;
 export const SEGMENT_MIN_SILENCE_MS = 250;
-const BOUNDARY_SEARCH_MS = 180;
+const BOUNDARY_LOOK_BACK_MS = 200;
+const BOUNDARY_LOOK_AHEAD_MS = 50;
 const BOUNDARY_WINDOW_MS = 10;
-const BOUNDARY_FLANK_MS = 50;
 
 function waveformQuietSpans(samples: Float32Array, sampleRate: number): SegmentSpan[] {
   let peak = 0;
@@ -65,6 +65,9 @@ export type BoundaryRefinement = {
   cutMs: number;
   reason: "silence-interval" | "energy-valley" | "no-clear-valley";
   silence?: SegmentSpan;
+  searchStartMs?: number;
+  searchEndMs?: number;
+  valley?: SegmentSpan;
 };
 
 /** Evaluate every subtitle clause boundary, regardless of speech/FX class.
@@ -105,8 +108,10 @@ export function refinePerformanceBoundaries(input: {
       });
       return;
     }
-    const lo = Math.ceil(Math.max(previous.endMs, anchor - BOUNDARY_SEARCH_MS));
-    const hi = Math.floor(Math.min(next.startMs, anchor + BOUNDARY_SEARCH_MS));
+    // 以后一文字段首字的ASR起点为基准：向前200ms、向后50ms。
+    // ASR可能早报或晚报；不能把搜索上限卡死在首字起点，否则无法向后修正。
+    const lo = Math.ceil(Math.max(previous.endMs, anchor - BOUNDARY_LOOK_BACK_MS));
+    const hi = Math.floor(Math.min(next.endMs - 1, durationMs, anchor + BOUNDARY_LOOK_AHEAD_MS));
     let best = anchor;
     let energy = Infinity;
     for (let ms = lo; ms <= hi; ms += 1) {
@@ -118,18 +123,27 @@ export function refinePerformanceBoundaries(input: {
     }
     let left = 0;
     let right = 0;
-    for (let offset = BOUNDARY_WINDOW_MS; offset <= BOUNDARY_FLANK_MS; offset += 1) {
-      if (best - offset >= previous.startMs) left = Math.max(left, rms(best - offset));
-      if (best + offset <= next.endMs) right = Math.max(right, rms(best + offset));
-    }
+    // 检查整个搜索窗内谷底两边的声音，而非只看谷底左右各50ms。
+    // 平底静音可能宽于50ms，旧算法左侧还在静音中便误判无谷，退回正在说话的ASR点。
+    for (let ms = lo; ms <= best - BOUNDARY_WINDOW_MS; ms++) left = Math.max(left, rms(ms));
+    for (let ms = best + BOUNDARY_WINDOW_MS; ms <= hi; ms++) right = Math.max(right, rms(ms));
     // A low sample or a zero crossing is not enough: the whole 10ms window
     // must be much quieter than sound on BOTH sides. Otherwise keep the ASR anchor.
     const clear = Number.isFinite(energy) && Math.min(left, right) > 1e-5
       && energy <= Math.min(left, right) * 0.25;
-    const cutMs = clear ? best : anchor;
+    // 找出与最低点连通的整片低谷，切在中间；不选靠近正文的平底末端。
+    let valleyStart = best, valleyEnd = best;
+    if (clear) {
+      const threshold = Math.min(left, right) * 0.25;
+      while (valleyStart > lo && rms(valleyStart - 1) <= threshold) valleyStart--;
+      while (valleyEnd < hi && rms(valleyEnd + 1) <= threshold) valleyEnd++;
+    }
+    const cutMs = clear ? Math.round((valleyStart + valleyEnd) / 2) : anchor;
     adjustments.push({
       leftClause: index, rightClause: index + 1, leftAsrEndMs: previous.endMs,
       asrMs: anchor, cutMs, reason: clear ? "energy-valley" : "no-clear-valley",
+      searchStartMs: lo, searchEndMs: hi,
+      ...(clear ? { valley: { startMs: valleyStart, endMs: valleyEnd } } : {}),
     });
   };
   subtitleClauses.slice(0, -1).forEach((clause, index) => refine(clause, subtitleClauses[index + 1], index));
@@ -171,6 +185,70 @@ const comparable = (text: string) => [...text.normalize("NFKC").toLowerCase()
     const code = char.codePointAt(0)!;
     return code >= 0x30a1 && code <= 0x30f6 ? String.fromCodePoint(code - 0x60) : char;
   });
+
+/** ASR漏分隔的保守补切：原字幕分界 + 至少1秒的真实静音 + 唯一字轴边界。
+ * 新旧文本只允许全半角/假名归一后完全一致；不靠编辑距离猜文字对应，不按字轴空档猜静音。
+ * 保留已有ASR分段及原文字，不修改字幕，只给拟声分类增加已确认的候选切口。
+ */
+export function splitAsrClausesByOriginalPauses(input: {
+  samples: Float32Array; sampleRate: number; textJp: string; asrText: string;
+  words: Word[]; clauses: SegmentSpan[];
+}) {
+  const unchanged = { clauses: input.clauses, splits: [] as {
+    characterOffset: number; leftText: string; rightText: string; silence: SegmentSpan; cutMs: number;
+  }[] };
+  if (!(input.sampleRate > 0) || !input.samples.length || !input.clauses.length) return unchanged;
+  const original = subtitleParts(input.textJp);
+  const body = (text: string) => comparable(text).join("");
+  const asrBody = body(input.asrText);
+  if (original.length < 2 || !asrBody || body(input.textJp) !== asrBody
+    || body(input.words.map(w => w.text).join("")) !== asrBody
+    || body(input.clauses.map(c => c.text ?? "").join("")) !== asrBody) return unchanged;
+  // 字轴缺失/重叠/倒序，不允许新切口。首尾ASR轻微越界仍由原有声学校正裁回。
+  if (input.words.some((w,i) => !Number.isFinite(w.start) || !Number.isFinite(w.end)
+    || w.start < 0 || w.end <= w.start || (i > 0 && w.start < input.words[i-1].end))) return unchanged;
+  const wordEnds: number[] = []; let count = 0;
+  for (const word of input.words) { count += comparable(word.text).length; wordEnds.push(count); }
+  const existing = new Set<number>(); count = 0;
+  for (const clause of input.clauses) { count += comparable(clause.text ?? "").length; existing.add(count); }
+  const pauses = waveformQuietSpans(input.samples, input.sampleRate)
+    .filter(p => p.endMs - p.startMs >= 1000 && p.startMs > 0
+      && p.endMs < input.samples.length / input.sampleRate * 1000);
+  count = 0;
+  const accepted = new Map<number, {left:Word; right:Word}>();
+  for (let i = 0; i < original.length - 1; i++) {
+    count += comparable(original[i]).length;
+    if (existing.has(count)) continue;
+    const indexes = wordEnds.flatMap((n,j) => n === count ? [j] : []);
+    if (indexes.length !== 1) continue;
+    const j = indexes[0], left = input.words[j], right = input.words[j+1];
+    if (!right || !body(left.text) || !body(right.text)) continue;
+    // 静音中点必须位于这两个相邻字轴之间；拒绝字幕别处的长空白。
+    const matches = pauses.filter(p => { const mid = (p.startMs+p.endMs)/2;
+      return mid >= left.end && mid <= right.start; });
+    if (matches.length !== 1) continue;
+    accepted.set(count, {left,right});
+    unchanged.splits.push({characterOffset:count,leftText:original[i],rightText:original[i+1],
+      silence:matches[0],cutMs:(matches[0].startMs+matches[0].endMs)/2});
+  }
+  if (!accepted.size) return unchanged;
+  const clauses: SegmentSpan[] = []; count = 0;
+  for (const clause of input.clauses) {
+    const chars = [...(clause.text ?? "").normalize("NFKC")], size = comparable(clause.text ?? "").length;
+    // 特殊归一导致字符位置不一致时整次放弃，不借计数猜切点。
+    if (chars.length !== size) return { clauses: input.clauses, splits: [] };
+    const cuts = [...accepted.keys()].filter(n => n > count && n < count+size).sort((a,b)=>a-b);
+    let start = 0, startMs = clause.startMs;
+    for (const cut of cuts) {
+      const pair = accepted.get(cut)!;
+      if (pair.left.end <= startMs || pair.right.start >= clause.endMs) return {clauses:input.clauses,splits:[]};
+      clauses.push({text:chars.slice(start,cut-count).join(""),startMs,endMs:pair.left.end});
+      start = cut-count; startMs = pair.right.start;
+    }
+    clauses.push({...clause,text:chars.slice(start).join(""),startMs}); count += size;
+  }
+  return {clauses,splits:unchanged.splits};
+}
 
 /** Align subtitle characters to ASR with edits, not character-count slicing:
  * オレ/俺, ワケ/わけ and 魔晄/魔光 must not shift every later clause. */
@@ -259,6 +337,7 @@ export function segmentPerformanceAudio(input: {
   speech: SegmentSpan[];
   words: Word[];
   onomatopoeia: SegmentSpan[];
+  ambient?: SegmentSpan[];
   subtitleClauses?: SegmentSpan[];
 }) {
   const { samples, sampleRate } = input;
@@ -285,6 +364,8 @@ export function segmentPerformanceAudio(input: {
   const speech = valid(input.speech);
   const words = valid(input.words.map((word) => ({ startMs: word.start, endMs: word.end, text: word.text })));
   const ono = valid(input.onomatopoeia);
+  // 只有上层“零缺文+唯一声音+声学切口”确认过的环境音才可传入；未知声音仍保持unknown。
+  const ambient=valid(input.ambient??[]);
   if (input.subtitleClauses && ono.some((span) => [span.startMs, span.endMs].some((cut) => (
     input.subtitleClauses!.some((clause) => cut > clause.startMs && cut < clause.endMs)
   )))) {
@@ -293,7 +374,7 @@ export function segmentPerformanceAudio(input: {
   // Explicit semantic cuts may separate a laugh from adjacent speech, even
   // without a long pause. Ordinary word edges never become cut boundaries.
   const cuts = [...new Set([0, durationMs, ...quiet.flatMap((span) => [span.startMs, span.endMs]),
-    ...ono.flatMap((span) => [Math.max(0, Math.min(durationMs, span.startMs)), Math.max(0, Math.min(durationMs, span.endMs))])])]
+    ...[...ono,...ambient].flatMap((span) => [Math.max(0, Math.min(durationMs, span.startMs)), Math.max(0, Math.min(durationMs, span.endMs))])])]
     .sort((a, b) => a - b);
   const overlaps = (a: SegmentSpan, b: SegmentSpan) => a.startMs < b.endMs && b.startMs < a.endMs;
   const result: AudioSegment[] = [];
@@ -303,6 +384,7 @@ export function segmentPerformanceAudio(input: {
     const fx = ono.find((row) => overlaps(row, span));
     const kind: AudioSegment["kind"] = quiet.some((row) => overlaps(row, span)) ? "silence"
       : fx ? "onomatopoeia"
+        : ambient.some(row=>overlaps(row,span)) ? "ambient"
         : speech.some((row) => overlaps(row, span)) || words.some((row) => overlaps(row, span)) ? "speech" : "unknown";
     const text = kind === "onomatopoeia" ? fx?.text : undefined;
     const last = result[result.length - 1];

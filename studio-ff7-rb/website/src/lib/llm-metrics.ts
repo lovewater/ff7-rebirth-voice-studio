@@ -1,8 +1,12 @@
+import { sql } from "./db";
 import { summarizeLlmCalls, type LlmCallMeasurement } from "./llm-metrics-summary";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { insertLlmLog, completeLlmLog, type LlmLogCompletion } from "./llm-access-log";
 
 const context = new AsyncLocalStorage<{ runId: string; stem: string; calls: LlmCallMeasurement[] }>();
+/** 改稿读取本句参考译文时复用自动运行归属；四并发从各自上下文取得stem。 */
+export function currentLlmStem(){return context.getStore()?.stem;}
+
 export function withLlmMetrics<T>(runId: string, stem: string, operation: () => Promise<T>) {
   return context.run({ runId, stem, calls: [] }, operation);
 }
@@ -10,9 +14,13 @@ export function withLlmMetrics<T>(runId: string, stem: string, operation: () => 
 /** 仅取得当前这次自动运行的数据，独立运行/并发运行之间不串账。
  * finish 在最后补引号等调用完成后取快照，最终主音频一次落库。
  */
-export function llmMetricsForRun(runId: string | number) {
-  const current = context.getStore();
-  return summarizeLlmCalls(current?.runId === String(runId) ? current.calls : []);
+/** clone子请求有独立HTTP上下文；结束时按运行ID从访问日志聚合，包含逐段核字/合并模型，避免只统计主请求而漏账。 */
+export async function llmMetricsForRun(runId: string | number) {
+  // PostgreSQL bigint默认返回字符串；显式转double再汇总，避免把真实用量当成未知。
+  const rows=await sql<LlmCallMeasurement[]>`SELECT input_tokens::double precision AS "promptTokens",output_tokens::double precision AS "completionTokens",
+    total_tokens::double precision AS "totalTokens",cached_tokens::double precision AS "cachedTokens",reasoning_tokens::double precision AS "reasoningTokens",elapsed_ms::double precision AS "elapsedMs"
+    FROM llm_access_logs WHERE auto_run_id=${runId} AND completed_at IS NOT NULL ORDER BY id`;
+  return summarizeLlmCalls(rows);
 }
 
 /** 用量只信接口返回值。统一入口没有保存首token时点，因此这里只报端到端速率，

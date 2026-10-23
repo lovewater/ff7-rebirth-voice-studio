@@ -1,4 +1,9 @@
-import { alignParts } from "@/lib/auto-run-part-alignment";
+import { withChatModel } from "@/lib/llm-model-context";
+import type { BodyScriptPolicy } from "@/lib/two-part-script";
+import { withLlmMetrics } from "@/lib/llm-metrics";
+import { regroupTwoPartAudio, speechChunks, type RegroupMeta } from "@/lib/two-part-regroup";
+import { TWO_PART_JP_GAP_S } from "@/lib/gap-only-align";
+import { alignParts, alignZeroShotParts } from "@/lib/auto-run-part-alignment";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { NextRequest, NextResponse } from "next/server";
@@ -64,6 +69,7 @@ export async function POST(
 
   const body = (await req.json().catch(() => ({}))) as {
     ttsText?: string;
+    bodyScriptPolicy?: BodyScriptPolicy;
     durationFactor?: number;
     promptStem?: string;
     promptLang?: "jp" | "cn";
@@ -74,11 +80,13 @@ export async function POST(
     manualTemplates?: boolean;
     feedbackRound?: boolean;
     autoRunId?: string;
+    autoRunModel?: "primary" | "volcengine";
     subtitleText?: string | null;
     finalSubtitleText?: string | null;
   };
   // 在音频落库时登记归属，不等 HTTP 成功返回后再补写，避免异常时丢失工作流关系。
   const autoRunId = body.autoRunId == null ? null : String(body.autoRunId);
+  if (body.autoRunModel !== undefined && !["primary", "volcengine"].includes(body.autoRunModel)) return NextResponse.json({ error: "无效的自动运行模型" }, { status: 400 });
   if (autoRunId != null) {
     if (!/^[1-9]\d*$/.test(autoRunId)) return NextResponse.json({ error: "无效的自动运行编号" }, { status: 400 });
     const [run] = await sql`SELECT id FROM line_auto_runs WHERE id = ${autoRunId} AND stem = ${stem} AND status = 'running'`;
@@ -138,6 +146,7 @@ export async function POST(
 
   let prompt: Buffer;
   let gapReference: Buffer | null = null;
+  let manualGapReference: Buffer | null = null;
   let healthByUrl: Map<string, TtsHealth>;
   try {
     const input = await readFile(promptFile);
@@ -145,6 +154,15 @@ export async function POST(
     // 快速原稿、完整正文及整句fallback均由autoRunId归属验证，不影响真人Zero-shot。
     if (autoRunId != null && preservePromptAudio && body.feedbackRound !== true && syncToJp && promptLang === "jp" && promptStem === stem) {
       gapReference = await audioToMonoWav(input);
+    }
+    // 真人 Zero-shot：时序目标始终是当前句完整日文，而非所选的邻句/中文音色参考。
+    // 完整原声的首尾和内部停顿都参与对齐；自动线路仍用已去情绪的正文参考。
+    if (autoRunId == null && syncToJp) {
+      const fullJapanese = await readFile(path.join(dataRoot, "jp", `${stem}.mp3`)).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      });
+      if (fullJapanese) manualGapReference = await audioToMonoWav(fullJapanese);
     }
     // 自动运行已经删段、裁首尾并保留内部停顿，必须原样送入 TTS。
     // 这里不能再次补尾静音；其他未预处理的手动参考仍沿用原有准备流程。
@@ -168,7 +186,7 @@ export async function POST(
   }
 
   try {
-    const lexicon = await sql<Pronunciation[]>`SELECT id, src, dst, note FROM pronunciations`;
+    const lexicon = await sql<Pronunciation[]>`SELECT id, src, dst, note FROM pronunciations WHERE usage = 'reference'`;
     const ttsForGpu = applyPronunciations(script.ttsText, lexicon);
     const jpTiming: Timing = {
       start: slotStart,
@@ -207,10 +225,26 @@ export async function POST(
     }
 
     const referenceTiming = autoRunId != null && syncToJp && preservePromptAudio ? wavTiming(prompt) : null;
-    const processed = results.map((row, index) => {
+    const processed = await Promise.all(results.map(async (row, index) => {
+      const reference = gapReference ?? manualGapReference;
+      const referenceParts=reference?speechChunks(reference,TWO_PART_JP_GAP_S).chunks.length:0;
+      const canRegroup=[2,3].includes(referenceParts);
+      let regrouped: {audio:Buffer;meta:RegroupMeta}|null=null;
+      // 自动线路传原始分行稿；normalizeScript会将换行转为可朗读标点，不能用它恢复语义分界。
+      const scriptPolicy:BodyScriptPolicy=autoRunId!=null && ["lines","relaxed"].includes(String(body.bodyScriptPolicy)) ? body.bodyScriptPolicy as BodyScriptPolicy : "strict";
+      const groupingScript=scriptPolicy==="lines"&&typeof body.ttsText==="string"?body.ttsText:script.spokenText;
+      // 新增“片数恰好也核对切口”只用于自动工作流；真人Zero-shot原本可纯波形对齐的路径不新增ASR/模型调用。
+      if(canRegroup && (autoRunId != null || speechChunks(row.audio).chunks.length>referenceParts))try{regrouped=await (autoRunId != null ? withLlmMetrics(autoRunId,stem,()=>withChatModel(body.autoRunModel ?? "primary",()=>regroupTwoPartAudio(row.audio,groupingScript,stem,referenceParts,scriptPolicy))) : regroupTwoPartAudio(row.audio,groupingScript,stem,referenceParts,scriptPolicy));}catch(error){
+        // 单条识别/API失败不能让其他候选及已生成的原音频一起丢失，交给原稿重TTS预算。
+        regrouped={audio:row.audio,meta:{version:referenceParts===3?"three-parts-regroup-v1":"two-parts-regroup-v1",requiredParts:referenceParts,consistent:false,reason:String(error),segments:[]}};
+      }
+      const inputAudio = regrouped?.audio ?? row.audio;
+      const regroupFailed = regrouped?.meta.consistent === false;
       // 优先修间距再评判，避免“文字—空白—文字”因少停顿被误判成正文少字。
       // 命中时跳过旧的候选拉伸/补槽，之后沿用裁首尾、校字、比和择优，不放宽任何门槛。
-      const gapAligned = gapReference ? alignParts(row.audio, gapReference) : null;
+      const gapAligned = regroupFailed ? {audio:row.audio,meta:{version:referenceParts===3?"three-parts-v1":"two-parts-v1",requiredParts:referenceParts,status:"error" as const,pass:false,lo:.85,hi:1.15,toleranceSeconds:.3,parts:[],reason:"逐段ASR核对或合并方案失败，须原稿重新TTS"}}
+        : gapReference ? alignParts(inputAudio, gapReference)
+        : manualGapReference ? alignZeroShotParts(inputAudio, manualGapReference) : null;
       const got = target?.key === "speech" ? row.timing.speech : row.timing.duration;
       const stretch = gapAligned ? 1 : !feedbackRound && target ? pickSpeechStretch(got, target.value, DUR_OK_S, durationFactor) : 1;
       const laidOut = gapAligned ? gapAligned.audio : syncToJp && !feedbackRound
@@ -225,6 +259,8 @@ export async function POST(
       // 都使用同一份裁后音频。普通手动合成及非演出工作流保持既有流程。
       const edgeTrim = feedbackRound || (autoRunId != null && syncToJp && preservePromptAudio)
         ? limitWavEdgeSilence(laidOut, prompt) : null;
+      // 裁首静音会移动正文位置；检测门槛区域必须跟随保存后的音频，不能留在裁前坐标。
+      if (gapAligned?.meta.splitRegions && edgeTrim) gapAligned.meta.splitRegions=gapAligned.meta.splitRegions.map(r=>({...r,startSeconds:r.startSeconds-edgeTrim.meta.trimmedLeading,endSeconds:r.endSeconds-edgeTrim.meta.trimmedLeading}));
       const audio = edgeTrim?.audio ?? laidOut;
       const timing = wavTiming(audio);
       const measured = target?.key === "speech" ? timing.speech : timing.duration;
@@ -239,13 +275,16 @@ export async function POST(
         pass,
         edgeTrim: edgeTrim?.meta ?? null,
         gapAlignment: gapAligned?.meta ?? null,
+        regroup: regrouped?.meta ?? null,
+        scriptPolicy, groupingScript,
+        beforeRegroup: regrouped ? row.audio : null,
         rawSpeech: row.timing.speech,
         rawDur: row.timing.duration,
         meta: row.generated.conversion_meta,
         url: row.url,
         health: row.health,
       };
-    });
+    }));
     const passed = processed.filter((row) => row.pass);
     // 人工模板分支三条都要保留，时长检测仅记录，不能筛到最后只剩一条。
     // 仅限已验证归属的自动工作流，普通合成保持原有筛选规则。
@@ -281,9 +320,10 @@ export async function POST(
         tts_text_sent: ttsForGpu,
         ...(manualTemplates ? { manual_template: true, quality_review: "manual-required" } : {}),
         auto_run_final_subtitle: finalSubtitleText,
+        ...(autoRunId != null ? { body_script_policy:row.scriptPolicy, body_grouping_script:row.groupingScript } : {}),
         ...row.meta,
         pipeline: "jp-zeroshot",
-        timing_strategy: feedbackRound ? "fallback_raw_feedback" : syncToJp ? "scene_timeline" : "field_natural_rate",
+        timing_strategy: row.gapAlignment ? (row.gapAlignment.requiredParts===3?"three_parts_timeline":"two_parts_timeline") : feedbackRound ? "fallback_raw_feedback" : syncToJp ? "scene_timeline" : "field_natural_rate",
         stem,
         prompt_stem: promptStem,
         prompt_lang: promptLang,
@@ -299,6 +339,7 @@ export async function POST(
         post_stretch: row.stretch,
         auto_run_edge_trim: row.edgeTrim,
         auto_run_gap_alignment: row.gapAlignment,
+        two_parts_regroup: row.regroup ? {...row.regroup,source_path:path.posix.join("tts",stem,`${record.id}-before-regroup.wav`)} : null,
         auto_run_reference: referenceTiming ? { start: referenceTiming.start, end: referenceTiming.end,
           dur: referenceTiming.duration, speech: referenceTiming.speech } : null,
         raw_speech_s: row.rawSpeech,
@@ -312,17 +353,19 @@ export async function POST(
         writeFile(absolutePath, row.audio),
         writeFile(path.join(process.cwd(), "data", manifestPath), JSON.stringify(conversion, null, 2)),
       ]);
+      if(row.beforeRegroup)await writeFile(path.join(process.cwd(),"data","tts",stem,`${record.id}-before-regroup.wav`),row.beforeRegroup);
       await sql`
         UPDATE line_tts_versions SET
           status = 'ready', audio_path = ${relativePath}, audio_bytes = ${row.audio.length},
           raw_audio_path = NULL, manifest_path = ${manifestPath},
-          conversion_meta = ${sql.json(conversion)},
+          conversion_meta = ${sql.json(JSON.parse(JSON.stringify(conversion)))},
           duration_factor = ${syncToJp ? row.stretch : durationFactor},
           start_s = ${row.timing.start}, end_s = ${row.timing.end},
           dur_s = ${row.timing.duration}, speech_s = ${row.timing.speech},
           completed_at = now(), error = NULL
         WHERE id = ${record.id}
       `;
+      if(autoRunId != null && row.regroup)await sql`INSERT INTO line_auto_run_events(run_id,step,level,message,payload) VALUES(${autoRunId},'two-parts-regroup','result',${row.regroup.consistent ? `逐段Qwen核字一致，按模型建议连续合并为${row.regroup.requiredParts??2}段` : "逐段Qwen核字或分组失败，需原稿重新TTS"},${sql.json(JSON.parse(JSON.stringify({ttsId:String(record.id),...row.regroup})))})`;
       if (autoRunId != null && row.gapAlignment) {
         await sql`INSERT INTO line_auto_run_events(run_id,step,level,message,payload)
           VALUES(${autoRunId},'gap-align','result',

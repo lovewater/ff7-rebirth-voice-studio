@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { ALIGN_SILENCE_RATIO } from "./auto-run-rules";
+import { prepareTtsPronunciationBody } from "./tts-pronunciation-db";
 
 export const TTS_URL = process.env.TTS_URL ?? "http://tts-proxy:8810";
 // Website limits outstanding requests; Nginx alone manages GPU hosts and capacity.
@@ -307,7 +308,7 @@ export async function gpuJsonAt<T>(url: string, endpoint: string, body?: unknown
   const response = await fetch(`${url}${endpoint}`, {
     method: body === undefined ? "GET" : "POST",
     headers: body === undefined ? undefined : { "content-type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
+    body: body === undefined ? undefined : JSON.stringify(await prepareTtsPronunciationBody(endpoint, body)),
     cache: "no-store",
     signal: AbortSignal.timeout(timeout),
   });

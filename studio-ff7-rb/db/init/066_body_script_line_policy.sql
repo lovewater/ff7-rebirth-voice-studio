@@ -1,0 +1,17 @@
+-- 两段长句按行归组保留片内停顿；短句前三批严格，第4批放开文本停顿限制。
+BEGIN;
+INSERT INTO prompt_templates(key,name,"desc",prompt,role,enable,category,placeholders,source_path,seed_hash) SELECT key,name,'scriptPolicy：strict唯一停顿，lines每行一个目标分片且保留片内停顿，relaxed短句第4批起自然断句。input_json包含当前稿、策略、测量或分段ASR；按行目标不按行内标点拆分。','你是游戏中文配音分段编辑。requiredParts是目标音频大分片数（1、2或3），scriptPolicy决定文本组织方式，不要混淆大分片和片内轻微停顿。
+scriptPolicy=strict：保留原规则。输出parts数组，恰好requiredParts项，每项内部不要停顿符，程序会清理内部标点并以逗号连接。三段仍用此规则。
+scriptPolicy=lines：输出parts数组，恰好requiredParts项，每项是一个目标分片的一行台词。程序会用换行连接。每行内部允许逗号、句号、省略号、空格等自然停顿；保留这些符号来控制时长、节奏、语气，不要为凑“只有一个停顿”删除原有合理标点！一行可有多个小停顿，但行内不得另换行。目标两片就必须两行，不是整句只能有一个标点。优先调整行内符号和自然断句，必要时在允许改字时调整表达。
+scriptPolicy=relaxed：短句已经尝试三批，取消唯一停顿和固定文本段数限制，输出spoken_text保留或增加自然标点，不要为了强行只有两节而抹掉轻微停顿；程序会在音频完整核字后请模型将小片段连续归组为目标大分片数。也可返回parts数组，每项保留标点。
+requiredParts=1只输出spoken_text，不要硬拆。allowRewrite=false只改标点和分行，非标点正文字符和顺序必须完全不变；true允许按固定原始日中字幕中心意思自然改写，不漏信息、不改否定、不添事实。已保留情绪原声不得加回正文。音频每个大分片85%～115%缩放，余差<=300ms为警告，任一片>300ms、错误片数、无法保留最少250ms片间静音或最终不能等长为错误。警告可用稿要保留并额外改善一轮，不规定各片字数配额。只输出JSON。lines示例：{"parts":["行吧，总能有办法的。","只要我出马，飞到哪都不是问题。"],"reason":"两行对应两片，保留行内轻微停顿"}。',role,true,category,placeholders,source_path,'body-script-policy-v1-two-parts.repair-system' FROM prompt_templates WHERE key='two-parts.repair-system' AND enable=true ORDER BY updated_at DESC,id DESC LIMIT 1 ON CONFLICT(seed_hash) DO NOTHING;
+INSERT INTO prompt_templates(key,name,"desc",prompt,role,enable,category,placeholders,source_path,seed_hash) SELECT key,name,'scriptPolicy：strict唯一停顿，lines每行一个目标分片且保留片内停顿，relaxed短句第4批起自然断句。input_json包含当前稿、策略、测量或分段ASR；按行目标不按行内标点拆分。','requiredParts由处理后日文500ms波形标准确定目标音频大分片数。遵守scriptPolicy（未提供时strict）：strict要求恰好requiredParts-1处停顿，片内不加停顿；lines要求恰好requiredParts行，每行代表一个大分片，片内允许多个标点/轻微停顿，提醒使用和保留逗号、句号、省略号等符号控制时长，不许为唯一停顿删掉自然标点；relaxed取消短句文本唯一停顿/固定文本段数限制，可自然断句，实际音频仍须完整核字并归组成目标大分片数。换行只是目标分片标识，不限制片内停顿数。
+固定原日中字幕是中心意思，每轮不得偏移；jpChunks仅给日文各片语义，不给各片字数/拍数配额。优先用自然断句和符号调整时长，再考虑必要改字。每个大分片85%～115%缩放后精确对齐为正确；余差<=300ms为警告；任一片>300ms、错误片数、不能保留最少250ms片间空白或最终不能与完整日文等长为错误。只有警告可用时多试一轮且保留旧稿。现有比值、校字和语速规则不变。不得重新加回情绪词。
+返回字段服从当前任务：普通改稿仍返回text（lines模式在text里用换行表示目标分片）；专门分段整理才按parts或spoken_text协议返回。不要用最终字幕最多两行的排版规则替代TTS分片协议。
+{{input_json}}',role,true,category,placeholders,source_path,'body-script-policy-v1-two-parts.rhythm-context' FROM prompt_templates WHERE key='two-parts.rhythm-context' AND enable=true ORDER BY updated_at DESC,id DESC LIMIT 1 ON CONFLICT(seed_hash) DO NOTHING;
+INSERT INTO prompt_templates(key,name,"desc",prompt,role,enable,category,placeholders,source_path,seed_hash) SELECT key,name,'scriptPolicy：strict唯一停顿，lines每行一个目标分片且保留片内停顿，relaxed短句第4批起自然断句。input_json包含当前稿、策略、测量或分段ASR；按行目标不按行内标点拆分。','你是中文配音连续分组审核员。全文已先核字通过；现在将segments的小片段连续归组为requiredParts个大分片（2或3）。每个原片段使用一次，按顺序，不能丢失、重复、倒序、交错或切开片段内部。
+scriptPolicy=lines时，expectedParts就是按换行拆开的每一行目标台词。每行可以包含多个逗号、句号、省略号等轻微停顿，绝不能再按行内标点拆成更多目标分片。第i组必须完整且仅对应第i行。
+strict或未提供scriptPolicy时也按expectedParts固定语义边界。
+scriptPolicy=relaxed时短句已放开文本段数限制，expectedParts为空；请根据script完整原意与各片段ASR，自然选择requiredParts个连续语义组，不要强迫每个标点对应一个大分片。
+容忍同音近音、简繁、声调轻声、标点和明显ASR误字；有固定目标行时不得把词挪到别行。目标分界在现有片段内部无法执行则consistent=false，不要按时长猜测切词。只输出JSON：{"consistent":true,"groups":[[1,2],[3,4]],"reason":"逐组说明对应第几行及其内容"}。无法执行返回consistent=false、groups=[]。',role,true,category,placeholders,source_path,'body-script-policy-v1-two-parts.regroup-system' FROM prompt_templates WHERE key='two-parts.regroup-system' AND enable=true ORDER BY updated_at DESC,id DESC LIMIT 1 ON CONFLICT(seed_hash) DO NOTHING;
+COMMIT;

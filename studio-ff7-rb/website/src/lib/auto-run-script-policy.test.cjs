@@ -45,34 +45,35 @@ test('automatic scene prompt asks for Japanese clause count without enforcing or
   const manual = rewriteMessages({ ...input, segmentationHint: undefined }).map((row) => row.content).join('\n');
   assert.match(manual, /请保持 1 行/);
 });
-test('fallback accounts for both span and beat deviations across all rounds', () => {
+test('fallback keeps span and beat dimensions independent and selects measured duration across all rounds', () => {
   const base = { reviewed: true, hardIssueCount: 0, pronunciationIssueCount: 0, durationDeviation: 0 };
   assert.equal(closestFallback([
-    { ...base, id: 'length-only', paceDeviation: 0, beatDeviation: 2 },
-    { ...base, id: 'closer', paceDeviation: .16, beatDeviation: .05 },
-  ]).id, 'closer');
+    { ...base, id: 'length-only', durationDeviation:.01, paceDeviation: 0, beatDeviation: 2 },
+    { ...base, id: 'better-beat', durationDeviation:.2, paceDeviation: .16, beatDeviation: .05 },
+  ]).id, 'length-only');
 });
 
 test('short automatic rewrite has no normal beat target or beat-based feedback', () => {
   const messages = rewriteMessages({ speaker:'', show:null, textJp:'オトリか！',textEn:'A decoy!',original:'诱饵吗！',current:'诱饵！',
-    beats:{jp:{units:null},cn:{units:2}},before:[],after:[],previous:[{raw:'{}',units:2}],shortLine:{min:3,max:4,target:3} });
+    beats:{jp:{units:null},cn:{units:2}},before:[],after:[],previous:[{raw:'{}',units:2}],shortLine:{jpCharacters:4} });
   const text=messages.map(m=>m.content).join('\n');
-  assert.match(text,/3–4/);
+  assert.doesNotMatch(text,/3–4|必须.*个字符/);
+  assert.match(text,/不设字数上下限或目标/);
   assert.match(text,/不计算、不追求拍数比/);
   assert.match(text,/问句/);
-  assert.match(text,/未达上限时，应增加当前正文的字符数/);
-  assert.match(text,/若已经达到上限/);
+  assert.match(text,/不能为凑字增加/);
+
   assert.match(text,/标点.*安排停顿/);
-  assert.match(text,/实际发声时长/);
+  assert.match(text,/有效发声时长/);
   assert.doesNotMatch(text,/优先尝试 3 字/);
   assert.doesNotMatch(text,/0\.9|1\.1|NaN|null 拍|目标约|偏快|偏慢/);
 });
-test('fallback prefers a short candidate within character limits when hard text issues tie',()=>{
+test('after all short candidates fail, character limits do not override closest duration in fallback',()=>{
   const base={reviewed:true,hardIssueCount:0,pronunciationIssueCount:0,durationDeviation:0,beatDeviation:0};
   assert.equal(closestFallback([
-    {...base,id:'too-few-characters',paceDeviation:0,characterDeviation:1},
-    {...base,id:'keeps-question',paceDeviation:.2,characterDeviation:0},
-  ]).id,'keeps-question');
+    {...base,id:'closest-duration',durationDeviation:.01,paceDeviation:0,characterDeviation:1},
+    {...base,id:'keeps-question',durationDeviation:.2,paceDeviation:.2,characterDeviation:0},
+  ]).id,'closest-duration');
 });
 
 const {slowPerformancePolicy,shortPerformancePolicy}=require('./auto-run-script-policy.ts');
@@ -97,6 +98,28 @@ test('slow rewrite prompts ask for near one Chinese character per mora and never
  assert.match(prompt,/标点、空格、引号、换行不算/);
  assert.doesNotMatch(prompt,/目标约|0\.85|1\.15|67\.6|90 拍/);
 });
+test('仅字数方向与整轮实测长度冲突才撤掉摩拉目标，包含相等字数',()=>{
+ const {slowMoraTargetConflict}=require('./auto-run-script-policy.ts');
+ const policy=slowPerformancePolicy(5,2.317);
+ const rows=(...values)=>values.map(candidateSeconds=>({referenceSeconds:2.317,candidateSeconds}));
+ for(const text of ['甲乙丙丁戊','甲乙丙丁戊己'])assert.equal(slowMoraTargetConflict(policy,text,rows(1.556,1.6)),'longer');
+ for(const text of ['甲乙丙丁戊','甲乙丙丁'])assert.equal(slowMoraTargetConflict(policy,text,rows(2.8,2.9)),'shorter');
+ assert.equal(slowMoraTargetConflict(policy,'甲乙丙丁',rows(1.5)),null);
+ assert.equal(slowMoraTargetConflict(policy,'甲乙丙丁戊己',rows(2.8)),null);
+ for(const r of [[],rows(1.5,2.8),rows(2.2),rows(2.117),rows(NaN),rows(0)])assert.equal(slowMoraTargetConflict(policy,'甲乙丙丁戊',r),null);
+});
+test('程序触发后首稿及所有后续候选都改用时长提示词，不再要求凑摩拉目标',()=>{
+ for(const direction of ['longer','shorter']){
+  const slowLine={...slowPerformancePolicy(5,2.317),durationDirection:direction,max:8};
+  const messages=rewriteMessages({speaker:'',show:null,textJp:'このジジイ',textEn:'',original:'原文',current:'当前稿',beats:{jp:{units:5},cn:{units:6}},before:[],after:[],previous:[{raw:'{}',units:6}],slowLine});
+  const prompt=messages.map(m=>m.content).join('\n');
+  assert.equal(messages[0].promptKey,'rewrite.slow.duration-system');
+  assert.equal(messages.at(-1).promptKey,'rewrite.slow.duration-followup');
+  assert.doesNotMatch(prompt,/补足到接近或等于|正文尽量接近或等于|怎样自然增字/);
+  assert.match(prompt,/正文最多8字/);
+  assert.match(prompt,direction==='longer'?/达到或超过.*仍明显偏短/:/不多于.*仍明显偏长/);
+ }
+});
 
 test('8–11 JP body characters use inclusive .75–1.10; punctuation cannot change the band',()=>{
  const {autoBeatBand,compactPerformanceBeatBand}=require('./auto-run-script-policy.ts');
@@ -120,4 +143,14 @@ test('compact rewrites use the same band in first turn, second round and feedbac
  }
  assert.equal(promptModule.exports.rewritePace(.8,input.textJp),'正常');
  assert.equal(promptModule.exports.rewritePace(.8,'甲乙丙丁戊己庚辛壬癸子丑'),'偏快');
+});
+
+test('中文净语速硬上限仅限至少6个汉字，短情绪表达豁免且静音不能充长',()=>{
+ const {checkChineseSpeakingSpeed}=require('./auto-run-script-policy.ts');
+ assert.equal(checkChineseSpeakingSpeed('是谁？！',.1).pass,true);
+ assert.equal(checkChineseSpeakingSpeed('甲乙丙丁戊',.1).enabled,false);
+ assert.equal(checkChineseSpeakingSpeed('甲乙丙丁戊己',.6).pass,false);
+ assert.equal(checkChineseSpeakingSpeed('甲乙丙丁戊己',6/9).pass,true);
+ assert.equal(checkChineseSpeakingSpeed('甲乙丙，丁戊己！',.6).hanCharacters,6);
+ assert.equal(checkChineseSpeakingSpeed('甲乙丙丁戊己',null).pass,false);
 });

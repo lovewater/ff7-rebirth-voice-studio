@@ -116,12 +116,12 @@ export function layoutSpeechWav(
   const from = Math.max(0, Math.floor(speech.start * sampleRate));
   const to = Math.min(samples.length, Math.ceil(speech.end * sampleRate));
   if (to - from < sampleRate * 0.04) {
-    let fallback = Math.abs(stretch - 1) < 0.002 ? buffer : stretchWav(buffer, stretch);
+    let fallback = stretch === 1 ? buffer : stretchWav(buffer, stretch);
     if (slot.dur != null && slot.dur > 0) fallback = padWavToDuration(fallback, slot.dur);
     return fallback;
   }
   let body = samples.subarray(from, to);
-  if (Math.abs(stretch - 1) >= 0.002) {
+  if (stretch !== 1) {
     body = stretchSamples(Float32Array.from(body), sampleRate, stretch);
   }
   const lead = Math.max(0, Math.round((slot.start ?? speech.start) * sampleRate));

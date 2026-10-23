@@ -124,10 +124,27 @@ export function rewriteMessages(input: {
   after: ShowLine[];
   previous: { raw: string; units: number | null; spokenUnits?: number | null }[];
   segmentationHint?: string;
-  shortLine?: { min: number; max: number; target: number };
+  shortLine?: { jpCharacters: number };
+  attemptHistoryMode?: boolean;
+  normalSpeedLine?: { candidateId: string; script: string; rate: number; netSeconds: number; referenceSeconds: number; candidateSeconds: number };
   durationLine?: { target: number; currentCharacters: number; referenceSeconds: number; candidateSeconds: number };
-  slowLine?: { jpMora: number; speechSeconds: number; moraPerSecond: number; target: number; max?: number };
+  slowLine?: { jpMora: number; speechSeconds: number; moraPerSecond: number; target: number; max?: number; durationDirection?: "longer" | "shorter" };
 }) {
+  if (input.attemptHistoryMode) {
+    return [
+      {role:"system" as const,content:"",promptKey:"rewrite.measured-history.system",promptValues:{}},
+      {role:"user" as const,content:"",promptKey:"rewrite.measured-history.context",promptValues:{input_json:JSON.stringify({speaker:input.speaker,show:input.show,originalJapanese:input.textJp,originalEnglish:input.textEn,originalChinese:input.original,current:input.current,before:input.before,after:input.after,segmentationHint:input.segmentationHint,characterLimits:input.shortLine ? null : {max:input.slowLine?.max}})}},
+    ];
+  }
+  // 中文净语速豁免只属于已实测候选；本次只改一稿即回TTS，不能用五份未合成文字的比值筛回旧长短稿。
+  if (input.normalSpeedLine) {
+    return [
+      { role: "system" as const, content: "", promptKey: "rewrite.normal-speed.system", promptValues: {} },
+      { role: "user" as const, content: "", promptKey: "rewrite.normal-speed.context", promptValues: {
+        input_json: JSON.stringify({speaker:input.speaker,originalJapanese:input.textJp,originalEnglish:input.textEn,originalChinese:input.original,current:input.current,measuredCandidate:input.normalSpeedLine,before:input.before,after:input.after,segmentationHint:input.segmentationHint}),
+      } },
+    ];
+  }
   // 正常句实测明显偏短后，比降为参考；独立构造提示，不能残留0.9–1.1硬目标或“越凝练越好”。
   // 字数只作推算建议，后续五稿也不再按比过滤/排序；仍须用真实TTS检验时长、校字。
   if (input.durationLine) {
@@ -161,18 +178,21 @@ export function rewriteMessages(input: {
   // 目标只指导模型自然增字、选稿，校字和实际音频时长仍由后续合成检查。
   if (input.slowLine) {
     const policy = input.slowLine;
+    const durationInstruction = policy.durationDirection === "longer"
+      ? "程序已确认：中文字数已达到或超过日文摩拉数，音频仍明显偏短。取消中文字数接近日文摩拉数的目标，在原字符上限内自然增字、补全表达或调整断句，不要为凑回日文拍数缩字。"
+      : "程序已确认：中文字数已不多于日文摩拉数，音频仍明显偏长。取消中文字数接近日文摩拉数的目标，自然精简或调整断句，不要为凑回日文拍数加字。";
     const messages: { role: "system" | "user" | "assistant"; content: string; promptKey?: string; promptValues?: Record<string, unknown> }[] = [{ role: "system", content: [
       "你是《最终幻想7 重生》中文配音修订台的台词编辑。这句日文是刻意放慢、拖长的表演句。",
       `日文正文有 ${policy.jpMora} 个摩拉（发音拍，不是日文字幕字符数），实际发声 ${policy.speechSeconds.toFixed(3)} 秒，语速 ${policy.moraPerSecond.toFixed(3)} 拍/秒，低于3拍/秒。`,
       "本句不计算、不追求拍数比，不套用普通语速的中日长度换算。",
-      `请把中文正文补足到接近或等于 ${policy.target} 个汉字/朗读字符（标点、空格、引号、换行不算字数）。当前字数不足目标时，必须增加正文字符，补全自然表达，不要继续缩短译文。`,
-      "这里对应的是日文发音拍与中文朗读字符，不要求一个日文字幕字符对应一个汉字，也不要求逐字翻译。目标允许为忠实原意和中文自然作小幅调整。",
+      policy.durationDirection ? durationInstruction : `请把中文正文补足到接近或等于 ${policy.target} 个汉字/朗读字符（标点、空格、引号、换行不算字数）。当前字数不足目标时，必须增加正文字符，补全自然表达，不要继续缩短译文。`,
+      policy.durationDirection ? "日文摩拉数只用于说明语速，不再是中文字数的目标或选稿排序依据。" : "这里对应的是日文发音拍与中文朗读字符，不要求一个日文字幕字符对应一个汉字，也不要求逐字翻译。目标允许为忠实原意和中文自然作小幅调整。",
       "保留核心语义、修饰限定、人物口吻和情绪。不能为省字删除重要信息；问号也可能表示悬念，不要把揭晓铺垫改成索取答案的问题。不能添加剧情、无意义语气词或用首尾静音充时长。正文已去掉拟声，不能写回合成稿。",
       policy.max == null ? "" : `正文最多${policy.max}字，这是按日文净发声每秒3.5字与日文含非引号标点字符数取较大值的上限，不必凑满。中文标点/空白不计字数；允许在自然语义边界用标点安排停顿，不要拆词、逐字堆标点。实际时长须TTS验证。`,
-      "结合实际音频长度反馈调整表达，字符目标不是音频长度已合格的依据。先在problem说明为何当前稿不足以覆盖慢速演出，在plan说明怎样自然增字。",
+      policy.durationDirection ? "根据实际时长反馈说明问题和改法，偏短自然增字，偏长自然精简；实际结果必须由下一轮TTS验证。" : "结合实际音频长度反馈调整表达，字符目标不是音频长度已合格的依据。先在problem说明为何当前稿不足以覆盖慢速演出，在plan说明怎样自然增字。",
       "只输出 JSON：situation 场景作用；problem 当前时长及措辞问题；plan 修改办法；text 新台词；risk 风险。使用规范简体字。",
       input.segmentationHint || "",
-    ].join("\n"), promptKey: "rewrite.slow.system", promptValues: {"jp_mora": policy.jpMora,"speech_seconds": policy.speechSeconds.toFixed(3),"mora_per_second": policy.moraPerSecond.toFixed(3),"target": policy.target,"character_capacity_instruction": policy.max == null ? "" : `正文最多${policy.max}字，这是按日文净发声每秒3.5字与日文含非引号标点字符数取较大值的上限，不必凑满。中文标点/空白不计字数；允许在自然语义边界用标点安排停顿，不要拆词、逐字堆标点。实际时长须TTS验证。`,"segmentation_hint": input.segmentationHint || ""} }, { role: "user", content: [
+    ].join("\n"), promptKey: policy.durationDirection ? "rewrite.slow.duration-system" : "rewrite.slow.system", promptValues: {"duration_instruction": durationInstruction,"jp_mora": policy.jpMora,"speech_seconds": policy.speechSeconds.toFixed(3),"mora_per_second": policy.moraPerSecond.toFixed(3),"target": policy.target,"character_capacity_instruction": policy.max == null ? "" : `正文最多${policy.max}字，这是按日文净发声每秒3.5字与日文含非引号标点字符数取较大值的上限，不必凑满。中文标点/空白不计字数；允许在自然语义边界用标点安排停顿，不要拆词、逐字堆标点。实际时长须TTS验证。`,"segmentation_hint": input.segmentationHint || ""} }, { role: "user", content: [
       `说话人：${input.speaker}；演出：${input.show || "未识别"}`,
       `日文正文：${input.textJp}\n英文：${input.textEn}\n原中文：${input.original}\n当前稿：${input.current}`,
       ...input.before.map((line, index) => showLine(index + 1, "前", line)),
@@ -180,26 +200,25 @@ export function rewriteMessages(input: {
     ].join("\n"), promptKey: "rewrite.slow.context", promptValues: {"speaker": input.speaker,"show": input.show || "未识别","text_jp": input.textJp,"text_en": input.textEn,"original": input.original,"current": input.current,"before_context": input.before.length ? "\n" + ((input.before.map((line, index) => showLine(index + 1, "前", line))).join("\n")) : "","after_context": input.after.length ? "\n" + ((input.after.map((line, index) => showLine(index + 1, "后", line))).join("\n")) : ""} }];
     for (const sample of input.previous) {
       messages.push({ role: "assistant", content: sample.raw });
-      messages.push({ role: "user", content: `继续给一条忠实、自然的说法，正文尽量接近或等于 ${policy.target} 个字符；不足时补足表达，不按拍数比反馈或排序。`, promptKey: "rewrite.slow.followup", promptValues: {"target": policy.target} });
+      messages.push({ role: "user", content: policy.durationDirection ? durationInstruction : `继续给一条忠实、自然的说法，正文尽量接近或等于 ${policy.target} 个字符；不足时补足表达，不按拍数比反馈或排序。`, promptKey: policy.durationDirection ? "rewrite.slow.duration-followup" : "rewrite.slow.followup", promptValues: {"duration_instruction": durationInstruction,"target": policy.target} });
     }
     return messages;
   }
   // 自动场景短句独立提示，不能混入普通五稿的拍数目标、偏快/偏慢反馈和比值排序。
   if (input.shortLine) {
-    const { min, max } = input.shortLine;
     const messages: { role: "system" | "user" | "assistant"; content: string; promptKey?: string; promptValues?: Record<string, unknown> }[] = [{ role: "system", content: [
-      "你是《最终幻想7 重生》中文配音修订台的台词编辑。当前日文正文少于八个字符，可能有长拖音。",
+      "你是《最终幻想7 重生》中文配音修订台的台词编辑。当前日文正文不超过八个字符，可能有长拖音。",
       "本句不计算、不追求拍数比。以程序实测的有效发声时长反馈调整中文字符数，首尾静音不能充当发声时长。",
-      `中文正文必须 ${min}–${max} 个字符（标点、空格、换行不算）。请根据额外提供的实际发声时长决定怎样改写。`,
-      "中文实测偏短且未达上限时，应增加当前正文的字符数、补全自然表达；若已经达到上限，优先保住核心含义，允许自然标点停顿匹配慢表达，不强制增字。实测偏长时才简化。上限是容量，不要求凑满。",
+      "中文正文不设字数上下限或目标，不按日文字数推算中文长度。",
+      "优先保留自然准确的原表达；实测偏短可调整自然断句和停顿，只有语义确有不足才补全，不能为凑字增加语气词、重复内容或新信息。实测偏长时才自然精简。",
       "先在 problem 说明哪段实际发声偏短或偏长，再在 plan 说明如何相应增字或减字。不要把文件总长、首尾静音或 ASR 校字失败当作长度已合格。",
       "保留核心语义、修饰限定、人物口吻和情绪，不能为字数删掉重要信息。真正的问句需要保留；问号也可表示拖长、悬念或反问，不要机械地把铺垫揭晓改成真正索取答案的问题。不能添加剧情。",
-      "字数上限只算实际朗读文字，所有标点、空格、换行均不计。鼓励在自然语义边界用逗号、省略号等标点安排停顿，以补足慢表达的时间；不能拆词、逐字插逗号或堆重复标点。波浪号不保证拖音，标点作用须实际TTS验证。",
+      "鼓励在自然语义边界用逗号、省略号等标点安排停顿，以补足慢表达的时间；不能拆词、逐字插逗号或堆重复标点。波浪号不保证拖音，标点作用须实际TTS验证。",
       "正文已去掉拟声，不能把原声拟声写回新合成正文。已有合适说法可以复用，不必为了五稿而硬造同义句。",
       "只使用本场提供的上下文、三语对照；使用规范简体字。",
       "只输出 JSON：situation 场景作用；problem 当前时长及措辞问题；plan 修改办法；text 新台词；risk 风险。",
       input.segmentationHint || "",
-    ].join("\n"), promptKey: "rewrite.short.system", promptValues: {"min": min,"max": max,"segmentation_hint": input.segmentationHint || ""} }, { role: "user", content: [
+    ].join("\n"), promptKey: "rewrite.short.system", promptValues: {"segmentation_hint": input.segmentationHint || ""} }, { role: "user", content: [
       `说话人：${input.speaker}；演出：${input.show || "未识别"}`,
       `日文正文：${input.textJp}\n英文：${input.textEn}\n原中文：${input.original}\n当前稿：${input.current}`,
       ...input.before.map((line, index) => showLine(index + 1, "前", line)),
@@ -208,7 +227,7 @@ export function rewriteMessages(input: {
     ].join("\n"), promptKey: "rewrite.short.context", promptValues: {"speaker": input.speaker,"show": input.show || "未识别","text_jp": input.textJp,"text_en": input.textEn,"original": input.original,"current": input.current,"before_context": input.before.length ? "\n" + ((input.before.map((line, index) => showLine(index + 1, "前", line))).join("\n")) : "","after_context": input.after.length ? "\n" + ((input.after.map((line, index) => showLine(index + 1, "后", line))).join("\n")) : "","attempt_number": (input.attempt ?? input.previous.length) + 1} }];
     for (const sample of input.previous) {
       messages.push({ role: "assistant", content: sample.raw });
-      messages.push({ role: "user", content: `继续给一条忠实、自然的说法；限制 ${min}–${max} 字，按实际发声时长反馈增字或减字。不按拍数评分。`, promptKey: "rewrite.short.followup", promptValues: {"min": min,"max": max} });
+      messages.push({ role: "user", content: "继续给一条忠实、自然的说法；不设字数上下限或目标，不为凑字扩写。按实测时长调整自然表达，不按拍数评分。", promptKey: "rewrite.short.followup", promptValues: {} });
     }
     return messages;
   }
