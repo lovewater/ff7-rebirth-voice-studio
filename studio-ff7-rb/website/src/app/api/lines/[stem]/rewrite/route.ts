@@ -1,3 +1,4 @@
+import { rewriteContextChinese } from "@/lib/rewrite-context";
 import { rewriteChat, chatModelConfigured, chatModelForTask } from "@/lib/auto-run-llm";
 import { NextRequest, NextResponse } from "next/server";
 import { sql } from "@/lib/db";
@@ -48,8 +49,7 @@ function showLine(row: ContextRow): ShowLine {
     offscreen: row.subtitle_italic,
     textJp: row.text_jp || "",
     textEn: row.text_en || "",
-    textZh: row.text_zh || "",
-    lockedZh: row.subtitle_text && row.subtitle_text !== row.text_zh ? row.subtitle_text : null,
+    ...rewriteContextChinese(row.text_zh, row.subtitle_text),
   };
 }
 
@@ -74,9 +74,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ ste
     JOIN line_meta m ON m.stem = l.stem
     LEFT JOIN speakers s ON s.code = l.speaker
     LEFT JOIN LATERAL (
-      SELECT subtitle_text FROM line_tts_versions
-      WHERE stem = l.stem AND status = 'ready' AND review_state = 'locked'
-      LIMIT 1
+      SELECT COALESCE(NULLIF(BTRIM(v.subtitle_text), ''), NULLIF(BTRIM(v.tts_text), ''), NULLIF(BTRIM(v.spoken_text), '')) AS subtitle_text FROM line_tts_versions v
+      WHERE v.stem = l.stem AND v.status = 'ready' AND v.review_state = 'locked'
+      ORDER BY v.id DESC LIMIT 1
     ) tv ON true
     WHERE l.id BETWEEN
       (SELECT id FROM lines WHERE stem = ${stem}) - 80
@@ -143,7 +143,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ ste
         JSON.stringify(selectable),
       ].join("\n"), promptKey: "rewrite.manual-selection", promptValues: {"input_json": JSON.stringify(selectable), beat_min: rewriteBand(line.text_jp).low, beat_max: rewriteBand(line.text_jp).high} });
     }
-    // 手动改稿也走通用入口，防止页面按钮遗漏火山路由、三位小数处理或访问日志。
+    // 手动改稿也走通用入口，防止页面按钮遗漏统一模型路由、三位小数处理或访问日志。
     // 只择优不创作台词的manual-selection仍用原模型；所有HTTP重试由连接层统一负责。
     const { content } = await rewriteChat(messages,
       body.action === "select" ? 0.2 : [0.4, 0.55, 0.7, 0.6, 0.5][(body.attempt as number) % REWRITE_COUNT],

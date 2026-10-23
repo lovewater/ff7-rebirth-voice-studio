@@ -1,3 +1,4 @@
+import { rewriteContextChinese } from "./rewrite-context";
 import { NORMAL_JP_CN_RATIO, type BeatResult } from "./beats";
 import { compactPerformanceBeatBand } from "./auto-run-script-policy";
 
@@ -34,6 +35,7 @@ export type ShowLine = {
   textEn: string;
   textZh: string;
   lockedZh: string | null;
+  originalTextZh?: string;
 };
 
 // ratio 这里就是「比」：(日文拍 ÷ 中文拍) ÷ NORMAL_JP_CN_RATIO。1.00 为标准。
@@ -103,8 +105,10 @@ function feedback(target: number, units: number, spokenUnits?: number, matchJapa
 }
 
 function showLine(index: number, side: "前" | "后", line: ShowLine) {
-  const locked = line.lockedZh && line.lockedZh !== line.textZh ? `\n锁定稿：${line.lockedZh}` : "";
-  return `${side}${index} ${line.speaker || "未知"}${line.offscreen ? "（画外）" : ""}\n日：${line.textJp || "（无）"}\n英：${line.textEn || "（无）"}\n中：${line.textZh || "（无）"}${locked}`;
+  const locked = line.lockedZh?.trim();
+  const original = line.originalTextZh ?? line.textZh;
+  const comparison = locked && locked !== original ? `\n原中文：${original}` : "";
+  return `${side}${index} ${line.speaker || "未知"}${line.offscreen ? "（画外）" : ""}\n日：${line.textJp || "（无）"}\n英：${line.textEn || "（无）"}\n中${locked ? "（锁定稿）" : ""}：${locked || line.textZh || "（无）"}${comparison}`;
 }
 
 function clip(value: unknown) {
@@ -130,6 +134,9 @@ export function rewriteMessages(input: {
   durationLine?: { target: number; currentCharacters: number; referenceSeconds: number; candidateSeconds: number };
   slowLine?: { jpMora: number; speechSeconds: number; moraPerSecond: number; target: number; max?: number; durationDirection?: "longer" | "shorter" };
 }) {
+  const contextLine = (line: ShowLine) => ({ ...line,
+    ...rewriteContextChinese(line.originalTextZh ?? line.textZh, line.lockedZh) });
+  input = { ...input, before: input.before.map(contextLine), after: input.after.map(contextLine) };
   if (input.attemptHistoryMode) {
     return [
       {role:"system" as const,content:"",promptKey:"rewrite.measured-history.system",promptValues:{}},

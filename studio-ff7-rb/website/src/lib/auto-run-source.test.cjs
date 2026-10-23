@@ -6,7 +6,7 @@ const Module = require('node:module');
 const ts = require('typescript');
 const stop = new Error('captured input before external TTS');
 const original = '哦哦，诱饵吗！';
-const manual = '旧的手动 TTS 稿，不允许带入';
+const manual = '已锁定的修改后中文，仅用于邻句参考';
 const line = { stem:'test',text_zh:original,text_jp:'おお オトリか！',text_en:'A decoy!',jp_dur_s:2.6 };
 function harness() {
   const calls = { queries:[], planner:[], clone:[] };
@@ -23,10 +23,12 @@ function harness() {
     if(id==='node:fs/promises') return {readFile:async()=>Buffer.alloc(44)};
     if(id.startsWith('node:'))return require(id);
     if(id==='./db') return {sql};
+    if(id==='./rewrite-context')return require('./rewrite-context.ts');
+    if(id==='./auto-run-two-parts')return {setMeaningAnchor:()=>{}};
     if(id==='./fallback-feedback')return require('./fallback-feedback.ts');
     if(id==='./auto-run-rules')return require('./auto-run-rules.ts');
     if(id==='./missing-fragment')return{missingAudioBlocks:()=>[]};
-    if(id==='./speech-segmentation')return {measurePerformanceSpeakingTime:()=>({speechSeconds:2.6}),alignJapaneseClauses:()=>[{startMs:0,endMs:2600,text:line.text_jp}]};
+    if(id==='./speech-segmentation')return {splitAsrClausesByOriginalPauses:input=>({clauses:input.clauses,splits:[]}),measurePerformanceSpeakingTime:()=>({speechSeconds:2.6}),alignJapaneseClauses:()=>[{startMs:0,endMs:2600,text:line.text_jp}]};
     if(id==='./auto-run-subtitle-format')return{createAutoRunSubtitleFormatter:()=>async x=>x};
     if(id==='./auto-run-subtitle')return require('./auto-run-subtitle.ts');
     if(id==='./tts-gpu')return {normalizeScript:x=>({ttsText:x}),wavTiming:()=>({start:0,end:2.6,speech:2.6,duration:2.6})};
@@ -58,7 +60,7 @@ test('casual automation synthesizes original Chinese and does not inherit a manu
   assert.deepEqual(calls.clone[0][3],{subtitleText:null});
   assert.ok(calls.queries.every(q=>!q.includes('FROM line_tts_versions')));
 });
-test('rewrite context uses original neighboring captions and current in-run draft, never a locked manual revision', async()=>{
+test('rewrite context uses locked neighboring Chinese while keeping current in-run draft separate', async()=>{
   const {api,calls}=harness();
   const previousFetch=global.fetch;
   global.fetch=async (_url,options)=>{
@@ -67,10 +69,12 @@ test('rewrite context uses original neighboring captions and current in-run draf
   };
   try {
     const result=await api.loadRewriteContext('test','本轮自动改写','オトリか！');
-    assert.equal(result.before[0].textZh,original);
-    assert.equal(result.after[0].textZh,original);
-    assert.equal(result.before[0].lockedZh,null);
-    assert.equal(result.after[0].lockedZh,null);
-    assert.ok(calls.queries.every(q=>!q.includes('line_tts_versions')));
+    assert.equal(result.before[0].textZh,manual);
+    assert.equal(result.before[0].originalTextZh,original);
+    assert.equal(result.after[0].textZh,manual);
+    assert.equal(result.before[0].lockedZh,manual);
+    assert.equal(result.after[0].lockedZh,manual);
+    assert.ok(calls.queries.some(q=>q.includes("review_state='locked'")));
+    assert.equal(result.line.text_zh,original);
   } finally {global.fetch=previousFetch;}
 });

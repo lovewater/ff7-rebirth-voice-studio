@@ -1,3 +1,4 @@
+import { rewriteContextChinese } from "./rewrite-context";
 import { currentChatModel } from "./llm-model-context";
 import { captureAutoRunOutcome, runAutoRunModels } from "./auto-run-model-policy";
 import { polishAcceptedScript } from "./accepted-script-polish";
@@ -614,6 +615,7 @@ type ContextRow = {
   text_jp: string | null;
   text_en: string | null;
   text_zh: string | null;
+  subtitle_text?: string | null;
   subtitle_italic: boolean;
   dialogue_mode: string | null;
   dialogue_evidence: ShowEvidence | null;
@@ -625,21 +627,26 @@ function asShowLine(row: ContextRow): ShowLine {
     offscreen: row.subtitle_italic,
     textJp: row.text_jp || "",
     textEn: row.text_en || "",
-    textZh: row.text_zh || "",
-    lockedZh: null,
+    ...rewriteContextChinese(row.text_zh, row.subtitle_text),
   };
 }
 
 async function loadRewriteContext(stem: string, current: string, referenceTextJp?: string) {
-  // 上下文也只用游戏原字幕，避免通过邻句锁定字幕间接把手动稿带回模型。
+  // 前后文优先使用人工锁定后的中文；本句仍从游戏原字幕开始。
   // current 仅为本次运行内部产生的清理稿/改写稿。
   const rows = await sql<ContextRow[]>`
     SELECT l.stem, COALESCE(s.name_zh, l.speaker) AS name_zh,
            l.text_jp, l.text_en, l.text_zh, l.subtitle_italic, l.kind,
-           m.dialogue_mode, m.dialogue_evidence
+           m.dialogue_mode, m.dialogue_evidence, tv.subtitle_text
     FROM lines l
     LEFT JOIN line_meta m ON m.stem = l.stem
     LEFT JOIN speakers s ON s.code = l.speaker
+    LEFT JOIN LATERAL (
+      SELECT COALESCE(NULLIF(BTRIM(v.subtitle_text), ''), NULLIF(BTRIM(v.tts_text), ''), NULLIF(BTRIM(v.spoken_text), '')) AS subtitle_text
+      FROM line_tts_versions v
+      WHERE v.stem=l.stem AND v.status='ready' AND v.review_state='locked'
+      ORDER BY v.id DESC LIMIT 1
+    ) tv ON true
     WHERE l.id BETWEEN
       (SELECT id FROM lines WHERE stem = ${stem}) - 80
       AND (SELECT id FROM lines WHERE stem = ${stem}) + 80
