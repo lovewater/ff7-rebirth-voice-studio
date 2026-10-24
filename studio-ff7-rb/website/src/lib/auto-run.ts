@@ -1,3 +1,4 @@
+import type { CandidateSpeedMeasurements } from "./selection-speed";
 import { fastLongPressure } from "./fast-long-pressure";
 import { applyAmbientPolicy, IGNORED_AMBIENT_MAX_MS, type AmbientPolicyPlan } from "./ambient-policy";
 import { rewriteContextChinese } from "./rewrite-context";
@@ -931,7 +932,7 @@ async function pickPassedClip(
   runId: string,
   line: LinePack,
   jpAsr: SeedAsrResult,
-  passed: { clip: TtsClip; asr: SeedAsrResult; paceRatio: number | null; pronunciationNotes: string[] }[],
+  passed: ({ clip: TtsClip; asr: SeedAsrResult; paceRatio: number | null; pronunciationNotes: string[] } & CandidateSpeedMeasurements)[],
 ) {
   // 字与跨度合格之后，读音疑点少的优先。节奏模型只能在同分候选中挑，
   // 不能以节奏更好为由，把疑点更多的一条选回来。
@@ -961,6 +962,9 @@ async function pickPassedClip(
       spoken: row.clip.spoken_text,
       asr: row.asr,
       paceRatio: row.paceRatio,
+      netRate: row.netRate, netSpeechSeconds: row.netSpeechSeconds, spokenSyllables: row.spokenSyllables,
+      normalizedBeatRatio: row.normalizedBeatRatio, beatBand: row.beatBand,
+      beatExempt: row.beatExempt, beatExemption: row.beatExemption,
     })),
   });
   await log(runId, "pick", `模型选 #${picked.ttsId}：${picked.reason}`, {
@@ -1539,12 +1543,12 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
       ids: clips.map((row) => row.id),
       autoDetect: clips.map((row) => ({ id: row.id, speech_pass: row.speech_pass })),
     }, "result");
-    const passed: {
+    const passed: ({
       clip: TtsClip;
       asr: SeedAsrResult;
       paceRatio: number | null;
       pronunciationNotes: string[];
-    }[] = [];
+    } & CandidateSpeedMeasurements)[] = [];
     let textPassedCount = 0;
     let chineseSpeedOutOfBand = false;
     let rhythmMismatchCount = 0;
@@ -1718,7 +1722,13 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
         failNotes.push(message);
         await log(runId,"fast-and-long",message,{ttsId:clip.id,...speedBeatPressure},"result");
       }
-      if (partsOk && judged.ok && chineseSpeed.pass && !speedBeatPressure.triggered && lengthOk && pace.ok && beatCheck.pass && (!characters || characters.pass)) passed.push({ clip, asr, paceRatio: ratio, pronunciationNotes: judged.pronunciationNotes });
+      if (partsOk && judged.ok && chineseSpeed.pass && !speedBeatPressure.triggered && lengthOk && pace.ok && beatCheck.pass && (!characters || characters.pass)) passed.push({ clip, asr, paceRatio: ratio, pronunciationNotes: judged.pronunciationNotes,
+        // 原始同一候选的实测值直接随候选流转，不能用时长比猜净语速或把豁免的比改成1。
+        netRate: normalSpeedBeat.rate, netSpeechSeconds: normalSpeedBeat.netSeconds, spokenSyllables: normalSpeedBeat.syllables,
+        normalizedBeatRatio: beat.result?.normalizedRatio ?? null, beatBand: autoBeatBand(referenceTextJp),
+        beatExempt: !beatCheck.enabled,
+        beatExemption: normalSpeedBeat.exempt ? "normal-cn-net-speed" : durationBeatReference ? "actual-short" : slowLine ? "slow" : shortLine ? "short" : null,
+      });
       else failNotes.push(`中文净语速${chineseSpeed.rate?.toFixed(3)??"不可测"}音节/秒：${chineseSpeed.pass?"过关":"超9.0，必须放慢或精简，不能加静音伪装"}；${lengthFact}；字:${judged.ok ? "过" : judged.reason} 语速:${pace.ok ? "过" : (ratio?.toFixed(3) ?? "无")} 拍数比:${normalSpeedBeat.exempt ? `中文净语速${normalSpeedBeat.low}–${normalSpeedBeat.high}，忽略` : durationBeatReference ? "实测偏短仅参考" : ignoreBeat ? (slowLine ? "慢速不检查" : "短句不检查") : `${beatCheck.ratio?.toFixed(3) ?? "无"}(${beatCheck.pass ? "过" : "不过"})`}${characters ? ` 字数:${characters.characters}(${characters.pass ? "过" : "不过"}，要求${characters.min}–${characters.max})` : ""}`);
     }
     // 润色只验证这一批；不再次进入结构重试或常规改稿，旧合格成品不混入新稿候选。
