@@ -254,6 +254,8 @@ export type MixSeg = {
   duration: number;
   scale: number;
   origDuration?: number;
+  /** 原声衔接及其间距不参与总时长分配。 */
+  fixed?: boolean;
 };
 
 export type MixFitStep = {
@@ -329,9 +331,9 @@ export function fitMixToTarget(segs: MixSeg[], targetS: number, fitToleranceS = 
   push("identity");
   if (!(targetS > 0) || !segs.length) return done("identity");
 
-  const sil = indexesOf(segs, (seg) => seg.kind === "silence");
+  const sil = indexesOf(segs, (seg) => seg.kind === "silence" && !seg.fixed);
   if (sil.length) {
-    const audioSum = durs.reduce((sum, value, index) => (segs[index].kind === "silence" ? sum : sum + value), 0);
+    const audioSum = durs.reduce((sum, value, index) => (sil.includes(index) ? sum : sum + value), 0);
     const origSum = sil.reduce((sum, index) => sum + (segs[index].origDuration ?? base[index]), 0);
     const k = origSum > 1e-9
       ? Math.min(SILENCE_MAX_RATIO, Math.max(SILENCE_MIN_RATIO, (targetS - audioSum) / origSum))
@@ -344,7 +346,7 @@ export function fitMixToTarget(segs: MixSeg[], targetS: number, fitToleranceS = 
   push("silence");
   if (within()) return done("silence");
 
-  const fx = indexesOf(segs, (seg) => seg.kind === "onomatopoeia" || seg.kind === "ambient");
+  const fx = indexesOf(segs, (seg) => !seg.fixed && (seg.kind === "onomatopoeia" || seg.kind === "ambient"));
   if (fx.length) {
     const fxSum = fx.reduce((sum, index) => sum + durs[index], 0);
     const k = fxSum > 1e-9
@@ -369,6 +371,7 @@ export function fitMixToTarget(segs: MixSeg[], targetS: number, fitToleranceS = 
 
 export function applyScales(segs: MixSeg[], scales: Record<string, number>) {
   return segs.map((seg) => {
+    if (seg.fixed) return { ...seg, scale: 1 };
     if (seg.kind === "silence") {
       const { sampleRate } = decodeWavMono(seg.buffer);
       const asked = (scales[seg.id] ?? seg.scale ?? 1) * seg.duration;
@@ -519,6 +522,7 @@ export function mixSegments(jpWav: Buffer, ttsWav: Buffer, plan: OnoPlan, pieces
       jp,
       fromJp: piece.src !== "tts",
       audio: {
+        fixed: false as boolean,
         id: `${piece.src}-${index}`,
         kind,
         buffer: clip,
@@ -548,12 +552,30 @@ export function mixSegments(jpWav: Buffer, ttsWav: Buffer, plan: OnoPlan, pieces
   last.jp.endMs = jpDurMs;
   const segs: MixSeg[] = [];
   events.forEach((event, index) => {
+    const next = events[index + 1];
+    let fixedGap: number | undefined;
+    if (event.audio.kind === "ambient" && next?.audio.kind === "speech") {
+      // 环境音切片尾部可能已经带了一部分原始留白；只补切片末尾到正文
+      // 实际起声的余量，不能用按字数均分的 jp 范围或 ASR 字轴代替波形。
+      const speech = plan.speech.find(span => span.endMs > event.jp.endMs && span.startMs >= event.jp.startMs);
+      if (!speech) throw new Error("环境音后缺少原日文正文范围，无法保留原始间距");
+      const startS = Math.max(event.jp.endMs, speech.startMs) / 1000;
+      const original = decodeWavMono(sliceWav(jpWav, startS, speech.endMs / 1000));
+      const bounds = speechBoundsSamples(original.samples);
+      if (!bounds) throw new Error("环境音后原日文没有有效起声，无法保留原始间距");
+      fixedGap = Math.max(0, startS + bounds.start / original.sampleRate - event.jp.endMs / 1000);
+      // 中文片段的开头静音不叠加到日文间距上；环境音保持原采样、不缩放。
+      next.audio.buffer = setLeadWav(next.audio.buffer, 0);
+      next.audio.duration = wavDuration(next.audio.buffer);
+      event.audio.fixed = true;
+    }
     segs.push(event.audio);
-    if (index >= events.length - 1) return;
-    const orig = Math.max(0, (events[index + 1].jp.startMs - events[index].jp.endMs) / 1000);
+    if (!next) return;
+    const orig = fixedGap ?? Math.max(0, (next.jp.startMs - event.jp.endMs) / 1000);
     if (orig <= 0.0005) return;
     segs.push({
       id: `sil-${index + 1}`,
+      fixed: fixedGap !== undefined,
       kind: "silence",
       buffer: silenceWav(sampleRate, orig),
       duration: orig,
@@ -605,6 +627,7 @@ export function spliceMix(jpWav: Buffer, ttsWav: Buffer, plan: OnoPlan, pieces: 
       segments: packed.map((seg) => ({
         id: seg.id,
         kind: seg.kind,
+        fixed: seg.fixed ?? false,
         packed_s: Number(seg.duration.toFixed(4)),
         scale: Number((fitted.scales[seg.id] ?? 1).toFixed(4)),
       })),

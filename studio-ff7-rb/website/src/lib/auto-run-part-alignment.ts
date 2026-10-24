@@ -138,10 +138,10 @@ export function assembleParts(jp: Buffer, cn: Buffer, plan: OnoPlan, pieces: Spl
     // 拟声原声与正文均不缩放；剩余总时长只分配给两者之间的静音。
     let segments = splice.mixSegments(jp, cn, plan, pieces, target);
     // 无独立静音段且偏短时，仍可使用正文内部已有的真实留白补齐。
-    if (!segments.some(x => x.kind === "silence")
+    if (!segments.some(x => x.kind === "silence" && !x.fixed)
         && segments.reduce((sum, x) => sum + x.duration, 0) < target - ASSEMBLY_LENGTH_TOLERANCE_S)
         segments = exposeBodySilences(segments);
-    const silences = segments.filter(x => x.kind === 'silence');
+    const silences = segments.filter(x => x.kind === 'silence' && !x.fixed);
     const actual = segments.reduce((sum, x) => sum + x.duration, 0);
     const oldSilence = silences.reduce((sum, x) => sum + x.duration, 0), wanted = oldSilence + target - actual;
     // 情绪与正文相接时可能没有独立静音段；微小长短偏差不能因此丢掉情绪原声。
@@ -172,5 +172,5 @@ export function assembleParts(jp: Buffer, cn: Buffer, plan: OnoPlan, pieces: Spl
         throw new PartAssemblyError("最终文件与日文原音频总长误差超过50ms，升级错误");
     return { audio, ok: true, fit: { version: "emotion-exact-silence-assembly-v1", target, actual_s: seconds, wav_s: seconds,
             tolerance_s: ASSEMBLY_LENGTH_TOLERANCE_S, delta_s: seconds - target,
-            scales: Object.fromEntries(segments.map(x => [x.id, 1])), segments: segments.map(x => ({ id: x.id, kind: x.kind, packed_s: x.duration, scale: 1 })) } };
+            scales: Object.fromEntries(segments.map(x => [x.id, 1])), segments: segments.map(x => ({ id: x.id, kind: x.kind, fixed: x.fixed ?? false, packed_s: x.duration, scale: 1 })) } };
 }

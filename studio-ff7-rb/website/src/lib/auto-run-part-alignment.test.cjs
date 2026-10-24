@@ -206,3 +206,23 @@ test('保留原声与正文相接且偏短时，暴露正文内真实静音补�
  assert.throws(()=>assembleParts(jp,tone(1),emotion,pieces,2,jp),PartAssemblyError);
  assert.throws(()=>assembleParts(jp,tone(1.6),emotion,pieces,2,jp),PartAssemblyError);
 });
+test('环境音后保留原日文305ms间隙，裁掉中文片头静音且不参与总长分配',()=>{
+ const splice=load(__dirname+'/audio-splice.ts');
+ const make=(sr,blocks,total)=>{const a=new Float32Array(Math.round(total*sr));for(const [start,end]of blocks)a.fill(.35,Math.round(start*sr),Math.round(end*sr));return encode(sr,a)};
+ const jp=make(24000,[[0,.5],[.805,1.305],[1.905,2.405]],2.505);
+ const ambient={enabled:true,onomatopoeia:[],ambient:[{startMs:0,endMs:650}],speech:[{startMs:650,endMs:2505}]};
+ const pieces=[{src:'env',index:0},{src:'tts',startMs:0,endMs:null}];
+ for(const sr of [24000,44100]){
+  const cn=make(sr,[[.08,.58],[.98,1.48]],1.58);
+  const segments=splice.mixSegments(jp,cn,ambient,pieces,2.505),gap=segments.find(x=>x.kind==='silence');
+  assert.equal(gap.fixed,true);assert.ok(Math.abs(gap.duration-.155)<=1/24000);
+  const scaled=splice.applyScales(segments,Object.fromEntries(segments.map(x=>[x.id,2])));
+  assert.equal(scaled[0].duration,segments[0].duration);assert.equal(scaled[1].duration,gap.duration);
+  const fit=splice.fitMixToTarget(segments,3);assert.equal(fit.scales[gap.id],1);assert.equal(fit.scales[segments[0].id],1);
+  const out=assembleParts(jp,cn,ambient,pieces,2.505,jp),d=decode(out.audio);
+  const start=Math.round(.65*d.sampleRate);let onset=start;while(onset<d.samples.length&&Math.abs(d.samples[onset])<.1)onset++;
+  assert.ok(Math.abs(onset/d.sampleRate-.805)<=2/d.sampleRate);
+  assert.ok(Math.abs(d.samples.length/d.sampleRate-2.505)<=2/d.sampleRate);
+  assert.equal(out.fit.segments.find(x=>x.fixed&&x.kind==='silence').packed_s,gap.duration);
+ }
+});
