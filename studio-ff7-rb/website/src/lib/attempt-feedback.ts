@@ -217,7 +217,7 @@ function issueSuggestions(issues: FeedbackIssue[]) {
   }))];
   if (tooMany && short) suggestions.unshift("字数与时长要求存在冲突：精简冗余，同时用自然停顿补足偏短部分，不恢复失败长稿。");
   if (tooFew && long) suggestions.unshift("字数与时长要求存在冲突：补全表达，同时收紧偏长部分的节奏，不能简单反复增字、删字。");
-  if (tooFew && tooFast) suggestions = ["字数容量与实际语速的要求冲突。先保持中心意思，调整发声节奏并重试，不同时要求增字和减字。"]; 
+  if (tooFew && tooFast) suggestions = ["字数容量与实际语速的要求冲突。先保持中心意思，调整发声节奏并重试，不同时要求增字和减字。"];
   return suggestions;
 }
 
