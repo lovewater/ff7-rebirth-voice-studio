@@ -50,7 +50,7 @@ function lockRoute(isAutoFinal, options={}) {
  return{writes,queries,formatted,patch:()=>m.exports.PATCH({json:async()=>({reviewState:"locked",...options.body})},{params:Promise.resolve({stem:'CHADL_QST_01_1800_1200_00_beg',id:'39499'})})};
 }
 test('locking final #39499 succeeds while keeping NULL subtitle inheritance and full original 哼',async()=>{
- const r=lockRoute(true),response=await r.patch();assert.equal(response.status,200);assert.equal(response.body.record.subtitle_text,null);assert.equal(r.writes.length,2);assert.ok(r.writes.every(q=>!q.includes('subtitle_text =')));assert.ok(r.queries.some(q=>q.includes('ar.selected_tts_id = line_tts_versions.id')));
+ const r=lockRoute(true),response=await r.patch();assert.equal(response.status,200);assert.equal(response.body.record.subtitle_text,null);assert.equal(r.writes.length,2);assert.ok(r.writes.every(q=>!q.includes('subtitle_text =')));assert.ok(r.queries.some(q=>q.includes('ar.selected_tts_id = ancestor.id')));
 });
 test('manual body-only audio still requires subtitle confirmation before touching any lock',async()=>{
  const r=lockRoute(false),response=await r.patch();assert.equal(response.status,409);assert.equal(response.body.code,'SUBTITLE_CONFIRMATION_REQUIRED');assert.equal(response.body.subtitleText,base.ttsText);assert.equal(r.writes.length,0);
@@ -93,4 +93,19 @@ test('confirmed abnormal-page subtitle can lock atomically instead of asking aga
 test('mandatory review keeps the existing manual rewrite proposal instead of replacing it with original',async()=>{
  const r=lockRoute(false,{body:{requireSubtitleConfirmation:true}}),response=await r.patch();
  assert.equal(response.status,409);assert.equal(response.body.subtitleText,base.ttsText);assert.equal(r.writes.length,0);
+});
+
+test('audio edit derived from final #67635 inherits 嗯 instead of proposing its body at save-and-lock',async()=>{
+ const r=lockRoute(true,{draft:'你说得对',original:'嗯，你说得对',body:{confirmSubtitleChanges:true}}),response=await r.patch();
+ assert.equal(response.status,200);assert.equal(response.body.record.subtitle_text,null);assert.equal(r.formatted.length,0);
+ assert.ok(r.writes.every(q=>!q.includes('subtitle_text =')));
+ const query=r.queries.find(q=>q.includes('WITH RECURSIVE lineage'));
+ assert.match(query,/parent\.stem = child\.stem/);assert.match(query,/parent\.tts_text IS NOT DISTINCT FROM child\.tts_text/);
+ assert.match(query,/parent\.spoken_text IS NOT DISTINCT FROM child\.spoken_text/);
+ assert.match(query,/child\.conversion_meta->>'pipeline' = 'audio-edit'/);
+ assert.match(query,/NOT parent\.id = ANY\(child\.visited\)/);assert.match(query,/cardinality\(child\.visited\) < 32/);
+});
+test('mandatory confirmation for a derived final shows full inherited interjection',async()=>{
+ const r=lockRoute(true,{draft:'你说得对',original:'嗯，你说得对',body:{requireSubtitleConfirmation:true}}),response=await r.patch();
+ assert.equal(response.status,409);assert.equal(response.body.subtitleText,'嗯，你说得对');assert.equal(r.writes.length,0);
 });

@@ -921,7 +921,13 @@ def added_cache_path(bank_stem: str, slices: list[dict]) -> Path:
 
 
 def spoken_subtitle(row: dict) -> str:
-    return ((row.get("subtitle_text") or row.get("tts_text") or "")).strip()
+    # 补充语音也遵守“空覆盖沿用游戏原字幕”。TTS正文可能已去掉拼回原声的“嗯/哼”，
+    # 仅在确无原字幕的新增资源上，才以朗读稿作为字幕来源。
+    override = (row.get("subtitle_text") or "").strip()
+    if override:
+        return override
+    original = row.get("text_zh")
+    return (original if original is not None else row.get("tts_text") or "").strip()
 
 
 def index_txtres() -> tuple[dict[str, str], dict[str, dict]]:

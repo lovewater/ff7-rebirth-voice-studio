@@ -3,7 +3,7 @@ import array
 import struct
 import unittest
 
-from build_mod import place_channel, repair_audio_exports, validate_zen_exports
+from build_mod import place_channel, repair_audio_exports, validate_zen_exports, spoken_subtitle
 
 
 def asset(sizes):
@@ -91,6 +91,19 @@ class PlaceChannel(unittest.TestCase):
                     "mono": array.array("h", [2]),
                 },
             ])
+
+
+class SubtitleInheritance(unittest.TestCase):
+    def test_interjection_comes_from_original_when_override_is_empty(self):
+        for override in (None, "", "  "):
+            self.assertEqual(spoken_subtitle({"subtitle_text": override, "text_zh": "嗯，你说得对", "tts_text": "你说得对"}), "嗯，你说得对")
+
+    def test_explicit_manual_caption_has_priority(self):
+        self.assertEqual(spoken_subtitle({"subtitle_text": "嗯，说得没错", "text_zh": "嗯，你说得对", "tts_text": "说得没错"}), "嗯，说得没错")
+
+    def test_missing_original_resource_can_use_tts_caption(self):
+        self.assertEqual(spoken_subtitle({"subtitle_text": None, "text_zh": None, "tts_text": "新增台词"}), "新增台词")
+        self.assertEqual(spoken_subtitle({"subtitle_text": None, "text_zh": "", "tts_text": "只有声音"}), "")
 
 
 if __name__ == "__main__":

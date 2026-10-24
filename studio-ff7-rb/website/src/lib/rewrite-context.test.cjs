@@ -25,7 +25,7 @@ test('自动改稿只读ready且locked的邻句，当前稿及原始三语不被
  assert.equal(result.after[0].textZh,'原下句');assert.equal(result.line.text_zh,'本句原稿');
  assert.deepEqual(measurements,[{jp:'今',cn:'本轮当前稿'}]);
  assert.match(queries[0],/LATERAL/);assert.match(queries[0],/review_state\s*=\s*'locked'/);assert.match(queries[0],/status\s*=\s*'ready'/);
- assert.match(queries[0],/NULLIF\(BTRIM\(v\.subtitle_text\)/);assert.match(queries[0],/v\.tts_text/);
+ assert.match(queries[0],/NULLIF\(BTRIM\(v\.subtitle_text\)/);assert.match(queries[0],/l\.text_zh/);assert.doesNotMatch(queries[0],/BTRIM\(v\.(?:tts_text|spoken_text)\)/);
 });
 
 

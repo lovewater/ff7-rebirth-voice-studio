@@ -64,10 +64,30 @@ export async function PATCH(
         }[]>`
           SELECT id, tts_text, subtitle_text, review_state,
                  (voice_gpu_key = 'jp-lock' OR conversion_meta->>'pipeline' = 'jp-lock') AS is_jp_lock,
-                 EXISTS (SELECT 1 FROM line_auto_runs ar
-                   WHERE ar.id = line_tts_versions.auto_run_id
-                     AND ar.selected_tts_id = line_tts_versions.id
-                     AND ar.status IN ('passed', 'failed')) AS is_auto_final
+                 EXISTS (
+                   -- 空覆盖表示沿用游戏字幕。音频编辑/G重处理会复制空值，但不复制auto_run_id；
+                   -- 需沿同句、同朗读稿的audio-edit来源找已结束任务的最终成品，不能误认正文子音频。
+                   -- 限深度、防环，并校验source_id后转换；修改文字或跨句的链条立即中止。
+                   WITH RECURSIVE lineage AS (
+                     SELECT line_tts_versions.id, line_tts_versions.stem, line_tts_versions.tts_text,
+                            line_tts_versions.spoken_text, line_tts_versions.auto_run_id,
+                            line_tts_versions.conversion_meta, ARRAY[line_tts_versions.id] AS visited
+                     UNION ALL
+                     SELECT parent.id, parent.stem, parent.tts_text, parent.spoken_text,
+                            parent.auto_run_id, parent.conversion_meta, child.visited || parent.id
+                     FROM lineage child JOIN line_tts_versions parent
+                       ON parent.id = CASE WHEN child.conversion_meta->>'source_id' ~ '^[0-9]{1,18}$'
+                         THEN (child.conversion_meta->>'source_id')::bigint END
+                     WHERE child.conversion_meta->>'pipeline' = 'audio-edit'
+                       AND parent.stem = child.stem AND parent.status = 'ready'
+                       AND parent.tts_text IS NOT DISTINCT FROM child.tts_text
+                       AND parent.spoken_text IS NOT DISTINCT FROM child.spoken_text
+                       AND NOT parent.id = ANY(child.visited) AND cardinality(child.visited) < 32
+                   )
+                   SELECT 1 FROM lineage ancestor JOIN line_auto_runs ar
+                     ON ar.id = ancestor.auto_run_id AND ar.stem = ancestor.stem
+                   WHERE ar.selected_tts_id = ancestor.id AND ar.status IN ('passed', 'failed')
+                 ) AS is_auto_final
           FROM line_tts_versions
           WHERE id = ${Number(id)} AND stem = ${stem} AND status = 'ready'
           FOR UPDATE

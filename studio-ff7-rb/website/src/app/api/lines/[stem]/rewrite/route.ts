@@ -74,7 +74,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ ste
     JOIN line_meta m ON m.stem = l.stem
     LEFT JOIN speakers s ON s.code = l.speaker
     LEFT JOIN LATERAL (
-      SELECT COALESCE(NULLIF(BTRIM(v.subtitle_text), ''), NULLIF(BTRIM(v.tts_text), ''), NULLIF(BTRIM(v.spoken_text), '')) AS subtitle_text FROM line_tts_versions v
+      SELECT COALESCE(NULLIF(BTRIM(v.subtitle_text), ''), l.text_zh, '') AS subtitle_text FROM line_tts_versions v
       WHERE v.stem = l.stem AND v.status = 'ready' AND v.review_state = 'locked'
       ORDER BY v.id DESC LIMIT 1
     ) tv ON true
