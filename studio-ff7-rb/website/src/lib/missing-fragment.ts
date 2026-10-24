@@ -1,3 +1,4 @@
+import { JP_WORD_AXIS_TOLERANCE_MS } from "./reference-word-evidence";
 import { parseJsonObject, rewriteChat } from "./auto-run-llm";
 import { alignJapaneseClauses, refinePerformanceBoundaries, type SegmentSpan } from "./speech-segmentation";
 import type { SeedAsrResult } from "./seed-asr";
@@ -21,9 +22,9 @@ function fragmentBoundaries(input: { samples: Float32Array; sampleRate: number; 
   }).adjustments[0];
   const leftCut = before === null ? null : boundary(
     { startMs: words[before].start, endMs: left },
-    { startMs: Math.min(left + 180, block.startMs), endMs: block.endMs });
+    { startMs: Math.min(left + JP_WORD_AXIS_TOLERANCE_MS, block.startMs), endMs: block.endMs });
   const rightCut = after === null ? null : boundary(
-    { startMs: block.startMs, endMs: Math.max(block.endMs, right - 180) },
+    { startMs: block.startMs, endMs: Math.max(block.endMs, right - JP_WORD_AXIS_TOLERANCE_MS) },
     { startMs: right, endMs: words[after].end });
   if ([leftCut, rightCut].some(c => c?.reason === "no-clear-valley")) return null;
   return {
@@ -34,7 +35,7 @@ function fragmentBoundaries(input: { samples: Float32Array; sampleRate: number; 
 }
 
 /** 只寻找“可能漏识别的一块声音”，不判断缺了哪段字幕，更不把字轴空档当环境音。
- * 10ms 帧峰值须达到全局峰值5%；先给现有字轴两侧各留180ms容错，避免连读/尾音被切走。
+ * 10ms 帧峰值须达到全局峰值5%；先给现有字轴两侧各留220ms容错，避免连读/尾音被切走。
  * 剩余声音中，间隔不足250ms视作同块；每块至少100ms实有声，静音不算一块。
  * 两块及以上直接降级，不能挑其中一块救。字轴严重漂移或贴连得无法独立定位时也不强猜。
  * 返回值仅供模型查看的候选范围，绝不是拟声的实际起止点。
@@ -51,7 +52,7 @@ export function missingAudioBlocks(input: { samples: Float32Array; sampleRate: n
   for (let i = 0; i < input.samples.length; i += frame) {
     const end = Math.min(i + frame, input.samples.length);
     const startMs = i / input.sampleRate * 1000, endMs = end / input.sampleRate * 1000;
-    if (words.some(w => startMs < w.end + 180 && endMs > w.start - 180)) continue;
+    if (words.some(w => startMs < w.end + JP_WORD_AXIS_TOLERANCE_MS && endMs > w.start - JP_WORD_AXIS_TOLERANCE_MS)) continue;
     let local = 0;
     for (let j = i; j < end; j++) local = Math.max(local, Math.abs(input.samples[j]));
     if (local < peak * .05) continue;
@@ -153,7 +154,7 @@ export function recoverMissingFragment(input: {
  * 仅一块声音、零缺文、没有声称找到了缺失词，且双侧能量谷可靠才允许删除；
  * 删除区间严格夹在相邻ASR词之间，绝不为了清环境音切进已识别正文。多块/有缺文仍fallback。
  */
-/** 句中环境音按完整字轴间隙的真实波形检查，不沿用两侧180ms的候选屏蔽区。
+/** 句中环境音按完整字轴间隙的真实波形检查，不沿用两侧220ms的候选屏蔽区。
  * 10ms帧峰值低于全局峰值5%为静音；声音块内不足150ms的停顿不拆块。
  * 声音跨度必须严格>500ms，前后各有至少150ms连续静音，才允许独立保留。
  */

@@ -2,7 +2,7 @@
 const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),Module=require('node:module'),ts=require('typescript');
 const calls=[];
 let reply={audio_blocks:1,missing_text_blocks:1,kind:'onomatopoeia',matched_jp:'わあ～',matched_zh:'哇～',before_word:null,after_word:0,reason:'唯一缺文与唯一声音顺序对应'};
-const m=new Module(__filename);m.require=id=>id==='./auto-run-llm'?{parseJsonObject:JSON.parse,rewriteChat:async(...args)=>{calls.push(args);return{content:JSON.stringify(reply)}}}:id==='./speech-segmentation'?require('./speech-segmentation.ts'):require(id);
+const m=new Module(__filename);m.require=id=>id==='./auto-run-llm'?{parseJsonObject:JSON.parse,rewriteChat:async(...args)=>{calls.push(args);return{content:JSON.stringify(reply)}}}:id==='./speech-segmentation'?require('./speech-segmentation.ts'):id==='./reference-word-evidence'?require('./reference-word-evidence.ts'):require(id);
 m._compile(ts.transpileModule(fs.readFileSync(`${__dirname}/missing-fragment.ts`,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,__filename);
 const {missingAudioBlocks,missingFragmentMessages,classifyMissingFragment,recoverMissingFragment}=m.exports;
 function audio(length,spans){const samples=new Float32Array(length);for(const [a,b]of spans)samples.fill(.5,a,b);return{samples,sampleRate:1000};}
@@ -100,4 +100,13 @@ test('640ms字轴间隙里的短呼吸归入正文，不生成环境音或未知
  const segments=segmentPerformanceAudio({...s,speech:[e.gap],ambient:[],onomatopoeia:[]});
  assert.deepEqual(segments.filter(x=>x.kind==='ambient'||x.kind==='unknown'),[]);
  assert.ok(segments.some(x=>x.kind==='speech'&&x.startMs<=4870&&x.endMs>=5290));
+});
+
+
+test('220ms axis tolerance recovers the weak early candidate when the first word is 210ms late',()=>{
+ const samples=new Float32Array(2450);samples.fill(.06,80,200);samples.fill(.5,1460,2190);
+ const input={samples,sampleRate:1000,words:[{text:'問',start:1670,end:1870},{text:'題',start:1870,end:2030},{text:'な',start:2070,end:2230},{text:'い',start:2230,end:2350}]};
+ const blocks=missingAudioBlocks(input);assert.deepEqual(blocks,[{startMs:80,endMs:200}]);
+ const ambient=m.exports.recoverCompleteTextAmbient({...input,blocks,decision:{audio_blocks:1,missing_text_blocks:0,kind:'ambient',matched_jp:'',matched_zh:'',before_word:null,after_word:0,reason:'字幕完整，仅有独立前置声音'}});
+ assert.ok(ambient);assert.equal(ambient.startMs,0);assert.ok(ambient.endMs>=200 && ambient.endMs<1460);
 });

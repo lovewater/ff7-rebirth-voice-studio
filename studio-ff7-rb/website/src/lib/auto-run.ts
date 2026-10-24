@@ -1,3 +1,5 @@
+import { speechChunks } from "./speech-segments";
+import { referenceWordEvidence } from "./reference-word-evidence";
 import { rememberRoundSpeed } from "./round-speed-context";
 import type { CandidateSpeedMeasurements } from "./selection-speed";
 import { fastLongPressure } from "./fast-long-pressure";
@@ -1354,6 +1356,18 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
   // 每条场景句都准备参考：删拟声/环境音，裁首尾静音，内部静音逐字节保留。
   // 不凭正文片段重建参考，也不再额外补 0.3s 或插入估算的停顿。
   const reference = buildSpeechReference(jpWav, pcm, plan);
+  // 拟声/环境音分类与后续硬分段使用同一证据：不把分类阶段漏掉的声音重新升级成正文。
+  const referencePartsEvidence = speechChunks(reference.audio, TWO_PART_JP_GAP_S);
+  const referenceEvidence = referenceWordEvidence({sampleRate:referencePartsEvidence.wave.sampleRate,
+    chunks:referencePartsEvidence.chunks,kept:reference.kept,
+    // 短环境音按既有政策留在参考里，但即便ASR写出了字，也不作为正文段数依据。
+    words:asrWords.filter(word=>!plan.ignoredAmbient?.some(span=>(word.start+word.end)/2>=span.startMs && (word.start+word.end)/2<=span.endMs))});
+  if ([2,3].includes(referencePartsEvidence.chunks.length)) await log(runId,"reference-word-evidence",
+    referenceEvidence.pass ? "波形分段已通过原始ASR正文对应确认" : referenceEvidence.reason,referenceEvidence,"result");
+  if (!referenceEvidence.pass) {
+    await runWholeLineFallback(runId,line,recovery,jpWav,referenceEvidence.reason);
+    return;
+  }
   const promptTiming = wavTiming(reference.audio);
   const referenceTextJp = plan.jpSpeechText;
   // 拍数比豁免条件取“或”：日文正文8字以内，或者纯摩拉语速严格低于3拍/秒。
