@@ -4,16 +4,16 @@
 
 ## 正式环境
 
-修订台的正式 TTS 不在这里。正式节点是 inference-host 双 22GB 2080 Ti 上的官方 IndexTTS 2.0（FP16），网站只访问 Nginx `http://tts-proxy:8810`（局域网 `studio-host:8810`）。后端为 `inference-host:8811/8812`，见 `../tts-official/README.md`。本文件其余部分是已停用的 IndexTTS 2.5（`:8000`）维护记录。
+修订台的正式 TTS 不在这里。正式节点是 inference-host 双 22GB 2080 Ti 上的官方 IndexTTS 2.0（FP16），网站只访问 Nginx `http://tts-proxy:8810`（局域网 `inference.example.invalid:8810`）。后端为 `inference.example.invalid:8811/8812`，见 `../tts-official/README.md`。本文件其余部分是已停用的 IndexTTS 2.5（`:8000`）维护记录。
 
 关机前的 2.5 节点：
 
 - 主机：`inference-host`（TTS 已清掉）
-- 地址：`https://inference.example.invalid`
+- 地址：`http://inference.example.invalid:8000`
 - GPU：RTX 2080 Ti（历史 2.5；现已改跑官方 2.0）
 - 精度：`INDEXTTS_PRECISION=fp16`，健康检查应显示 `fp16-autocast`
-- 代码：`/srv/ff7-rebirth-voice-studio/gpu`
-- 权重：`/srv/models/IndexTeam/IndexTTS-2.5`
+- 代码：`/srv/ff7/ff7-gpu`
+- 权重：`/srv/ff7/models/IndexTeam/IndexTTS-2.5`
 
 不要把修订台 `TTS_URL` 指回这个节点。2080 Ti 没有原生 BF16；不要使用 PyTorch 报告的模拟 BF16。
 
@@ -21,15 +21,15 @@
 
 ```bash
 rsync -a --delete --exclude .git --exclude '**/__pycache__' --exclude models \
-  /srv/ff7-rebirth-voice-studio/gpu/ inference-host:/srv/ff7-rebirth-voice-studio/gpu/
+  /srv/ff7/ff7-sound/gpu/ inference-host:/srv/ff7/ff7-gpu/
 
-ssh inference-host 'cd /srv/ff7-rebirth-voice-studio/gpu && docker compose up -d --build tts'
-curl -fsS https://inference.example.invalid | python3 -m json.tool
+ssh inference-host 'cd /srv/ff7/ff7-gpu && docker compose up -d --build tts'
+curl -fsS http://inference.example.invalid:8000/health | python3 -m json.tool
 ```
 
 ## AMD 实验环境
 
-inference-host 的 R9700 服务当前已停止；按需启动后位于 `https://inference.example.invalid`，只保留作 ROCm 兼容性实验。gfx1201 需要 GPT eager attention、其余 math SDPA 和 SoundFile 回退；这条路径比 NVIDIA FP16 慢，不用于正式制作。
+inference-host 的 R9700 服务当前已停止；按需启动后位于 `http://inference.example.invalid:8100`，只保留作 ROCm 兼容性实验。gfx1201 需要 GPT eager attention、其余 math SDPA 和 SoundFile 回退；这条路径比 NVIDIA FP16 慢，不用于正式制作。
 
 ## 关键代码
 

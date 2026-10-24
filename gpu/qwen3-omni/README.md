@@ -4,10 +4,10 @@
 
 **现在不要启动。** 22GB 两张卡还在跑别的。空了再 `docker compose up -d`。不要写进开机 `gpu/docker-compose.yml`。
 
-- 权重：`/srv/models/cyankiwi/Qwen3-Omni-30B-A3B-Thinking-AWQ-4bit`（19.08 GiB，已对过大小）
+- 权重：`/srv/ff7/models/cyankiwi/Qwen3-Omni-30B-A3B-Thinking-AWQ-4bit`（19.08 GiB，已对过大小）
 - 镜像：`vllm/vllm-openai:v0.28.0-audio`（官方 0.28.0 加 librosa/soundfile；主线 `vllm serve`，不要 `--omni`）
 - 卡：只绑 GPU1、GPU2。GPU0 的 ASR `:8001` 不动。
-- API：`https://inference.example.invalid`
+- API：`http://inference.example.invalid:8003/v1`
 
 ## 启动参数（已写进 compose）
 
@@ -78,7 +78,7 @@ compose 用 **24576 × 4**。一条请求里：音频约 13 token/秒（30 秒�
 
 ```bash
 # 在 inference-host，确认 GPU1/2 已经空
-cd /srv/ff7-rebirth-voice-studio/gpu/qwen3-omni
+cd /srv/ff7/ff7-gpu/qwen3-omni
 docker compose up -d
 docker logs -f ff7-gpu-qwen3-omni
 ```

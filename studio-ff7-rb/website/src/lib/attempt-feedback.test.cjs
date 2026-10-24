@@ -161,6 +161,18 @@ test('同稿同段生成长短相反时不展示互相冲突的字数建议',()=
  const b=structuredClone(a);b.measurement.audioId='另一次';b.measurement.parts.checks[1]={...part(2,'error',.4),originalSeconds:1.8,referenceSeconds:1.132};
  assert.doesNotMatch(render([calc(a),calc(b)]),/本段建议约/);
 });
+
+test('朗读跨度已通过时不会因自然停顿反馈净发声偏短；真正跨度不足先建议对齐',()=>{
+ const a=input();a.measurement.readingLength={pass:true,deltaSeconds:-.09};assert.ok(!reasons(calc(a)).includes('净发声'));
+ a.measurement.readingLength={pass:false,deltaSeconds:-.8};const out=calc(a);assert.ok(out.issues.some(x=>x.code==='reading-audio-short'));assert.match(reasons(out),/朗读跨度/);
+});
+
+
+test('两段朗读跨度相反误差总和为零仍逐段退回，不误报缺测量或互相抵消',()=>{
+ const a=input();a.measurement.readingLength={pass:false,deltaSeconds:0,parts:[{index:1,deltaMs:-600,pass:false},{index:2,deltaMs:600,pass:false}]};
+ const out=calc(a);assert.equal(out.status,'rejected');assert.equal(out.missingChecks.length,0);
+ assert.ok(out.issues.some(i=>i.part===1&&i.code==='part-short'));assert.ok(out.issues.some(i=>i.part===2&&i.code==='part-long'));
+});
 test('比单独豁免时，偏快+可靠的中文偏长仍退回精简；比缺失不伪造',()=>{
  const a=input();a.measurement.hardSpeed={enabled:true,pass:true};a.measurement.netRate=8.45;a.measurement.beat={enabled:false,ratio:.7,low:.85,high:1.15};
  const r=calc(a);assert.equal(r.status,'rejected');assert.equal(r.beatIgnored,true);assert.ok(r.issues.some(i=>i.code==='fast-and-long'));assert.match(advice(r),/缩短朗读稿/);

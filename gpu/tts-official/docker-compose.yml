@@ -1,13 +1,12 @@
 services:
   official-api:
-    # Historical deployment; production uses docker-compose.sis.yml.
-    profiles: ["legacy-5080"]
+    # 5080 BF16 worker; optional 2080 Ti FP16 worker uses docker-compose.2080ti.yml.
     build:
       context: .
       args:
         BASE_IMAGE: ${INDEXTTS_BASE_IMAGE:?配置含 CUDA 和 IndexTTS 依赖的基础镜像}
     container_name: ff7-indextts-official
-    restart: "no"
+    restart: unless-stopped
     ports:
       - "8810:8810"
     environment:

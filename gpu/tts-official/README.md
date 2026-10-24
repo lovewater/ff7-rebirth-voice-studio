@@ -1,28 +1,55 @@
-# 官方 IndexTTS 2.0 双卡服务
+# IndexTTS 2.0 官方服务
 
-GPU1/GPU2 两张 22GB 2080 Ti 各运行一份官方 IndexTTS 2.0，使用 FP16 autocast；网站仅访问 Nginx `http://tts-proxy:8810`。后端地址、数量和负载均衡由代理管理，见 [代理部署说明](../../studio-ff7-rb/tts-proxy/README.md)。
+2026-10-23 按用户要求恢复 RTX 5080 正式 TTS：`chaoran@inference.example.invalid:/srv/ff7/ff7-indextts-official`，宿主 GPU1，端口 `8810`，官方 IndexTTS 2.0 BF16。`docker-compose.yml` 默认启动，`restart: unless-stopped`。网站 Nginx 的 upstream 经验证后同时接入该节点与同机 GPU0 的 22GB RTX 2080 Ti（FP16，端口 `8812`）。
+
+同机 GPU0 新 worker 为 `ff7-indextts-2080ti-gpu0`，使用 `docker-compose.2080ti.yml`、`restart: unless-stopped`。复用现有 5080 镜像和 `./models`、`./data`，将支持 FP16 的 `app/main.py` 同步为远端 `app-2080ti/main.py` 并单独挂载；推理锁只在新容器内，不挂共享宿主锁。端口 8812，避免占用旧 Seed-VC 8811。
+
+removebg 原业务已迁出；旧容器已停止、restart=no，远端原 Compose 中增加 `retired-removebg` profile，代码和数据保留。
+
+```bash
+# 在 /srv/ff7/ff7-indextts-official，先同步最新 app/main.py 到 app-2080ti/main.py
+docker compose -p ff7-indextts-2080ti -f docker-compose.2080ti.yml up -d --no-build
+curl -fsS http://127.0.0.1:8812/health
+```
+
+下列 inference-host 双卡部署保留作为备用配置，网站代理当前不再向它发送新请求。
+
+网站经独立 Nginx 统一入口访问：Compose 内 `http://tts-proxy:8810`，局域网 `http://inference.example.invalid:8810`。后端地址只在 `studio-ff7-rb/tts-proxy/nginx.conf` 管理，搬迁或扩容后热加载代理即可。网站不保存 GPU 数量和后端地址。
+
+| 后端 | 宿主 GPU | 地址 | 容器 |
+|---|---|---|---|
+| inference-host | GPU1 22GB 2080 Ti | `inference.example.invalid:8811` | `ff7-indextts-gpu1` |
+| inference-host | GPU2 22GB 2080 Ti | `inference.example.invalid:8812` | `ff7-indextts-gpu2` |
+
+部署目录 `/srv/ff7/ff7-indextts-official`。`docker-compose.sis.yml` 启动两份相同镜像，分别只暴露一张卡；模型共用 `/srv/ff7/models/IndexTeam/IndexTTS-2`，音色共用 `./data/speakers`。推理锁位于各容器自身 `/gpu-lock/inference.lock`，不得将两卡挂到同一个锁文件。两个 TTS 和原 GPU0 ASR 均使用 `restart: unless-stopped`。原 `tts-union-test` 已停止且禁用自动重启。
 
 ## 部署
 
-在推理主机准备 `upstream/` 官方源码与 `models/IndexTTS-2` 权重。固定源码 revision `ee40fa7d6c6b8a2c7f06105f9f1e65775b74868c`，构建时应用 `patches/apply_patch.py`。模型权重、辅助缓存和第三方源码不随仓库分发。
-
-在 `gpu/.env` 本地填写 `INDEXTTS_BASE_IMAGE`（含 PyTorch/torchaudio 2.8.0+cu128 和官方依赖的基础镜像）、`INDEXTTS_MODEL_DIR`（宿主机 IndexTTS 2.0 权重目录）。模型目录需可写，辅助权重保存在其 `hf_cache/` 下。不要从裸 CUDA 底座重复下载依赖。
+修订台 VM 只保留代码，镜像只在 GPU 主机构建，权重只放 GPU 主机。源码固定 `ee40fa7d6c6b8a2c7f06105f9f1e65775b74868c`，带 `patches/apply_patch.py`，来源与原 5080 正式服务一致。
 
 ```bash
-cd gpu/tts-official
-docker compose --env-file ../.env -f docker-compose.sis.yml build tts-gpu1
-docker compose --env-file ../.env -f docker-compose.sis.yml up -d --no-build
+# 将 app/、patches/、Dockerfile.sis 和 docker-compose.sis.yml 同步到部署目录。
+# upstream/ 是上述 revision 的官方 checkout；保持原正式部署的补丁。
+cd /srv/ff7/ff7-indextts-official
+docker pull inference.example.invalid:5000/ff7-gpu-tts:indextts25-cu128
+docker compose -f docker-compose.sis.yml build tts-gpu1
+docker compose -f docker-compose.sis.yml up -d --no-build
 curl -fsS http://127.0.0.1:8811/health
 curl -fsS http://127.0.0.1:8812/health
 ```
 
-两个容器分别绑定 GPU1 / GPU2，宿主端口 8811 / 8812，均自动重启。模型共用宿主权重目录，音色共用 `./data/speakers`。每个容器自己的 `/gpu-lock/inference.lock` 独立串行推理；不得给两张卡挂载同一个宿主锁。ASR 保持在 GPU0。
+镜像底座提供 PyTorch / torchaudio 2.8.0+cu128；推理源码由 `upstream/` 覆盖。不要从裸 CUDA 底座重复下载依赖。`models/IndexTTS-2/hf_cache/` 需包含 w2v-bert、semantic_codec、campplus、bigvgan 辅助权重。
 
-- 2080 Ti 无原生 BF16，设置 `INDEXTTS_PRECISION=fp16`；权重 FP32，autocast FP16。
-- 固定 `use_random=false` 和官方文本标准化，关闭 CUDA kernel、DeepSpeed、torch compile。
-- `use_qwen_emo=true` 保留官方加载配置；不部署独立 emotion 服务。
-- 正式 `/v1/tts/clone` 的参考音随请求传入，不经过 Seed-VC，不额外补参考音尾静音。
-- `speaker/embed`、`register`、`compare` 继续可用；新音源总长不超过15秒。
-- 旧 `/v1/tts` 的 Seed-VC 流程需要另行配置，本部署不启动 Seed-VC。
+inference-host 曾有 Docker `inference.example.invalid/20` 网桥覆盖内网地址，导致仓库和共享盘走错路由。已用 `/etc/netplan/99-ff7-model-storage.yaml` 为 `inference.example.invalid/32`（Registry）、`inference.example.invalid/32`（共享盘）指定经 `inference.example.invalid` / `ens18` 的路由，不改变其他项目的 Docker 网络。
 
-迁移时先校验权重并实际验证新后端，再切换代理，最后停旧服务。旧 `docker-compose.yml` 保留历史 5080 配置，默认禁用启动和自动重启，只能通过 `legacy-5080` profile 显式启动。
+## 推理与接口
+
+- `/health` 返回模型 2.0、源码 revision、FP16 autocast 和设备信息。
+- 2080 Ti 没有原生 BF16；设置 `INDEXTTS_PRECISION=fp16`，模型权重 FP32、autocast FP16。
+- 保留 `use_random=false`、官方文本标准化；关闭 CUDA kernel、DeepSpeed、torch compile。
+- `use_qwen_emo=true` 是既有官方模型加载配置；不部署独立 emotion 服务。
+- 正式逐句 `POST /v1/tts/clone` 参考音随请求传入，不经过 Seed-VC；参考音不再由后端额外补尾静音，保持原 5080 正式行为。
+- `POST /v1/speaker/embed`、`register`、`compare` 继续可用；新音源总时长不超过 15 秒，两个 worker 共享音色文件。
+- 旧 `/v1/tts` 的 Seed-VC 流程需要另外配置服务；这次不启动 Seed-VC。
+
+5080 正式使用 `docker-compose.yml`；inference-host 备用使用 `docker-compose.sis.yml`。Nginx 部署与热加载步骤见 `studio-ff7-rb/tts-proxy/README.md`。

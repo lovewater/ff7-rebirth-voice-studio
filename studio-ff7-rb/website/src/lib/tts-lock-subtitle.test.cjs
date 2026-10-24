@@ -33,6 +33,10 @@ function lockRoute(isAutoFinal, options={}) {
  m.require=id=>{
   if(id.startsWith('node:'))return require(id);
   if(id==='next/server')return{NextResponse:{json:(body,options)=>({status:options?.status||200,body})}};
+  if(id==='@/lib/subtitle-reflow'){
+   const file=__dirname+'/subtitle-reflow.ts',reflowModule=new Module(file);reflowModule.require=id=>require(id+'.ts');
+   reflowModule._compile(ts.transpileModule(fs.readFileSync(file,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,file);return reflowModule.exports;
+  }
   if(id==='@/lib/db')return{sql};
   if(id==='@/lib/tts-review-state')return require('./tts-review-state.ts');
   if(id==='@/lib/auto-run-subtitle')return require('./auto-run-subtitle.ts');
@@ -62,7 +66,7 @@ test('lock confirmation prefills a short merged subtitle without changing the au
 });
 test('lock confirmation cleans commas at existing line breaks and preserves inner punctuation',async()=>{
  const r=lockRoute(false,{draft:'在过去的训练数据中，\n确认到了相应的序号。难道说，你是塔……'}),response=await r.patch();
- assert.equal(response.body.subtitleText,'在过去的训练数据中\n确认到了相应的序号。难道说，你是塔……');
+ assert.equal(response.body.subtitleText,'在过去的训练数据中\n确认到了相应的序号，难道说，你是塔……');
  assert.equal(r.writes.length,0);
 });
 test('semantic line breaks are prepared before confirmation, outside the write transaction',async()=>{
@@ -93,6 +97,38 @@ test('confirmed abnormal-page subtitle can lock atomically instead of asking aga
 test('mandatory review keeps the existing manual rewrite proposal instead of replacing it with original',async()=>{
  const r=lockRoute(false,{body:{requireSubtitleConfirmation:true}}),response=await r.patch();
  assert.equal(response.status,409);assert.equal(response.body.subtitleText,base.ttsText);assert.equal(r.writes.length,0);
+});
+
+
+test('save-and-lock confirms an inherited changed subtitle before replacing the old lock',async()=>{
+ const r=lockRoute(false,{subtitle:'哼，你哪来的脸说这些话。',body:{confirmSubtitleChanges:true}}),response=await r.patch();
+ assert.equal(response.status,409);assert.equal(response.body.subtitleText,'哼，你哪来的脸说这些话');assert.equal(r.writes.length,0);
+});
+test('save-and-lock completes directly when the inherited subtitle matches the original',async()=>{
+ const r=lockRoute(false,{subtitle:base.original,body:{confirmSubtitleChanges:true}}),response=await r.patch();
+ assert.equal(response.status,200);assert.equal(r.writes.length,2);assert.equal(r.formatted.length,0);
+});
+test('save-and-lock keeps an unchanged original caption without a confirmation dialog',async()=>{
+ const r=lockRoute(false,{draft:base.original,body:{confirmSubtitleChanges:true}}),response=await r.patch();
+ assert.equal(response.status,200);assert.equal(r.formatted.length,0);
+});
+test('save-and-lock confirms a manual rewrite then updates subtitle and lock together',async()=>{
+ const pending=lockRoute(false,{body:{confirmSubtitleChanges:true}});assert.equal((await pending.patch()).status,409);assert.equal(pending.writes.length,0);
+ const confirmed=lockRoute(false,{body:{confirmSubtitleChanges:true,subtitleText:base.ttsText}});assert.equal((await confirmed.patch()).status,200);assert.equal(confirmed.writes.length,2);assert.ok(confirmed.writes.some(q=>q.includes('subtitle_text =')));
+});
+
+
+test('subtitle confirmation restores original when a new layout has identical words',async()=>{
+ const source='就算是伙伴\n我们塔克斯，有时也必须无情地舍弃';
+ const formatted='就算是伙伴我们塔克斯\n有时也必须无情地舍弃';
+ const r=lockRoute(false,{subtitle:source,original:source,formatted,body:{requireSubtitleConfirmation:true}}),response=await r.patch();
+ assert.equal(response.status,409);assert.equal(response.body.subtitleText,source);assert.equal(r.formatted[0],'就算是伙伴我们塔克斯，有时也必须无情地舍弃');assert.equal(r.writes.length,0);
+});
+
+test('mandatory confirmation uses original piano caption verbatim after punctuation-only edits',async()=>{
+ const original='比小时候弹得好多了。';
+ const r=lockRoute(true,{subtitle:'比小时候弹得，好多了',original,body:{requireSubtitleConfirmation:true}}),response=await r.patch();
+ assert.equal(response.status,409);assert.equal(response.body.subtitleText,original);assert.equal(r.writes.length,0);
 });
 
 test('audio edit derived from final #67635 inherits 嗯 instead of proposing its body at save-and-lock',async()=>{

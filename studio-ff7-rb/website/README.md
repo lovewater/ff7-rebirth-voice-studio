@@ -72,3 +72,9 @@ npm run dev
 锁定时如需将 TTS 文字同步为字幕，先弹出「确认字幕并锁定」多行编辑框。取消不修改数据，确认以同一个事务保存字幕和锁定状态。服务端首次返回 `409 SUBTITLE_CONFIRMATION_REQUIRED` 与待编辑内容，禁止无确认自动写入；详情、历史记录及列表锁定共用 `tts-lock-client.ts`。已有字幕改写或无需同步时沿用直接锁定。
 
 改写反馈使用更窄的正常范围 **0.92–1.08（含边界）**。本轮每条已完成候选作为 assistant 样例，后接程序计算的比值、偏慢/正常/偏快判定以及增减字数建议，再要求模型“再输出一条”。比值>1.08表示中文偏短、偏慢，应加字；<0.92表示偏长、偏快，应减字；正常时保持长度换一种说法。双并发首两次独立，后续请求带上本轮已完成的全部样例，每轮五次重置，不跨轮累积；列表报警阈值仍沿用原规则。
+
+## Rubber Band 运行资源
+
+G 算法使用 Rubber Band 4.0.0 R3 短窗。仓库只提交 `third_party/rubberband/` 中的桥接源码、补丁、许可和构建脚本；生成的 WASM、上游压缩包和适配器下载包位于 ignored `public/vendor/rubberband/`，不提交二进制。
+
+准备 Emscripten 3.1.6、curl、patch、tar 后，在网站目录执行 `bash third_party/rubberband/build.sh`，再运行测试、Next 构建或 Docker 构建。脚本下载固定版本、核对 SHA256、应用补丁并生成浏览器/Node 共用资源。变更适配器后执行 `bash scripts/package-rubberband-source.sh` 刷新对应源码下载包。完整算法与许可说明见 `docs/rubberband-r3.md`。

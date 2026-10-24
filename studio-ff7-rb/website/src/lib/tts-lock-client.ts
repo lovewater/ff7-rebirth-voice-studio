@@ -58,7 +58,7 @@ export async function patchTtsWithConfirmation(stem: string, id: string | number
     method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
   });
   // 异常处理页每次锁定都必须核对字幕，不能因沿用原文或自动成品而跳过。
-  if (window.location.pathname === "/abnormal" && body.reviewState === "locked") {
+  if (window.location.pathname === "/abnormal" && body.reviewState === "locked" && body.preserveSubtitle !== true) {
     body = { ...body, requireSubtitleConfirmation: true };
   }
   let response = await send(body);

@@ -70,7 +70,7 @@ class GpuLock:
             self.thread_lock.release()
 
 infer_lock = GpuLock()
-SEED_VC_URL = os.getenv("SEED_VC_URL", "")
+SEED_VC_URL = os.getenv("SEED_VC_URL", "http://inference.example.invalid:8811")
 
 
 def _active_model() -> IndexTTS2:

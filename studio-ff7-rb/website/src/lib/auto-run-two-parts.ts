@@ -65,7 +65,7 @@ export function attemptHistoryText() {
     const c = contexts.getStore();
     return c?.attempts.size ? renderAttemptFeedback([...c.attempts.values()].map(calculateAttemptFeedback)) : "";
 }
-/** 10ms窗内全部采样<峰值5%才是静音；默认250ms用于中文/最终结构，入口JP传500ms。
+/** 10ms窗内全部采样<峰值5%才是静音；默认250ms用于中文/最终结构，入口JP传450ms。
  * 首尾静音不计；零处/多处长停顿都不作为“两段正文”。不按标点数量判断段数。
  */
 export function countParts(buffer: Buffer, minimumSeconds = .25, splitRegions: SpeechSplitRegion[] = []) {

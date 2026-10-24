@@ -2,7 +2,7 @@
 
 import { reportTtsPlaybackSource } from "@/lib/tts-play-count";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 type Item = {
   id: number;
@@ -14,6 +14,7 @@ type Item = {
   subtitle_italic: boolean;
   current: boolean;
   lockedTtsId: string | null;
+  modifiedSubtitle: string | null;
 };
 
 type Lang = "jp" | "cn";
@@ -79,6 +80,12 @@ export function SequencePlay({ stem }: { stem: string }) {
   const [solo, setSolo] = useState<Solo | null>(null);
   const [error, setError] = useState("");
   const abortRef = useRef<AbortController | null>(null);
+  const load = useCallback(async () => {
+    const response = await fetch(`/api/lines/${encodeURIComponent(stem)}/sequence`);
+    const data = (await response.json()) as { items?: Item[]; error?: string };
+    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    return data.items ?? [];
+  }, [stem]);
 
   useEffect(() => {
     return () => {
@@ -87,17 +94,21 @@ export function SequencePlay({ stem }: { stem: string }) {
   }, []);
 
   useEffect(() => {
-    void load()
-      .then((list) => setItems(list))
-      .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
-  }, [stem]);
-
-  async function load() {
-    const response = await fetch(`/api/lines/${encodeURIComponent(stem)}/sequence`);
-    const data = (await response.json()) as { items?: Item[]; error?: string };
-    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
-    return data.items ?? [];
-  }
+    let disposed = false;
+    const refresh = () => {
+      void load()
+        .then((list) => { if (!disposed) setItems(list); })
+        .catch((reason) => { if (!disposed) setError(reason instanceof Error ? reason.message : String(reason)); });
+    };
+    refresh();
+    window.addEventListener("ff7-tts-changed", refresh);
+    window.addEventListener("focus", refresh);
+    return () => {
+      disposed = true;
+      window.removeEventListener("ff7-tts-changed", refresh);
+      window.removeEventListener("focus", refresh);
+    };
+  }, [load]);
 
   function beginAbort() {
     abortRef.current?.abort();
@@ -148,7 +159,14 @@ export function SequencePlay({ stem }: { stem: string }) {
     setIndex(-1);
     setSolo({ stem: item.stem, lang: nextLang });
     try {
-      await playOne(audioUrl(item, nextLang), controller.signal);
+      let latest = item;
+      if (nextLang === "cn") {
+        const list = await load();
+        if (controller.signal.aborted) return;
+        setItems(list);
+        latest = list.find((row) => row.stem === item.stem) ?? item;
+      }
+      await playOne(audioUrl(latest, nextLang), controller.signal);
     } catch (reason) {
       if (reason instanceof DOMException && reason.name === "AbortError") return;
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -168,7 +186,7 @@ export function SequencePlay({ stem }: { stem: string }) {
   const playing = lang != null || solo != null;
 
   return (
-    <div className="rounded-lg border border-zinc-800 p-3">
+    <div data-sequence-play className="rounded-lg border border-zinc-800 p-3">
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-sm text-zinc-200">连播</span>
         <button
@@ -197,7 +215,7 @@ export function SequencePlay({ stem }: { stem: string }) {
           </button>
         ) : null}
         <span className="text-[11px] text-zinc-600">
-          同区域、同类型，按列表顺序取前 3 条和后 2 条，边界处补齐，最多 6 条，间隔 1 秒。左日右中；点序号开详情，点字幕单播。中文遇到锁定的改则播锁定版。
+          同区域、同类型，按列表顺序取前 3 条和后 2 条，边界处补齐，最多 6 条，间隔 1 秒。左侧原中文，右侧改字幕；点序号开详情，点名字后的按钮单播。中文优先播放锁定版，未锁定播放原中文。
         </span>
       </div>
       {error ? <p className="mt-2 text-xs text-red-400">{error}</p> : null}
@@ -212,6 +230,7 @@ export function SequencePlay({ stem }: { stem: string }) {
             return (
               <li
                 key={item.stem}
+                data-sequence-item={item.stem}
                 className={
                   seqActive
                     ? "rounded border border-sky-800 bg-sky-950/30 px-2 py-1.5"
@@ -236,17 +255,16 @@ export function SequencePlay({ stem }: { stem: string }) {
                   {item.current ? <span className="text-[10px] text-sky-400">当前</span> : null}
                   {item.lockedTtsId ? <span className="text-[10px] text-emerald-400">锁</span> : null}
                   {seqActive ? <span className="text-[10px] text-sky-300">播放中</span> : null}
+                  <button type="button" aria-pressed={jpActive} onClick={() => void playSolo(item, "jp")}
+                    className={`inline-flex min-h-11 items-center rounded px-2.5 text-xs md:min-h-0 md:py-1 ${jpActive ? "bg-sky-900 text-sky-100" : "bg-zinc-800 text-zinc-200 hover:bg-zinc-700"}`}>
+                    读日文
+                  </button>
+                  <button type="button" aria-pressed={cnActive} onClick={() => void playSolo(item, "cn")}
+                    className={`inline-flex min-h-11 items-center rounded px-2.5 text-xs md:min-h-0 md:py-1 ${cnActive ? "bg-sky-900 text-sky-100" : "bg-zinc-800 text-zinc-200 hover:bg-zinc-700"}`}>
+                    读中文
+                  </button>
                 </div>
                 <div className="grid grid-cols-2 gap-2">
-                  <TextHalf
-                    label="日"
-                    text={item.text_jp}
-                    empty="（无日文字幕）"
-                    active={jpActive}
-                    dim={!item.current}
-                    italic={item.subtitle_italic}
-                    onPlay={() => void playSolo(item, "jp")}
-                  />
                   <TextHalf
                     label="中"
                     text={item.text_zh}
@@ -254,9 +272,16 @@ export function SequencePlay({ stem }: { stem: string }) {
                     active={cnActive}
                     dim={!item.current}
                     italic={item.subtitle_italic}
-                    locked={Boolean(item.lockedTtsId)}
-                    onPlay={() => void playSolo(item, "cn")}
                   />
+                  {item.modifiedSubtitle ? <TextHalf
+                    label="改"
+                    text={item.modifiedSubtitle}
+                    empty=""
+                    active={cnActive}
+                    dim={!item.current}
+                    italic={item.subtitle_italic}
+                    modified
+                  /> : null}
                 </div>
               </li>
             );
@@ -274,8 +299,7 @@ function TextHalf({
   active,
   dim,
   italic,
-  locked,
-  onPlay,
+  modified,
 }: {
   label: string;
   text: string | null;
@@ -283,34 +307,29 @@ function TextHalf({
   active: boolean;
   dim: boolean;
   italic?: boolean;
-  locked?: boolean;
-  onPlay: () => void;
+  modified?: boolean;
 }) {
   return (
-    <button
-      type="button"
-      onClick={onPlay}
-      title="播放这条"
+    <div
       className={
         active
           ? "min-w-0 rounded border border-sky-800 bg-sky-950/50 px-2 py-1.5 text-left"
-          : "min-w-0 rounded border border-transparent px-2 py-1.5 text-left hover:border-zinc-700 hover:bg-zinc-900/60"
+          : "min-w-0 rounded border border-transparent px-2 py-1.5 text-left"
       }
     >
       <span className="mb-0.5 flex items-center gap-1.5 text-[10px] text-zinc-600">
         {label}
-        {locked ? <span className="text-emerald-400">锁</span> : null}
         {active ? <span className="text-sky-300">播放中</span> : null}
       </span>
       <span
         className={
           text
-            ? `${dim ? "block whitespace-pre-wrap leading-5 text-zinc-500" : "block whitespace-pre-wrap leading-5 text-zinc-200"}${italic ? " italic" : ""}`
+            ? `block whitespace-pre-wrap break-words leading-5 ${modified ? "text-amber-300" : dim ? "text-zinc-500" : "text-zinc-200"}${italic ? " italic" : ""}`
             : "block leading-5 text-zinc-600"
         }
       >
         {text || empty}
       </span>
-    </button>
+    </div>
   );
 }

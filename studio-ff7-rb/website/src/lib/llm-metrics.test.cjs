@@ -20,8 +20,8 @@ function client(){const records=[],requests=[];const m=new Module(__filename);m.
 async function configured(fn){const oldFetch=global.fetch,oldUrl=process.env.VOLCENGINE_LLM_URL,oldKey=process.env.VOLCENGINE_LLM_KEY;process.env.VOLCENGINE_LLM_URL='https://example.invalid/v1';process.env.VOLCENGINE_LLM_KEY='test-secret';try{await fn();}finally{global.fetch=oldFetch;if(oldUrl===undefined)delete process.env.VOLCENGINE_LLM_URL;else process.env.VOLCENGINE_LLM_URL=oldUrl;if(oldKey===undefined)delete process.env.VOLCENGINE_LLM_KEY;else process.env.VOLCENGINE_LLM_KEY=oldKey;}}
 test('all outgoing message roles round data to three decimals and the replay log matches the wire',()=>configured(async()=>{
  const c=client();
- const content='{"ratio":0.9398496240601504,"spokenRatio":0.835421888053467} 实测3.680123s，差-0.00049秒，1.23456e-2；#38998，v1.23456，192.0.2.20，https://host/1.23456?q=0.123456';
- const expected='{"ratio":0.94,"spokenRatio":0.835} 实测3.68s，差0秒，0.012；#38998，v1.23456，192.0.2.20，https://host/1.23456?q=0.123456';
+ const content='{"ratio":0.9398496240601504,"spokenRatio":0.835421888053467} 实测3.680123s，差-0.00049秒，1.23456e-2；#38998，v1.23456，inference.example.invalid，https://host/1.23456?q=0.123456';
+ const expected='{"ratio":0.94,"spokenRatio":0.835} 实测3.68s，差0秒，0.012；#38998，v1.23456，inference.example.invalid，https://host/1.23456?q=0.123456';
  const body={model:'model-1.23456',temperature:0.123456,messages:['system','user','assistant'].map(role=>({role,content}))};
  let sent;
  global.fetch=async(_url,init)=>{sent=JSON.parse(init.body);return new Response(JSON.stringify({choices:[{message:{content:'{"ratio":0.123456789}'}}]}));};

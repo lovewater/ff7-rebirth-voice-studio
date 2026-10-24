@@ -1,6 +1,8 @@
 "use client";
 
+import { patchTtsWithConfirmation } from "@/lib/tts-lock-client";
 import { reportTtsPlayback } from "@/lib/tts-play-count";
+import { stopCurrentAudioPlayback } from "@/components/audio-play-button";
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Button, ConfigProvider, Dropdown, theme } from "antd";
@@ -19,7 +21,7 @@ import {
   stretchRange,
   wavToBase64,
 } from "@/lib/audio-edit";
-import { alignSingleGap, gapOnlyAlignmentPlan } from "@/lib/gap-only-align";
+import { alignSpeechGaps, gapOnlyAlignmentPlan, internalSpeechParts } from "@/lib/gap-only-align";
 import type { Timing } from "@/lib/timing";
 
 function niceStep(max: number) {
@@ -137,13 +139,28 @@ type WsHandle = {
 type Props = {
   stem: string;
   sourceId?: string;
-  source?: "tts" | "cn";
+  source?: "tts" | "cn" | "jp";
+  /** 手机试听评价：只读波形，确认时仅锁定原版本，不保存编辑音频。 */
+  readOnly?: boolean;
+  /** 手机核对只开放一键对齐；调整在确认时另存并锁定，取消不保存。 */
+  allowAutoAdjust?: boolean;
   jp: Timing;
   onClose: () => void;
   onSaved: () => void;
+  /** 列表场景演出核对：null表示未修改的原中文；返回false表示取消字幕确认。 */
+  onConfirmLock?: (id: string | null) => Promise<boolean>;
+  /** 仅列表锁定入口传入：初次加载完成后自动试听一次，编辑/撤销不重新自动播。 */
+  autoPlayOnOpen?: boolean;
 };
 
-export function AudioEditDialog({ stem, sourceId, source = "tts", jp, onClose, onSaved }: Props) {
+export function AudioEditDialog({ stem, sourceId, source = "tts", jp, onClose, onSaved, onConfirmLock, autoPlayOnOpen = false, readOnly = false, allowAutoAdjust = false }: Props) {
+  const readOnlyRoot = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!readOnly) return;
+    const previous = document.activeElement as HTMLElement | null;
+    readOnlyRoot.current?.querySelector<HTMLButtonElement>("button")?.focus();
+    return () => { if (previous?.isConnected) previous.focus(); };
+  }, [readOnly]);
   const jpHostRef = useRef<HTMLDivElement | null>(null);
   const editHostRef = useRef<HTMLDivElement | null>(null);
   const jpWsRef = useRef<WsHandle | null>(null);
@@ -181,9 +198,18 @@ export function AudioEditDialog({ stem, sourceId, source = "tts", jp, onClose, o
   const ctxRef = useRef<AudioContext | null>(null);
   const [jpBuffer, setJpBuffer] = useState<AudioBuffer | null>(null);
   const [buffer, setBuffer] = useState<AudioBuffer | null>(null);
+  const [originalBuffer, setOriginalBuffer] = useState<AudioBuffer | null>(null);
+  const hasAudioChanges = Boolean(buffer && originalBuffer && buffer !== originalBuffer);
+  const autoPlayedRef = useRef(false);
+  const [audioLoaded, setAudioLoaded] = useState(false);
+  const autoPlayPending = autoPlayOnOpen && !audioLoaded;
+  // 核对后取消字幕弹窗或锁定失败，再确认时复用已保存版本，避免重复创建音频。
+  const savedBufferRef = useRef<{ buffer: AudioBuffer; id: string } | null>(null);
   const undoRef = useRef<AudioBuffer[]>([]);
   const [busy, setBusy] = useState("");
+  const processingRef = useRef(false);
   const [error, setError] = useState("");
+  const [adjustmentNote, setAdjustmentNote] = useState("");
   const [jpAt, setJpAt] = useState(0);
   const [editAt, setEditAt] = useState(0);
   const editSeekRef = useRef(0);
@@ -192,6 +218,14 @@ export function AudioEditDialog({ stem, sourceId, source = "tts", jp, onClose, o
   const deleteKeyRef = useRef<() => void>(() => {});
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
+      if (readOnly && event.key === "Tab") {
+        const buttons = [...(readOnlyRoot.current?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") ?? [])];
+        const first = buttons[0], last = buttons.at(-1);
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+        return;
+      }
+      if (readOnly && event.key !== "Escape") return;
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z" && !event.shiftKey) {
         event.preventDefault();
         if (busy) return;
@@ -236,7 +270,7 @@ export function AudioEditDialog({ stem, sourceId, source = "tts", jp, onClose, o
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [busy, onClose]);
+  }, [busy, onClose, readOnly]);
 
   // 随当前编辑缓冲重新判断，撤销、删段或插入静音后菜单也同步变化。
   // 使用已加载的完整日文波形，不能用数据库旧起止值或当前选区代替参考。
@@ -244,7 +278,9 @@ export function AudioEditDialog({ stem, sourceId, source = "tts", jp, onClose, o
     if (!jpBuffer || !buffer) return null;
     const reference = { samples: mixMono(jpBuffer), sampleRate: jpBuffer.sampleRate };
     const edited = { samples: mixMono(buffer), sampleRate: buffer.sampleRate };
-    return gapOnlyAlignmentPlan(reference, edited) ? { reference, edited } : null;
+    const plan = gapOnlyAlignmentPlan(reference, edited);
+    // 两端对话工作流、三段对话工作流共用手动入口；只调留白，不自动缩放正文。
+    return plan ? { reference, edited, partCount: plan.partCount } : null;
   }, [jpBuffer, buffer]);
 
   const scaleMax = Math.max(jpBuffer?.duration ?? 0, buffer?.duration ?? 0, 0.001);
@@ -253,13 +289,15 @@ export function AudioEditDialog({ stem, sourceId, source = "tts", jp, onClose, o
 
   useEffect(() => {
     let cancelled = false;
+    autoPlayedRef.current = false;
+    setAudioLoaded(false);
     const ctx = new AudioContext();
     ctxRef.current = ctx;
     void (async () => {
       try {
         const editUrl =
-          source === "cn"
-            ? `/api/audio/cn/${encodeURIComponent(stem)}`
+          (source === "cn" || source === "jp")
+            ? `/api/audio/${source}/${encodeURIComponent(stem)}`
             : `/api/lines/${encodeURIComponent(stem)}/tts/${sourceId}/audio`;
         const [editRes, jpRes] = await Promise.all([
           fetch(editUrl),
@@ -269,6 +307,7 @@ export function AudioEditDialog({ stem, sourceId, source = "tts", jp, onClose, o
         const editRaw = await editRes.arrayBuffer();
         const editDecoded = await ctx.decodeAudioData(editRaw.slice(0));
         if (cancelled) return;
+        setOriginalBuffer(editDecoded);
         setBuffer(editDecoded);
         if (jpRes.ok) {
           const jpRaw = await jpRes.arrayBuffer();
@@ -277,6 +316,8 @@ export function AudioEditDialog({ stem, sourceId, source = "tts", jp, onClose, o
         }
       } catch (reason) {
         if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
+      } finally {
+        if (!cancelled) setAudioLoaded(true);
       }
     })();
     return () => {
@@ -308,7 +349,7 @@ export function AudioEditDialog({ stem, sourceId, source = "tts", jp, onClose, o
         url: objectUrl,
         plugins: [regions],
       });
-      regions.enableDragSelection({ color: "rgba(251, 191, 36, 0.55)" });
+      if (!readOnly) regions.enableDragSelection({ color: "rgba(251, 191, 36, 0.55)" });
       regions.on("region-created", (region) => {
         for (const other of regions.getRegions()) {
           if (other.id !== region.id) other.remove();
@@ -346,10 +387,11 @@ export function AudioEditDialog({ stem, sourceId, source = "tts", jp, onClose, o
       jpRegionRef.current = null;
       jpRegionObjRef.current = null;
     };
-  }, [jpBuffer, scaleMax]);
+  }, [jpBuffer, scaleMax, readOnly]);
 
   useEffect(() => {
-    if (!buffer || !editHostRef.current) return;
+    // 自动试听等待两边音频加载完成，避免JP稍晚到达后重建波形、打断刚开始的试听。
+    if (!buffer || !editHostRef.current || autoPlayPending) return;
     let disposed = false;
     void (async () => {
       const WaveSurfer = (await import("wavesurfer.js")).default;
@@ -367,7 +409,7 @@ export function AudioEditDialog({ stem, sourceId, source = "tts", jp, onClose, o
         url: objectUrl,
         plugins: [regions],
       });
-      regions.enableDragSelection({ color: "rgba(56, 189, 248, 0.55)" });
+      if (!readOnly) regions.enableDragSelection({ color: "rgba(56, 189, 248, 0.55)" });
       regions.on("region-created", (region) => {
         for (const other of regions.getRegions()) {
           if (other.id !== region.id) other.remove();
@@ -397,6 +439,13 @@ export function AudioEditDialog({ stem, sourceId, source = "tts", jp, onClose, o
         const t = Math.min(Math.max(0, editSeekRef.current), Math.max(0, dur - 0.001));
         if (t > 0.001) ws.setTime(t);
         setEditAt(ws.getCurrentTime());
+        if (autoPlayOnOpen && !autoPlayedRef.current && !disposed) {
+          autoPlayedRef.current = true;
+          stopCurrentAudioPlayback();
+          if (source === "tts" && sourceId) void reportTtsPlayback(stem, sourceId);
+          // 浏览器若限制自动播放，仍可手动点“播编辑”，不影响核对和锁定。
+          void ws.play().catch(() => {});
+        }
       });
       ws.on("timeupdate", syncEdit);
       ws.on("interaction", syncEdit);
@@ -411,7 +460,7 @@ export function AudioEditDialog({ stem, sourceId, source = "tts", jp, onClose, o
       editRegionRef.current = null;
       editRegionObjRef.current = null;
     };
-  }, [buffer, scaleMax]);
+  }, [buffer, scaleMax, readOnly, autoPlayPending, autoPlayOnOpen, source, sourceId, stem]);
 
   function apply(next: AudioBuffer) {
     if (buffer) undoRef.current.push(buffer);
@@ -421,6 +470,7 @@ export function AudioEditDialog({ stem, sourceId, source = "tts", jp, onClose, o
   }
 
   function undo() {
+    if (processingRef.current || busy) return;
     const prev = undoRef.current.pop();
     if (prev) {
       editSeekRef.current = editWsRef.current?.getCurrentTime() ?? editAt;
@@ -428,14 +478,21 @@ export function AudioEditDialog({ stem, sourceId, source = "tts", jp, onClose, o
     }
   }
 
-  function withCtx(fn: (ctx: AudioContext, buf: AudioBuffer) => AudioBuffer) {
+  function withCtx(fn: (ctx: AudioContext, buf: AudioBuffer) => AudioBuffer | Promise<AudioBuffer>) {
     const ctx = ctxRef.current;
-    if (!ctx || !buffer) return;
-    try {
-      apply(fn(ctx, buffer));
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-    }
+    if (!ctx || !buffer || processingRef.current || busy) return;
+    processingRef.current = true;
+    setBusy("处理音频中…");
+    void (async () => {
+      try {
+        apply(await fn(ctx, buffer));
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : String(reason));
+      } finally {
+        processingRef.current = false;
+        setBusy("");
+      }
+    })();
   }
 
   function insertGap(ms: number) {
@@ -531,15 +588,66 @@ export function AudioEditDialog({ stem, sourceId, source = "tts", jp, onClose, o
   function advancedAutoAlign() {
     if (!gapAlignment) return;
     withCtx((ctx, buf) => bufferFromMono(
-      ctx, alignSingleGap(gapAlignment.reference, gapAlignment.edited), buf.sampleRate,
+      ctx, alignSpeechGaps(gapAlignment.reference, gapAlignment.edited), buf.sampleRate,
     ));
   }
 
-  async function save() {
-    if (!buffer) return;
-    setBusy("保存并计算净语速中…");
+  function autoAdjust() {
+    if (!jpBuffer || source === "jp") return;
+    const reference = { samples: mixMono(jpBuffer), sampleRate: jpBuffer.sampleRate };
+    const referencePartCount = internalSpeechParts(reference)?.parts.length ?? 1;
+    const bounds = speechBounds(reference.samples, reference.sampleRate);
+    jpWsRef.current?.pause();
+    editWsRef.current?.pause();
+    withCtx((ctx, buf) => {
+      const edited = { samples: mixMono(buf), sampleRate: buf.sampleRate };
+      // 与高级对齐按钮共用计划：中文两段时，日文即使三段也取最长停顿归两组。
+      const plan = gapOnlyAlignmentPlan(reference, edited);
+      const partCount = plan?.partCount ?? referencePartCount;
+      // 两/三段无法匹配或装下时明确报错，不能退回整句对齐掩盖分段问题。
+      const next = partCount > 1
+        ? bufferFromMono(ctx, alignSpeechGaps(reference, edited), buf.sampleRate)
+        : alignToJpSlot(ctx, buf, { start: bounds ? bounds.start / reference.sampleRate : jp.start ?? 0, dur: jp.dur ?? jpBuffer.duration });
+      setAdjustmentNote(`已按${partCount === 3 ? "三段对话" : partCount === 2 ? "两端对话" : "单句"}自动对齐，可试听后确认。`);
+      return next;
+    });
+  }
+
+  async function save(lockNew = false) {
+    if (!buffer || !audioLoaded || busy || processingRef.current) return;
+    setBusy(readOnly || lockNew ? hasAudioChanges ? "保存并锁定中…" : "锁定中…" : "保存并计算净语速中…");
     setError("");
+    const confirmLock = onConfirmLock ?? (lockNew ? async (id: string | null) => {
+      if (id === null && source === "cn") {
+        const response = await fetch(`/api/lines/${encodeURIComponent(stem)}/original-review`, {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ reviewState: "locked" }),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+        return true;
+      }
+      if (!id) throw new Error("缺少当前音频编号");
+      return Boolean(await patchTtsWithConfirmation(stem, id, {
+        reviewState: "locked", confirmSubtitleChanges: true,
+      }));
+    } : undefined);
     try {
+      if (readOnly && (!allowAutoAdjust || buffer === originalBuffer)) {
+        if (onConfirmLock && await onConfirmLock(sourceId ?? null)) onSaved();
+        return;
+      }
+      if (source === "jp") return;
+      // 试听、选区、移动光标不算修改；全部撤销也会回到原缓冲，直接锁原记录。
+      // 任何锁定入口未修改时均锁当前记录；普通“保存为新版本”仍另存。
+      if (confirmLock && buffer === originalBuffer) {
+        if (await confirmLock(source === "cn" ? null : sourceId!)) onSaved();
+        return;
+      }
+      if (confirmLock && savedBufferRef.current?.buffer === buffer) {
+        if (await confirmLock(savedBufferRef.current.id)) onSaved();
+        return;
+      }
       const wav = encodeWavPcm16(buffer);
       const saveUrl =
         source === "cn"
@@ -552,7 +660,10 @@ export function AudioEditDialog({ stem, sourceId, source = "tts", jp, onClose, o
       });
       const result = (await response.json()) as { error?: string; id?: string; netStatus?: string };
       if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+      if (!result.id) throw new Error("保存成功但未返回音频编号");
+      savedBufferRef.current = { buffer, id: String(result.id) };
       window.dispatchEvent(new CustomEvent("ff7-audio-edit-saved", { detail: { stem, id: String(result.id), netStatus: result.netStatus } }));
+      if (confirmLock && !await confirmLock(String(result.id))) return;
       onSaved();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -563,18 +674,21 @@ export function AudioEditDialog({ stem, sourceId, source = "tts", jp, onClose, o
 
   const jpLen = jp.dur ?? jp.speech;
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/70 sm:items-center sm:p-4">
+    <div ref={readOnlyRoot} role="dialog" aria-modal="true" aria-label={readOnly ? "核对音频节奏并锁定" : "音频编辑"} className="fixed inset-0 z-50 flex items-end justify-center bg-black/70 sm:items-center sm:p-4">
       <div className="h-[100dvh] max-h-[100dvh] w-full overflow-y-auto bg-zinc-950 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:h-auto sm:max-h-[min(100vh-2rem,calc(92vh*1.15))] sm:max-w-[calc(56rem*1.15)] sm:rounded-xl sm:border sm:border-zinc-700 sm:p-4">
         <div className="flex items-center justify-between gap-3">
           <h3 className="text-base font-medium text-zinc-100">
-            {source === "cn" ? "修改中文原声" : `修改 #${sourceId}`}
+            {readOnly ? `核对音频节奏 · ${sourceId ? "#" + sourceId : source === "jp" ? "日文原声" : "原中文"}` : <>{onConfirmLock ? "核对音频并锁定 · " : ""}{source === "cn" ? "修改中文原声" : `修改 #${sourceId}`}</>}
           </h3>
-          <button type="button" onClick={onClose} className="inline-flex min-h-11 items-center px-2 text-sm text-zinc-400 hover:text-zinc-200">
+          <button type="button" disabled={Boolean(busy)} onClick={onClose} className="inline-flex min-h-11 items-center px-2 text-sm text-zinc-400 hover:text-zinc-200 disabled:opacity-40">
             关闭
           </button>
         </div>
         <p className="mt-1 text-xs text-zinc-500">
-          上面日文只读（选区黄），下面待改（选区蓝）。点波形定位插入光标。点「插入日文选区」插日文；手机点右侧 ▾，电脑把鼠标停在按钮上，可看到其它选项。保存生成新待选。
+          {readOnly ? allowAutoAdjust ? "对照试听，可自动调整节奏。调整后确认会保存为新音频并锁定；取消不保存。" : "对照同一时间刻度试听日文和所选音频。确认后仅锁定当前版本，音频及字幕保持原样。" : <>
+          上面日文只读（选区黄），下面待改（选区蓝）。点波形定位插入光标。点「插入日文选区」插日文；手机点右侧 ▾，电脑把鼠标停在按钮上，可看到其它选项。
+          {onConfirmLock ? "未修改直接锁定；修改后确认会保存为新音频并锁定。" : "保存生成新待选。"}</>}
+          缩放算法：G · Rubber Band R3 短窗。
           {jpLen != null ? ` 日文长 ${jpLen.toFixed(2)}s。` : ""}
         </p>
         <div className="mt-3">
@@ -599,12 +713,12 @@ export function AudioEditDialog({ stem, sourceId, source = "tts", jp, onClose, o
               <div ref={jpHostRef} className="bg-zinc-900 px-2 py-2" style={{ width: `${jpPct}%` }} />
             </div>
           ) : (
-            <p className="rounded border border-zinc-800 px-2 py-3 text-xs text-zinc-600">没有日文配音，无法从上面取片段。</p>
+            <p className="rounded border border-zinc-800 px-2 py-3 text-xs text-zinc-600">{readOnly ? autoPlayPending ? "正在加载日文波形…" : "日文音频不可用" : "没有日文配音，无法从上面取片段。"}</p>
           )}
         </div>
         <div className="mt-3">
           <div className="mb-1 flex items-center justify-between text-xs text-zinc-400">
-            <span>{source === "cn" ? "中文原声（可改）" : "待改音频"}</span>
+            <span>{readOnly ? adjustmentNote ? "调整后音频" : "所选音频" : source === "cn" ? "中文原声（可改）" : "待改音频"}</span>
             <span className="flex items-center gap-2">
               <span className="font-mono text-zinc-500">光标 {editAt.toFixed(2)}s</span>
               <button
@@ -615,7 +729,7 @@ export function AudioEditDialog({ stem, sourceId, source = "tts", jp, onClose, o
                 }}
                 className="inline-flex min-h-11 items-center rounded bg-zinc-800 px-3 text-sm text-zinc-200 hover:bg-zinc-700"
               >
-                播编辑
+                {readOnly ? "播所选音频" : "播编辑"}
               </button>
             </span>
           </div>
@@ -626,7 +740,8 @@ export function AudioEditDialog({ stem, sourceId, source = "tts", jp, onClose, o
             <div ref={editHostRef} className="bg-zinc-900 px-2 py-2" style={{ width: `${editPct}%` }} />
           </div>
         </div>
-        <div className="audio-edit-toolbar mt-3 flex flex-wrap items-center gap-2">
+        {readOnly && !buffer && <p role="status" className="mt-2 text-xs text-zinc-400">正在加载所选音频波形…</p>}
+        {!readOnly && <div className="audio-edit-toolbar mt-3 flex flex-wrap items-center gap-2">
           <ConfigProvider
             button={{ autoInsertSpace: false }}
             theme={{
@@ -700,7 +815,7 @@ export function AudioEditDialog({ stem, sourceId, source = "tts", jp, onClose, o
                 const percent = Number(key);
                 // 所有缩短档位统一按加速倍率计算：输出时长=输入时长÷(1+百分比)。
                 // 加速120%就是时长÷2.2；小档位也用倒数，不再按时长直接相减。
-                // 有选区仅处理选区，无选区处理整段，只做一次WSOLA，不重复叠加20%。
+                // 有选区仅处理选区，无选区处理整段，只做一次Rubber Band R3变速，不重复叠加20%。
                 scale(1 / (1 + percent / 100));
               }}
             >
@@ -709,7 +824,7 @@ export function AudioEditDialog({ stem, sourceId, source = "tts", jp, onClose, o
             <ConfigProvider theme={{ algorithm: theme.darkAlgorithm, token: { colorPrimary: "#0369a1" } }}>
               {gapAlignment ? (
                 <HoverDrop items={[{ key: "ordinary", label: "自动对齐" }]} onItem={autoAlign}>
-                  <Button type="primary" title="中文两段时取日文最长停顿分两组，首段贴头、末段贴尾；中文三段时按三段对齐，只调整留白" onClick={advancedAutoAlign}>
+                  <Button type="primary" title={gapAlignment.partCount === 3 ? "三段对话工作流：首段贴头、中段中心对齐日文中段、末段贴尾，只调整留白" : "两端对齐：取日文最长停顿分两组，首段贴头、末段贴尾，只调整留白"} onClick={advancedAutoAlign}>
                     高级自动对齐
                   </Button>
                 </HoverDrop>
@@ -720,15 +835,24 @@ export function AudioEditDialog({ stem, sourceId, source = "tts", jp, onClose, o
               )}
             </ConfigProvider>
             <Button onClick={undo}>撤销</Button>
-            <span className="ml-auto inline-flex">
+            <span className="ml-auto inline-flex gap-2">
               <ConfigProvider theme={{ algorithm: theme.darkAlgorithm, token: { colorPrimary: "#0369a1" } }}>
-                <Button type="primary" disabled={!buffer || Boolean(busy)} onClick={() => void save()}>
-                  {busy || "保存为新版本"}
+                {!onConfirmLock && <Button disabled={!buffer || !audioLoaded || Boolean(busy)} onClick={() => void save(true)}>
+                  {hasAudioChanges ? "保存并锁定" : "锁定"}
+                </Button>}
+                <Button type="primary" disabled={!buffer || !audioLoaded || Boolean(busy)} onClick={() => void save()}>
+                  {busy || (onConfirmLock ? "确认锁定" : "保存为新版本")}
                 </Button>
               </ConfigProvider>
             </span>
           </ConfigProvider>
-        </div>
+        </div>}
+        {readOnly && onConfirmLock && <div className="mt-4 flex justify-end gap-2">
+          {allowAutoAdjust && <button type="button" disabled={!buffer || !jpBuffer || source === "jp" || Boolean(busy) || Boolean(adjustmentNote)} onClick={autoAdjust} className="mr-auto min-h-12 rounded border border-sky-800 px-3 text-sky-300 disabled:opacity-40">{adjustmentNote ? "已自动调整" : "自动调整"}</button>}
+          <button type="button" disabled={Boolean(busy)} onClick={onClose} className="min-h-12 rounded border border-zinc-700 px-4">取消</button>
+          <button type="button" disabled={!buffer || !jpBuffer || Boolean(busy)} onClick={() => void save()} className="min-h-12 rounded bg-sky-700 px-4 disabled:opacity-40">{busy || "确认锁定"}</button>
+        </div>}
+        {readOnly && adjustmentNote && <p role="status" className="mt-2 text-xs text-sky-300">{adjustmentNote}</p>}
         {error ? <p className="mt-2 text-xs text-red-400">{error}</p> : null}
       </div>
     </div>

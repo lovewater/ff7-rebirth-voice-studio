@@ -24,7 +24,7 @@ export default async function LinePage({ params }: { params: Promise<{ stem: str
   const [r] = await sql<LineRow[]>`
     SELECT l.id, l.pack, l.filename, l.stem, l.asset_path, l.region,
            COALESCE(rg.name_zh, l.region) AS region_name,
-           l.speaker, l.kind, l.jp_chunk_id, l.status, l.text_jp, l.text_zh, l.text_en, l.script,
+           l.speaker, l.kind, l.jp_chunk_id, l.status, l.text_jp, l.text_zh, l.text_en, l.translate_zh_jp, l.translate_zh_en, l.script,
            m.dialogue_mode,
            l.subtitle_italic,
            COALESCE(s.name_zh, m.actor_zh, l.speaker) AS name_zh,
@@ -134,9 +134,21 @@ export default async function LinePage({ params }: { params: Promise<{ stem: str
           <div className="flex min-w-0 flex-col gap-1 text-sm md:min-w-72 md:text-xs">
             <div className="flex items-start gap-2">
               <span className="w-4 shrink-0 text-zinc-500">日</span>
-              <div className={r.text_jp ? `whitespace-pre-wrap leading-5 text-zinc-200${r.subtitle_italic ? " italic" : ""}` : "leading-5 text-zinc-600"}>
-                {r.text_jp || "（无日文字幕）"}
-                <BeatSuffix language="jp" jp={r.text_jp} cn={r.text_zh} enabled={(r.kind === "对话" || r.kind === "talk") && r.dialogue_mode === "scene" && !r.subtitle_italic} />
+              <div className="grid min-w-0 flex-1 grid-cols-2 gap-4">
+                <div className={r.text_jp ? `min-w-0 whitespace-pre-wrap break-words leading-5 text-zinc-200${r.subtitle_italic ? " italic" : ""}` : "leading-5 text-zinc-600"}>
+                  {r.text_jp || "（无日文字幕）"}
+                  <BeatSuffix language="jp" jp={r.text_jp} cn={r.text_zh} enabled={(r.kind === "对话" || r.kind === "talk") && r.dialogue_mode === "scene" && !r.subtitle_italic} />
+                </div>
+                <div aria-label="日文参考译文" className="min-w-0 whitespace-pre-wrap break-words leading-5 text-zinc-400">{r.translate_zh_jp ? `(${r.translate_zh_jp})` : ""}</div>
+              </div>
+            </div>
+            <div className="flex items-start gap-2">
+              <span className="w-4 shrink-0 text-zinc-500">英</span>
+              <div className="grid min-w-0 flex-1 grid-cols-2 gap-4">
+                <div className={r.text_en ? `min-w-0 whitespace-pre-wrap break-words leading-5 text-zinc-300${r.subtitle_italic ? " italic" : ""}` : "leading-5 text-zinc-600"}>
+                  {r.text_en || "（无英文字幕）"}
+                </div>
+                <div aria-label="英文参考译文" className="min-w-0 whitespace-pre-wrap break-words leading-5 text-zinc-400">{r.translate_zh_en ? `(${r.translate_zh_en})` : ""}</div>
               </div>
             </div>
             <div className="flex items-start gap-2">
@@ -147,12 +159,6 @@ export default async function LinePage({ params }: { params: Promise<{ stem: str
               </div>
             </div>
             <LiveTtsSubtitle stem={r.stem} initial={r.tts_record_subtitle} original={r.text_zh} />
-            <div className="flex items-start gap-2">
-              <span className="w-4 shrink-0 text-zinc-500">英</span>
-              <div className={r.text_en ? `whitespace-pre-wrap leading-5 text-zinc-300${r.subtitle_italic ? " italic" : ""}` : "leading-5 text-zinc-600"}>
-                {r.text_en || "（无英文字幕）"}
-              </div>
-            </div>
           </div>
           <div className="mt-2 overflow-x-auto pb-1">
             <DetailPlay

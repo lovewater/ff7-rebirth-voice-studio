@@ -2,6 +2,7 @@
 
 import { alignmentDetectionSignal } from "./alignment-transients";
 import { ALIGN_SILENCE_RATIO } from "./auto-run-rules";
+import { stretchBrowserSamples } from "./rubberband-browser";
 
 export function mixMono(buffer: AudioBuffer): Float32Array {
   const n = buffer.length;
@@ -102,8 +103,8 @@ function resampleMono(src: Float32Array, fromRate: number, toRate: number): Floa
 export function sliceClip(ctx: AudioContext, buffer: AudioBuffer, startSec: number, endSec: number): AudioBuffer {
   const sr = buffer.sampleRate;
   const src = mixMono(buffer);
-  let a = clampIndex(Math.round(Math.min(startSec, endSec) * sr), src.length);
-  let b = clampIndex(Math.round(Math.max(startSec, endSec) * sr), src.length);
+  const a = clampIndex(Math.round(Math.min(startSec, endSec) * sr), src.length);
+  const b = clampIndex(Math.round(Math.max(startSec, endSec) * sr), src.length);
   if (b - a < 8) throw new Error("选区太短");
   return bufferFromMono(ctx, src.subarray(a, b), sr);
 }
@@ -148,8 +149,8 @@ export function scaleGain(
 export function deleteRange(ctx: AudioContext, buffer: AudioBuffer, startSec: number, endSec: number): AudioBuffer {
   const sr = buffer.sampleRate;
   const src = mixMono(buffer);
-  let a = clampIndex(Math.round(Math.min(startSec, endSec) * sr), src.length);
-  let b = clampIndex(Math.round(Math.max(startSec, endSec) * sr), src.length);
+  const a = clampIndex(Math.round(Math.min(startSec, endSec) * sr), src.length);
+  const b = clampIndex(Math.round(Math.max(startSec, endSec) * sr), src.length);
   if (b - a < 8) return bufferFromMono(ctx, src, sr);
   const next = new Float32Array(src.length - (b - a));
   next.set(src.subarray(0, a), 0);
@@ -157,26 +158,20 @@ export function deleteRange(ctx: AudioContext, buffer: AudioBuffer, startSec: nu
   return bufferFromMono(ctx, next, sr);
 }
 
-function corr(a: Float32Array, ao: number, b: Float32Array, bo: number, n: number) {
-  let s = 0;
-  for (let i = 0; i < n; i += 1) s += a[ao + i] * b[bo + i];
-  return s;
-}
-
-/** Time-stretch without pitch shift (WSOLA). ratio = output/input duration. */
-export function stretchRange(
+/** G / Rubber Band R3 short-window, without pitch shift. ratio = output/input duration. */
+export async function stretchRange(
   ctx: AudioContext,
   buffer: AudioBuffer,
   ratio: number,
   startSec: number,
   endSec: number,
-): AudioBuffer {
+): Promise<AudioBuffer> {
   const sr = buffer.sampleRate;
   const src = mixMono(buffer);
   const a = clampIndex(Math.round(Math.min(startSec, endSec) * sr), src.length);
   const b = clampIndex(Math.round(Math.max(startSec, endSec) * sr), src.length);
   if (b - a < 8) throw new Error("选区太短");
-  const stretched = mixMono(stretchDuration(ctx, bufferFromMono(ctx, src.subarray(a, b), sr), ratio));
+  const stretched = mixMono(await stretchDuration(ctx, bufferFromMono(ctx, src.subarray(a, b), sr), ratio));
   const next = new Float32Array(a + stretched.length + (src.length - b));
   next.set(src.subarray(0, a), 0);
   next.set(stretched, a);
@@ -184,55 +179,14 @@ export function stretchRange(
   return bufferFromMono(ctx, next, sr);
 }
 
-export function stretchDuration(ctx: AudioContext, buffer: AudioBuffer, ratio: number): AudioBuffer {
-  const scale = Math.min(2.5, Math.max(0.4, ratio));
+export async function stretchDuration(ctx: AudioContext, buffer: AudioBuffer, ratio: number): Promise<AudioBuffer> {
   const sr = buffer.sampleRate;
   const input = mixMono(buffer);
-  if (Math.abs(scale - 1) < 0.002 || input.length < sr * 0.05) {
-    return bufferFromMono(ctx, input, sr);
-  }
-  const seq = Math.max(64, Math.round(sr * 0.028));
-  const ovl = Math.max(16, Math.round(sr * 0.012));
-  const hopOut = Math.max(8, seq - ovl);
-  const hopIn = Math.max(8, Math.round(hopOut / scale));
-  const search = Math.max(8, Math.round(sr * 0.008));
-  const outLen = Math.max(seq, Math.round(input.length * scale));
-  const output = new Float32Array(outLen);
-  const fade = new Float32Array(ovl);
-  for (let i = 0; i < ovl; i += 1) fade[i] = 0.5 - 0.5 * Math.cos((Math.PI * i) / ovl);
-
-  const copyGrain = (srcPos: number, dstPos: number) => {
-    for (let i = 0; i < seq; i += 1) {
-      const s = srcPos + i < input.length ? input[srcPos + i] : 0;
-      const w = i < ovl ? fade[i] : i > seq - ovl ? fade[seq - 1 - i] : 1;
-      const di = dstPos + i;
-      if (di < output.length) output[di] += s * w;
-    }
-  };
-
-  copyGrain(0, 0);
-  let dst = hopOut;
-  let expected = hopIn;
-  while (dst + seq < outLen && expected + seq < input.length) {
-    let best = expected;
-    let bestScore = -Infinity;
-    const from = Math.max(0, expected - search);
-    const to = Math.min(input.length - seq, expected + search);
-    for (let cand = from; cand <= to; cand += 4) {
-      const score = corr(output, dst, input, cand, ovl);
-      if (score > bestScore) {
-        bestScore = score;
-        best = cand;
-      }
-    }
-    copyGrain(best, dst);
-    dst += hopOut;
-    expected += hopIn;
-  }
+  const output = await stretchBrowserSamples(input, sr, ratio);
   return bufferFromMono(ctx, output, sr);
 }
 
-export function stretchToSeconds(ctx: AudioContext, buffer: AudioBuffer, targetSec: number): AudioBuffer {
+export async function stretchToSeconds(ctx: AudioContext, buffer: AudioBuffer, targetSec: number): Promise<AudioBuffer> {
   if (!(targetSec > 0.05)) throw new Error("目标时长太短");
   return stretchDuration(ctx, buffer, targetSec / buffer.duration);
 }

@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { NextRequest, NextResponse } from "next/server";
 import { sql } from "@/lib/db";
+import { prepareTtsPronunciationBody } from "@/lib/tts-pronunciation-db";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 1200;
@@ -67,7 +68,7 @@ async function gpuPost<T>(endpoint: string, body: unknown): Promise<T> {
   const response = await fetch(`${TTS_URL}${endpoint}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
+    body: JSON.stringify(await prepareTtsPronunciationBody(endpoint, body)),
     signal: AbortSignal.timeout(1_200_000),
   });
   const data = (await response.json().catch(() => ({}))) as T & { detail?: string; message?: string };

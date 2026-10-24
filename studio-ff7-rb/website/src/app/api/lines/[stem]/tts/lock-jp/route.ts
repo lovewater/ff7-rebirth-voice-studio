@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { NextResponse } from "next/server";
 import { twoLineSubtitle } from "@/lib/auto-run-subtitle";
+import { isSingingLine, singingSubtitle } from "@/lib/singing-original";
 import { sql } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
@@ -24,12 +25,13 @@ export async function POST(
       speaker: string | null;
       text_jp: string | null;
       text_zh: string | null;
+      text_en: string | null;
       jp_start_s: number | null;
       jp_end_s: number | null;
       jp_dur_s: number | null;
       jp_speech_s: number | null;
     }[]>`
-      SELECT l.speaker, l.text_jp, l.text_zh,
+      SELECT l.speaker, l.text_jp, l.text_zh, l.text_en,
              m.jp_start_s, m.jp_end_s, m.jp_dur_s, m.jp_speech_s
       FROM lines l
       LEFT JOIN line_meta m ON m.stem = l.stem
@@ -43,6 +45,8 @@ export async function POST(
     return NextResponse.json({ error: "没有日文配音" }, { status: 400 });
   }
   const label = (line.text_zh || line.text_jp || "（日文原声）").trim() || "（日文原声）";
+  const subtitle = confirmedSubtitle !== undefined ? confirmedSubtitle : line.text_zh == null ? null : twoLineSubtitle(line.text_zh);
+  const finalSubtitle = isSingingLine(line) ? singingSubtitle(subtitle || line.text_zh || "") : subtitle;
   const record = (
     await sql<{ id: string }[]>`
       INSERT INTO line_tts_versions (
@@ -52,7 +56,7 @@ export async function POST(
         duration_factor, emo_alpha
       ) VALUES (
         ${stem}, ${line.speaker}, NULL, ${"jp-lock"},
-        ${label}, ${label}, ${confirmedSubtitle !== undefined ? confirmedSubtitle : line.text_zh == null ? null : twoLineSubtitle(line.text_zh)},
+        ${label}, ${label}, ${finalSubtitle},
         ${line.text_jp}, ${line.text_zh},
         ${1}, ${0}
       )

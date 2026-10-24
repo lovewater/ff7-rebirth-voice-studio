@@ -100,14 +100,24 @@ export default async function LinesPage({
     modifiedOnly,
   });
 
-  const [{ n }] = await sql<{ n: number }[]>`
-    SELECT COUNT(*)::int AS n
-    FROM lines l
-    LEFT JOIN speakers s ON s.code = l.speaker
-    LEFT JOIN regions rg ON rg.code = l.region
-    LEFT JOIN line_meta m ON m.stem = l.stem
-    WHERE ${listWhere}
+  // 页码状态与列表共用筛选、排序和健康判定；先筛选再编号，不能拿全章节页码套筛选结果。
+  // 一页同时包含警告和异常时取异常，已锁定条目沿用列表既有正常判定。
+  const pageHealth = await sql<{ page: number; n: number; flag: "ok" | "warn" | "err" }[]>`
+    WITH ranked AS (
+      SELECT ((ROW_NUMBER() OVER (ORDER BY COALESCE(rg.sort_order, 99999), l.stem) - 1) / ${PAGE_SIZE} + 1)::int AS page,
+             (${flagExpr}) AS flag
+      FROM lines l
+      LEFT JOIN speakers s ON s.code = l.speaker
+      LEFT JOIN regions rg ON rg.code = l.region
+      LEFT JOIN line_meta m ON m.stem = l.stem
+      WHERE ${listWhere}
+    )
+    SELECT page, COUNT(*)::int AS n,
+           CASE WHEN BOOL_OR(flag='err') THEN 'err' WHEN BOOL_OR(flag='warn') THEN 'warn' ELSE 'ok' END AS flag
+    FROM ranked GROUP BY page ORDER BY page
   `;
+  const n = pageHealth.reduce((sum, row) => sum + row.n, 0);
+  const pageFlags = Object.fromEntries(pageHealth.map(row => [row.page, row.flag]));
 
   const rows = await sql<LineRow[]>`
     SELECT l.id, l.pack, l.filename, l.stem, l.asset_path, l.region,
@@ -252,6 +262,15 @@ export default async function LinesPage({
     u.set("page", String(p));
     return `/lines?${u.toString()}`;
   };
+  // 上下两份复用同一组数据与控件，确保链接携带的筛选条件完全一致。
+  function paginationControls() {
+    return <>
+      {page > 1 ? <Link href={qs(page - 1)} className="inline-flex min-h-11 items-center rounded bg-zinc-800 px-4">上一页</Link> : null}
+      <span className="text-zinc-500">{page} / {pages}</span>
+      {page < pages ? <Link href={qs(page + 1)} className="inline-flex min-h-11 items-center rounded bg-zinc-800 px-4">下一页</Link> : null}
+      <PageJump page={page} pages={pages} hrefTemplate={qs("__PAGE__")} pageFlags={pageFlags} />
+    </>;
+  }
   function reviewHref(stem: string) {
     const context = new URLSearchParams(qs(page).split("?")[1]);
     context.set("reviewSession", reviewSession);
@@ -279,6 +298,7 @@ export default async function LinesPage({
         skipTiming={Boolean(r.skip_timing)}
         timingExempt={!scene}
         beatsEnabled={scene}
+        confirmWaveform={scene}
         beatTexts={{ jp: r.text_jp, cn: r.text_zh, modified: r.tts_record_text }}
         lockReplacesEdit
         autoRunPassed={r.auto_run_status === "passed" && r.auto_run_locked !== true}
@@ -387,7 +407,7 @@ export default async function LinesPage({
           <input
             name="q"
             defaultValue={q}
-            placeholder="搜 stem / 角色 / 日文 / 中文（回车）"
+            placeholder="搜编号 / 角色 / 列表字幕（回车）"
             className="min-h-11 w-full rounded border border-zinc-700 bg-zinc-900 px-3 text-base sm:w-72 sm:py-1.5 sm:text-sm"
           />
           <Link href="/lines" className="inline-flex min-h-11 items-center px-2 text-sm text-zinc-400 underline sm:min-h-0 sm:py-1.5">
@@ -429,6 +449,9 @@ export default async function LinesPage({
         }]))}
       >
       <FilterStatsBar initial={healthStats} query={summaryQuery} active={flag} />
+      <nav aria-label="列表上方分页" className="mb-3 flex flex-wrap items-center gap-2 text-sm sm:gap-3">
+        {paginationControls()}
+      </nav>
       <div className="space-y-3 md:hidden">
         {rows.map((r) => (
           <ToneBox key={r.stem} stem={r.stem} flag={r.flag} className={`rounded-lg border p-3 ${r.dialogue_mode === "scene" ? "border-emerald-500" : "border-zinc-800"}${r.subtitle_italic ? " italic" : ""}`}>
@@ -554,12 +577,7 @@ export default async function LinesPage({
       </TtsSnapshotProvider>
       </NetMetricsProvider>
       <div className="sticky bottom-0 z-20 -mx-3 mt-4 flex flex-wrap items-center gap-2 border-t border-zinc-800 bg-zinc-950 px-3 py-2 text-sm sm:static sm:mx-0 sm:gap-3 sm:border-0 sm:bg-transparent sm:px-0">
-        {page > 1 ? <Link href={qs(page - 1)} className="inline-flex min-h-11 items-center rounded bg-zinc-800 px-4">上一页</Link> : null}
-        <span className="text-zinc-500">
-          {page} / {pages}
-        </span>
-        {page < pages ? <Link href={qs(page + 1)} className="inline-flex min-h-11 items-center rounded bg-zinc-800 px-4">下一页</Link> : null}
-        <PageJump page={page} pages={pages} hrefTemplate={qs("__PAGE__")} />
+        {paginationControls()}
         <div className="hidden md:block"><AutoProcess
           jobs={rows
             .filter(

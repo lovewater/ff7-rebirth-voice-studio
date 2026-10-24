@@ -1,0 +1,39 @@
+# Additional worker on the 5080 host, using the former remove-bg GPU0.
+# Run with: docker compose -p ff7-indextts-2080ti -f docker-compose.2080ti.yml up -d
+services:
+  tts-gpu0:
+    image: ff7-indextts-official-official-api
+    container_name: ff7-indextts-2080ti-gpu0
+    restart: unless-stopped
+    ports: ["8812:8810"]
+    environment:
+      MODEL_DIR: /models/IndexTTS-2
+      DATA_DIR: /data
+      INDEXTTS_PRECISION: fp16
+      CUDA_VISIBLE_DEVICES: "0"
+      UPSTREAM_REVISION: ee40fa7d6c6b8a2c7f06105f9f1e65775b74868c
+      GPU_LOCK_PATH: /gpu-lock/inference.lock
+      SEED_VC_URL: http://127.0.0.1:8811
+      OMP_NUM_THREADS: "4"
+      MKL_NUM_THREADS: "4"
+    volumes:
+      - ./models:/models
+      - ./data:/data
+      # The running 5080 image predates configurable FP16; mount the tested app
+      # only into this new worker, without rebuilding/restarting the 5080.
+      - ./app/main.py:/app/main.py:ro
+    gpus:
+      - driver: nvidia
+        device_ids: ["0"]
+        capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8810/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      start_period: 180s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: 20m
+        max-file: "3"

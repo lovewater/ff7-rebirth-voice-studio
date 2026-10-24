@@ -34,7 +34,7 @@ npm run dev
 
 网站默认端口为 8765，数据库管理界面默认端口为 8766。完整部署还需要配置 worker、拍数服务、推理服务和本地音频目录，见各目录文档。推理镜像与权重需自行准备；第三方源码和工具二进制不随仓库分发，见 [依赖说明](docs/dependencies.md)。
 
-正式 TTS 通过 Nginx 统一入口分配到双 22GB GPU。后端地址仅写入本地 `.env`，迁移或扩容不改网站；见 [代理部署说明](studio-ff7-rb/tts-proxy/README.md)。
+正式 TTS 通过 Nginx 统一入口分配到官方 IndexTTS 2.0 的 5080 BF16 与 2080 Ti FP16 worker。后端地址仅写入本地 `.env`，迁移或扩容不改网站；见 [代理部署说明](studio-ff7-rb/tts-proxy/README.md)。
 
 ## 校验
 

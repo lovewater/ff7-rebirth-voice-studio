@@ -12,6 +12,7 @@ export type PauseTrack = {
   parts: number;
   rewritten: boolean;
   gap: { start: number; end: number } | null;
+  gaps?: {start:number;end:number}[];
 };
 
 export type PauseExperimentItem = {
@@ -23,6 +24,8 @@ export type PauseExperimentItem = {
   error: string | null;
   openingDeltaMs: number | null;
   tracks: PauseTrack[];
+  alignmentStatus?: string;
+  partTimings?: {index:number;factor:number;deltaSeconds:number;status:string}[];
 };
 
 export type PauseExperimentSnapshot = {
@@ -47,4 +50,13 @@ export async function readPauseExperiment(): Promise<PauseExperimentSnapshot | n
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
   }
+}
+
+/** 三段实验独立快照，和原两段实验互不覆盖；只读数据不触发任何推理。 */
+export async function readThreePartExperiment():Promise<PauseExperimentSnapshot|null>{
+  try{
+    const raw=await readFile(path.join(process.cwd(),"data","experiments","three-part-alignment-v1","snapshot.json"),"utf8");
+    const snapshot=JSON.parse(raw) as PauseExperimentSnapshot;
+    return snapshot.version==='three-part-alignment-v1'&&Array.isArray(snapshot.items)?snapshot:null;
+  }catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return null;throw error;}
 }

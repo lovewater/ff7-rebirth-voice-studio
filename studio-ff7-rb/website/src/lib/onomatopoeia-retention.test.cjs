@@ -88,3 +88,15 @@ test('unparseable model result and copying ASR errors into official Japanese bot
  await assert.rejects(()=>planner({unparseable:true,reason:'差异太大'})(normal),/无法解析/);
  await assert.rejects(()=>planner({speech_clause_indexes:[1],onomatopoeia_clause_indexes:[0],cn_tts_text:'诱饵！',original_jp_speech_text:'別の台詞'})(normal),/只允许删除/);
 });
+test('translated lexical interjection remains in both speech reference and Chinese TTS',async()=>{
+ const japanese='よっしゃ これでいけんだろ',chinese='很好，这样就没问题了吧';
+ const plan=await planner({unparseable:false,speech_clause_indexes:[0,1],onomatopoeia_clause_indexes:[],
+   original_jp_speech_text:japanese,original_cn_tts_text:chinese,cn_tts_text:chinese,reason:'よっしゃ需要用中文很好表达，不直接复用日语词语'},messages=>{
+    assert.match(messages[0].content,/原声可复用性是保留拟声的前提/);
+    assert.match(messages[0].content,/ああ—嗯/);
+   })({textJp:japanese,textZh:chinese,textEn:"Okay! Let's start her up.",durationMs:2162,
+    jpAsr:{text:'よっしゃ、これでいけんだろ。',words:[{text:'よっしゃ',start:160,end:600},{text:'これでいけんだろ',start:1040,end:2120}],utterances:[]}});
+ assert.equal(plan.enabled,false);assert.equal(plan.onomatopoeia.length,0);
+ assert.equal(plan.cnTtsText,chinese);assert.equal(plan.originalCnTtsText,chinese);assert.equal(plan.jpSpeechText,japanese);
+ assert.deepEqual(plan.subtitleRestore.preserved,[]);
+});

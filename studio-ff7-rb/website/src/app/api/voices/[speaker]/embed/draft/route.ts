@@ -125,7 +125,7 @@ export async function POST(
       embedding_pt_b64: embedded.embedding_pt_b64,
       reference_wav_b64: embedded.reference_wav_b64,
     });
-    const lexicon = await sql<Pronunciation[]>`SELECT id, src, dst, note FROM pronunciations`;
+    const lexicon = await sql<Pronunciation[]>`SELECT id, src, dst, note FROM pronunciations WHERE usage = 'reference'`;
     const candidates: { id: string; text: string; file: string; dur_s: number }[] = [];
     for (let i = 0; i < texts.length; i += 1) {
       const id = `c${String(i + 1).padStart(2, "0")}`;

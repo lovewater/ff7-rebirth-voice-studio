@@ -1,3 +1,4 @@
+import { lineListSearchExpr } from "./line-list-search";
 import { originalCnLockedExpr } from "@/lib/line-filters";
 import { sql } from "./db";
 import { healthFlagExpr, type LineFilter } from "./line-filters";
@@ -17,7 +18,7 @@ export function listFilterFromParams(params: URLSearchParams): LineFilter {
 /** 列表数量、列表内容与手机审核队列共用条件，防止下一条与列表顺序不一致。别名固定l/s/rg/m。 */
 export function lineListWhere(f: LineFilter) {
   const flagExpr = healthFlagExpr();
-  const like = `%${f.q}%`;
+  const searchExpr = lineListSearchExpr(f.q);
   return sql`
     (${f.region} = '' OR l.region = ${f.region})
     AND (${f.kind} = '' OR l.kind = ${f.kind})
@@ -31,9 +32,5 @@ export function lineListWhere(f: LineFilter) {
     AND (NOT ${f.onlyCast} OR EXISTS (SELECT 1 FROM cast_members cm WHERE cm.speaker=l.speaker))
     AND (NOT ${f.onlyCast} OR l.kind = '对话')
     AND (NOT ${f.modifiedOnly} OR EXISTS (SELECT 1 FROM line_tts_versions tm WHERE tm.stem=l.stem AND tm.status='ready'))
-    AND (${f.q} = '' OR l.stem ILIKE ${like} OR s.name_zh ILIKE ${like} OR m.actor_zh ILIKE ${like}
-      OR rg.name_zh ILIKE ${like} OR l.filename ILIKE ${like} OR l.text_jp ILIKE ${like}
-      OR l.text_zh ILIKE ${like} OR l.text_en ILIKE ${like} OR EXISTS (
-        SELECT 1 FROM line_tts_versions tq WHERE tq.stem=l.stem AND (tq.tts_text ILIKE ${like} OR tq.subtitle_text ILIKE ${like})
-      ))`;
+    AND (${searchExpr})`;
 }

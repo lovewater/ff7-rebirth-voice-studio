@@ -1,3 +1,4 @@
+import { STRETCH_ALGORITHM } from "@/lib/rubberband-core";
 import { withChatModel } from "@/lib/llm-model-context";
 import type { BodyScriptPolicy } from "@/lib/two-part-script";
 import { withLlmMetrics } from "@/lib/llm-metrics";
@@ -55,8 +56,9 @@ export async function POST(
       jp_dur_s: number | null;
       jp_speech_s: number | null;
       dialogue_mode: string | null;
+      subtitle_italic: boolean;
     }[]>`
-      SELECT l.stem, l.speaker, l.text_jp, l.text_zh,
+      SELECT l.stem, l.speaker, l.text_jp, l.text_zh, l.subtitle_italic,
              m.jp_start_s, m.jp_end_s, m.jp_dur_s, m.jp_speech_s, m.dialogue_mode
       FROM lines l
       LEFT JOIN line_meta m ON m.stem = l.stem
@@ -65,7 +67,6 @@ export async function POST(
   )[0];
   if (!line) return NextResponse.json({ error: "台词不存在" }, { status: 404 });
   if (!line.speaker) return NextResponse.json({ error: "台词没有说话人" }, { status: 400 });
-  const syncToJp = line.dialogue_mode !== "field";
 
   const body = (await req.json().catch(() => ({}))) as {
     ttsText?: string;
@@ -92,6 +93,9 @@ export async function POST(
     const [run] = await sql`SELECT id FROM line_auto_runs WHERE id = ${autoRunId} AND stem = ${stem} AND status = 'running'`;
     if (!run) return NextResponse.json({ error: "自动运行不存在、已结束或不属于这条台词" }, { status: 409 });
   }
+  // 自动斜体句保留自然节奏；不执行起点、候选长度或二/三段对齐。
+  const italicNatural = autoRunId != null && line.subtitle_italic;
+  const syncToJp = line.dialogue_mode !== "field" && !italicNatural;
   // 仅自动工作流携带已改写的字幕。普通手动合成沿用原来的确认流程。
   let subtitleText: string | null = null;
   if (autoRunId != null && body.subtitleText != null) {
@@ -264,7 +268,7 @@ export async function POST(
         : row.audio;
       // 仅自动场景工作流：先完成既有拉伸/对时，再裁多余首尾静音，之后保存、ASR 和拼接
       // 都使用同一份裁后音频。普通手动合成及非演出工作流保持既有流程。
-      const edgeTrim = feedbackRound || (autoRunId != null && syncToJp && preservePromptAudio)
+      const edgeTrim = italicNatural || feedbackRound || (autoRunId != null && syncToJp && preservePromptAudio)
         ? limitWavEdgeSilence(laidOut, prompt) : null;
       // 裁首静音会移动正文位置；检测门槛区域必须跟随保存后的音频，不能留在裁前坐标。
       if (gapAligned?.meta.splitRegions && edgeTrim) gapAligned.meta.splitRegions=gapAligned.meta.splitRegions.map(r=>({...r,startSeconds:r.startSeconds-edgeTrim.meta.trimmedLeading,endSeconds:r.endSeconds-edgeTrim.meta.trimmedLeading}));
@@ -285,6 +289,7 @@ export async function POST(
         regroup: regrouped?.meta ?? null,
         scriptPolicy, groupingScript,
         beforeRegroup: regrouped ? row.audio : null,
+        beforeStretch: row.audio,
         rawSpeech: row.timing.speech,
         rawDur: row.timing.duration,
         meta: row.generated.conversion_meta,
@@ -323,14 +328,17 @@ export async function POST(
       )[0];
       const relativePath = path.posix.join("tts", stem, `${record.id}.wav`);
       const manifestPath = path.posix.join("tts", stem, `${record.id}.json`);
+      const rawPath = path.posix.join("tts", stem, `${record.id}-before-stretch.wav`);
       const conversion = {
+        stretch_algorithm: STRETCH_ALGORITHM,
+        stretch_source: { path: rawPath, stage: "loudness-matched-gpu-output-before-cpu-regroup-and-stretch" },
         tts_text_sent: ttsForGpu,
         ...(manualTemplates ? { manual_template: true, quality_review: "manual-required" } : {}),
         auto_run_final_subtitle: finalSubtitleText,
         ...(autoRunId != null ? { body_script_policy:row.scriptPolicy, body_grouping_script:row.groupingScript } : {}),
         ...row.meta,
         pipeline: "jp-zeroshot",
-        timing_strategy: row.gapAlignment ? (row.gapAlignment.requiredParts===3?"three_parts_timeline":"two_parts_timeline") : feedbackRound ? "fallback_raw_feedback" : syncToJp ? "scene_timeline" : "field_natural_rate",
+        timing_strategy: italicNatural ? "italic_natural_rate" : row.gapAlignment ? (row.gapAlignment.requiredParts===3?"three_parts_timeline":"two_parts_timeline") : feedbackRound ? "fallback_raw_feedback" : syncToJp ? "scene_timeline" : "field_natural_rate",
         stem,
         prompt_stem: promptStem,
         prompt_lang: promptLang,
@@ -358,13 +366,14 @@ export async function POST(
       await mkdir(path.dirname(absolutePath), { recursive: true });
       await Promise.all([
         writeFile(absolutePath, row.audio),
+        writeFile(path.join(process.cwd(), "data", rawPath), row.beforeStretch),
         writeFile(path.join(process.cwd(), "data", manifestPath), JSON.stringify(conversion, null, 2)),
       ]);
       if(row.beforeRegroup)await writeFile(path.join(process.cwd(),"data","tts",stem,`${record.id}-before-regroup.wav`),row.beforeRegroup);
       await sql`
         UPDATE line_tts_versions SET
           status = 'ready', audio_path = ${relativePath}, audio_bytes = ${row.audio.length},
-          raw_audio_path = NULL, manifest_path = ${manifestPath},
+          raw_audio_path = ${rawPath}, manifest_path = ${manifestPath},
           conversion_meta = ${sql.json(JSON.parse(JSON.stringify(conversion)))},
           duration_factor = ${syncToJp ? row.stretch : durationFactor},
           start_s = ${row.timing.start}, end_s = ${row.timing.end},

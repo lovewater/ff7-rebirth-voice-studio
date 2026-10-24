@@ -1,0 +1,15 @@
+--- a/src/finer/R3Stretcher.cpp
++++ b/src/finer/R3Stretcher.cpp
+@@ -1105,10 +1105,10 @@
+         }
+         if (!isRealTime()) {
+             if (m_totalTargetDuration > 0 &&
+-                m_totalOutputDuration + writeCount > m_totalTargetDuration) {
++                m_totalOutputDuration + writeCount > m_totalTargetDuration + m_startSkip) {
+                 m_log.log(1, "writeCount would take output beyond target",
+                           m_totalOutputDuration, m_totalTargetDuration);
+-                auto reduced = m_totalTargetDuration - m_totalOutputDuration;
++                auto reduced = m_totalTargetDuration + m_startSkip - m_totalOutputDuration;
+                 m_log.log(1, "reducing writeCount from and to", writeCount, reduced);
+                 writeCount = reduced;
+             }

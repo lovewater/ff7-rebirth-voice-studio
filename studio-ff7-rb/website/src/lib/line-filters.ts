@@ -1,3 +1,4 @@
+import { lineListSearchExpr } from "./line-list-search";
 import { sql } from "./db";
 import { BEAT_VERSION } from "./beats";
 import { DUR_ERR_S, DUR_OK_S, END_ERR_S, END_OK_S, START_ERR_S, START_OK_S } from "./timing";
@@ -71,7 +72,7 @@ export function healthFlagExpr() {
 
 export async function countFilteredHealth(f: LineFilter): Promise<HealthStats> {
   const flagExpr = healthFlagExpr();
-  const like = "%" + f.q + "%";
+  const searchExpr = lineListSearchExpr(f.q);
   const [row] = await sql<HealthStats[]>`
     SELECT
       COUNT(*) FILTER (WHERE x.flag = 'ok')::int AS ok_n,
@@ -134,14 +135,7 @@ export async function countFilteredHealth(f: LineFilter): Promise<HealthStats> {
           SELECT 1 FROM line_tts_versions tm
           WHERE tm.stem = l.stem AND tm.status = 'ready'
         ))
-        AND (${f.q} = '' OR l.stem ILIKE ${like}
-             OR s.name_zh ILIKE ${like} OR m.actor_zh ILIKE ${like} OR rg.name_zh ILIKE ${like}
-             OR l.filename ILIKE ${like} OR l.text_jp ILIKE ${like} OR l.text_zh ILIKE ${like} OR l.text_en ILIKE ${like}
-             OR EXISTS (
-               SELECT 1 FROM line_tts_versions tq
-               WHERE tq.stem = l.stem
-                 AND (tq.tts_text ILIKE ${like} OR tq.subtitle_text ILIKE ${like})
-             ))
+        AND (${searchExpr})
     ) x
   `;
   return row ?? {

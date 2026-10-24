@@ -1,57 +1,8 @@
 import { alignmentDetectionSignal } from "./alignment-transients";
 import { parseWavPcm16 } from "./tts-gpu";
 
-function corr(a: Float32Array, ao: number, b: Float32Array, bo: number, n: number) {
-  let s = 0;
-  for (let i = 0; i < n; i += 1) s += a[ao + i] * b[bo + i];
-  return s;
-}
-
-/** ratio = output/input duration. 1.1 = slower/longer, 0.9 = faster/shorter. */
-export function stretchSamples(input: Float32Array, sampleRate: number, ratio: number): Float32Array {
-  const scale = Math.min(2.5, Math.max(0.4, ratio));
-  if (Math.abs(scale - 1) < 0.002 || input.length < sampleRate * 0.05) return input;
-  const seq = Math.max(64, Math.round(sampleRate * 0.028));
-  const ovl = Math.max(16, Math.round(sampleRate * 0.012));
-  const hopOut = Math.max(8, seq - ovl);
-  const hopIn = Math.max(8, Math.round(hopOut / scale));
-  const search = Math.max(8, Math.round(sampleRate * 0.008));
-  const outLen = Math.max(seq, Math.round(input.length * scale));
-  const output = new Float32Array(outLen);
-  const fade = new Float32Array(ovl);
-  for (let i = 0; i < ovl; i += 1) fade[i] = 0.5 - 0.5 * Math.cos((Math.PI * i) / ovl);
-  const copyGrain = (srcPos: number, dstPos: number) => {
-    for (let i = 0; i < seq; i += 1) {
-      const s = srcPos + i < input.length ? input[srcPos + i] : 0;
-      const w = i < ovl ? fade[i] : i > seq - ovl ? fade[seq - 1 - i] : 1;
-      const di = dstPos + i;
-      if (di < output.length) output[di] += s * w;
-    }
-  };
-  copyGrain(0, 0);
-  let dst = hopOut;
-  let expected = hopIn;
-  const maxIn = Math.max(0, input.length - seq);
-  while (dst < outLen) {
-    const guess = Math.min(Math.max(0, expected), maxIn);
-    let best = guess;
-    let bestScore = -Infinity;
-    const from = Math.max(0, guess - search);
-    const to = Math.min(maxIn, guess + search);
-    for (let cand = from; cand <= to; cand += 4) {
-      const score = corr(output, dst, input, cand, Math.min(ovl, outLen - dst));
-      if (score > bestScore) {
-        bestScore = score;
-        best = cand;
-      }
-    }
-    copyGrain(best, dst);
-    dst += hopOut;
-    expected += hopIn;
-    if (guess >= maxIn && dst >= outLen) break;
-  }
-  return output;
-}
+import { stretchSamples } from "./rubberband-server";
+export { stretchSamples } from "./rubberband-server";
 
 export function decodeWavMono(buffer: Buffer): { sampleRate: number; samples: Float32Array } {
   const wav = parseWavPcm16(buffer);
@@ -103,7 +54,7 @@ export function encodeWavMono(sampleRate: number, samples: Float32Array): Buffer
 }
 
 export function stretchWav(buffer: Buffer, ratio: number): Buffer {
-  if (Math.abs(ratio - 1) < 0.002) return buffer;
+  if (ratio === 1) return buffer;
   const { sampleRate, samples } = decodeWavMono(buffer);
   return encodeWavMono(sampleRate, stretchSamples(samples, sampleRate, ratio));
 }

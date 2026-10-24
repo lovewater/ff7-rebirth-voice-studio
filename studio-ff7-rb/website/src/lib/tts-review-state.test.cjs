@@ -62,3 +62,13 @@ test('PATCH rejects invalid states without touching locks',async()=>{
   const r=route();assert.equal((await r.patch(2,body)).status,400);assert.equal(r.writes(),0);
  }
 });
+
+test('手机只读锁定沿用现有字幕，不进入字幕编辑确认',async()=>{
+ const r=route();r.rows[1].tts_text='新的朗读台词';r.rows[1].subtitle_text=null;
+ const result=await r.patch(2,{reviewState:'locked',preserveSubtitle:true,requireSubtitleConfirmation:true});
+ assert.equal(result.status,200);assert.equal(r.rows[1].review_state,'locked');assert.equal(r.rows[1].subtitle_text,null);
+});
+test('沿用字幕与修改字幕不能同时请求，取消时不改变人工状态',async()=>{
+ const r=route();const result=await r.patch(2,{reviewState:'locked',preserveSubtitle:true,subtitleText:'修改的字幕'});
+ assert.equal(result.status,400);assert.equal(r.writes(),0);
+});

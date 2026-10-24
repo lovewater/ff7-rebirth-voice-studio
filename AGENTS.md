@@ -20,7 +20,7 @@
 | `studio-ff7-rb/db/` | `init/` 建表；`data/` gitignore | |
 | `studio-ff7-rb/worker/` | 抽取、字幕、时长 | |
 | `game/` | 只读游戏 + 中文包 | 不进 git |
-| `gpu/` | 推理代码。双 22GB 2080 Ti 提供 TTS，网站经 Nginx 统一入口访问 | 统一仓库中的目录，权重单独准备 |
+| `gpu/` | 推理代码。官方 IndexTTS 双worker，网站经 Nginx 统一入口访问 | 统一仓库中的目录，权重单独准备 |
 | `work/` | 缓存、catalog、`PROGRESS.md` | 不进 git |
 | `tmps/` | 参考截图 | |
 
@@ -75,7 +75,7 @@ programs/ff7sound status
 - 音频：`website/data/{jp,cn,ours}/`，已全量抽 JP/CN MP3；不进 git / Docker
 - Postgres + Next.js + worker；pgAdmin **8766**（环境变量 `PGADMIN_DEFAULT_EMAIL` / `PGADMIN_DEFAULT_PASSWORD`）
 - Next **禁止**直接 spawn AudioMog；一律走 worker
-- 正式 TTS 入口为 Compose 内 `http://tts-proxy:8810`。后端为 GPU1/GPU2 两张 22GB 2080 Ti，各一份官方 IndexTTS 2.0 FP16，使用 `gpu/tts-official/docker-compose.sis.yml`。模型和音色文件共享，推理锁各自独立。ASR 保持 GPU0 `:8001`，不部署独立 emotion。后端真实地址只在本地 `.env` 的 `TTS_BACKEND_1` / `TTS_BACKEND_2` 设置，代理模板为 `studio-ff7-rb/tts-proxy/nginx.conf.template`；变更后端不改网站。网站在途请求预算默认8，与 GPU 数量无关，自动任务仍4并发。5080 历史部署默认禁用，仅 legacy-5080 profile 可显式启动。权重和镜像不放 VM
+- 正式 TTS 入口为 Compose 内 `http://tts-proxy:8810`，网站只连接统一入口。后端地址通过本地 `.env` 的 `TTS_BACKEND_1` / `TTS_BACKEND_2` 和代理模板配置。RTX 5080 BF16 主worker使用 `gpu/tts-official/docker-compose.yml`，同机GPU0的22GB 2080 Ti FP16 worker使用 `docker-compose.2080ti.yml`；两份官方IndexTTS 2.0共享模型/音色，推理锁独立。备用双2080 Ti配置为 `docker-compose.sis.yml`。ASR独立运行，不使用emotion。权重不放VM、不进Git。
 - Win11 只拷 `_P.pak/.utoc/.ucas`；Linux 用 `studio-ff7-rb/worker/build_mod.py` 打差量包
 
 ## 续工入口

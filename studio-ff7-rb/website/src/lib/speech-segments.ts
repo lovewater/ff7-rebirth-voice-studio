@@ -4,7 +4,7 @@ import { TWO_PART_CN_GAP_S } from "./gap-only-align";
 /** 仅正文内部使用其实际缩放系数；重新填充的段间静音不属于任何区域。 */
 export type SpeechSplitRegion = { startSeconds: number; endSeconds: number; factor: number };
 export type SpeechChunk = { start: number; end: number };
-/** 与旧分隔器相同的峰值5%、10ms窗；仅入口日文500ms，中文仍按250ms拆。
+/** 与旧分隔器相同的峰值5%、10ms窗；仅入口日文450ms，中文仍按250ms拆。
  * 所有声音按原顺序保留；首尾静音不算内部段，不能以ASR时间戳替代波形切口。
  */
 export function speechChunks(audio: Buffer, minimumSeconds = TWO_PART_CN_GAP_S, regions: SpeechSplitRegion[] = []) {

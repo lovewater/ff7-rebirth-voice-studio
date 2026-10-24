@@ -2,7 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { withChatModel } from "./llm-model-context";
 export type AutoRunOutcome = {
   status: "passed" | "failed"; error: string | null; selected: string | null;
-  options?: { preserveSubtitle?: boolean };
+  options?: { preserveSubtitle?: boolean; noModelRetry?: boolean };
 };
 const stage = new AsyncLocalStorage<{ outcome?: AutoRunOutcome }>();
 /** 轮内只收集最终结果，整项任务保持running，避免切模型期间重复派发同句。 */
@@ -26,7 +26,7 @@ export async function runAutoRunModels(input: {
     const outcome = current.outcome;
     if (!outcome) throw new Error("模型工作流未返回最终结果，禁止当作通过");
     await input.event(model, outcome);
-    if (outcome.status === "passed" || model === "volcengine") {
+    if (outcome.status === "passed" || outcome.options?.noModelRetry || model === "volcengine") {
       await withChatModel(model, () => input.finish(outcome)); return;
     }
     if (!await input.canFallback()) {

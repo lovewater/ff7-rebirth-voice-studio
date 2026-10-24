@@ -5,6 +5,9 @@ import { useEffect, useRef, useState } from "react";
 type PlaybackState = "idle" | "loading" | "playing";
 let current: { audio: HTMLAudioElement; stop: () => void } | null = null;
 
+/** 列表锁定核对开始试听时停止上一条，避免与弹窗音频重叠。 */
+export function stopCurrentAudioPlayback() { current?.stop(); }
+
 type Props = {
   src: string;
   label?: string;

@@ -1,6 +1,8 @@
 "use client";
 
 import Link from "next/link";
+import dynamic from "next/dynamic";
+import { useAbnormalNavigation } from "@/components/abnormal-navigation";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import { AudioPlayButton } from "@/components/audio-play-button";
@@ -23,6 +25,8 @@ export type ReviewVersion = {
   subtitle_text: string | null; tts_text: string;
   start_s: number | null; end_s: number | null; dur_s: number | null; speech_s: number | null;
 };
+const AudioEditDialog = dynamic(() => import("@/app/line/[stem]/audio-edit-dialog").then(m => m.AudioEditDialog), { ssr: false });
+
 const action = "min-h-12 rounded-md border border-zinc-700 px-3 text-base disabled:opacity-40";
 const playClass = "inline-flex min-h-12 min-w-16 items-center justify-center rounded-md px-3 text-base";
 const seconds = (n: number | null) => n == null ? '—' : n.toFixed(2);
@@ -62,10 +66,12 @@ function ReviewAudio({ title, id, text, beatText, language, timing, reference, j
   </section>;
 }
 
-export function MobileReview({ line, versions, initialQueue, context }: {
-  line: ReviewLine; versions: ReviewVersion[]; initialQueue: string[]; context: string;
+export function MobileReview({ line, versions, initialQueue, context, abnormalMode = false }: {
+  line: ReviewLine; versions: ReviewVersion[]; initialQueue: string[]; context: string; abnormalMode?: boolean;
 }) {
   const router = useRouter();
+  const abnormalNav = useAbnormalNavigation();
+  const [waveSource, setWaveSource] = useState<ConditionalSource | null>(null);
   const [queue, setQueue] = useState(initialQueue);
   const [heardId, setHeardId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -87,13 +93,14 @@ export function MobileReview({ line, versions, initialQueue, context }: {
   const position = index >= 0 ? index % LINE_PAGE_SIZE + 1 : null;
   const params = new URLSearchParams(context);
   const session = params.get('reviewSession');
-  const storageKey = session && /^[\w-]{1,80}$/.test(session) ? `ff7-mobile-review:${session}` : null;
+  const storageKey = !abnormalMode && session && /^[\w-]{1,80}$/.test(session) ? `ff7-mobile-review:${session}` : null;
 
   useEffect(() => {
     // 同一次进入审核保持列表快照；锁定后从“警告”筛选消失，也不能跳条/改变页码。
     if (!storageKey) return;
     try {
       const saved = JSON.parse(sessionStorage.getItem(storageKey) ?? 'null');
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- 同步既有会话快照；异常列表不使用快照。
       if (Array.isArray(saved) && saved.every(s => typeof s === 'string' && /^[\w.\-]+$/.test(s)) && saved.includes(line.stem)) setQueue(saved);
       else sessionStorage.setItem(storageKey, JSON.stringify(initialQueue));
     } catch { /* 存储禁用时仍按服务端列表继续审核 */ }
@@ -108,11 +115,12 @@ export function MobileReview({ line, versions, initialQueue, context }: {
   function notify(advance = false) {
     window.dispatchEvent(new Event('ff7-tts-changed'));
     try { const channel = new BroadcastChannel('ff7-tts-changed'); channel.postMessage({ stem: line.stem }); channel.close(); } catch {}
+    if (abnormalMode) { abnormalNav?.refresh(); return; }
     if (advance && index >= 0 && index < queue.length - 1) router.push(href(queue[index + 1], index + 1));
     else router.refresh();
   }
   async function update(id: string, reviewState: TtsReviewState) {
-    const result = await patchTtsWithConfirmation(line.stem, id, { reviewState });
+    const result = await patchTtsWithConfirmation(line.stem, id, { reviewState, ...(reviewState === "locked" ? { preserveSubtitle: true } : {}) });
     if (!result) return false;
     setOverrides(old => {
       const next = { ...old };
@@ -136,6 +144,7 @@ export function MobileReview({ line, versions, initialQueue, context }: {
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || '保存失败');
     notify(reviewState === 'locked');
+    return true;
   }
   function lockButton(v: ReviewVersion | undefined, kind?: 'jp' | 'cn') {
     const isLocked = v && state(v) === 'locked';
@@ -144,9 +153,9 @@ export function MobileReview({ line, versions, initialQueue, context }: {
       title: kind === 'jp' ? '日文原声' : kind === 'cn' ? '原中文' : `音频 #${v?.id}`,
       duration: kind === 'jp' ? line.jp_dur_s : kind === 'cn' ? line.cn_dur_s : v?.dur_s ?? null,
     };
-    return <><button type="button" disabled={busy} onClick={() => void run(() => isLocked ? update(v.id, 'candidate') : v ? update(v.id, 'locked') : original(kind!, 'locked'))}
+    return <><button type="button" disabled={busy} onClick={() => { if (isLocked) void run(() => update(v.id, "candidate")); else setWaveSource(source); }}
       className={`${action} ${isLocked ? 'border-emerald-600 bg-emerald-950 text-emerald-200' : 'bg-zinc-900 text-zinc-200'}`}>{isLocked ? '解锁' : '锁定'}</button>
-      <button type="button" disabled={busy} onClick={() => setConditionalSource(source)} className={`${action} bg-zinc-900 text-zinc-200`}>条件锁定</button></>;
+      {!abnormalMode && <button type="button" disabled={busy} onClick={() => setConditionalSource(source)} className={`${action} bg-zinc-900 text-zinc-200`}>条件锁定</button>}</>;
   }
   function conditionalLock(step: number) {
     const source = conditionalSource;
@@ -163,10 +172,10 @@ export function MobileReview({ line, versions, initialQueue, context }: {
       notify(true);
     });
   }
-  return <main data-mobile-review className="mx-auto flex h-dvh max-w-2xl flex-col bg-zinc-950">
+  return <main data-mobile-review data-abnormal-review={abnormalMode ? "" : undefined} className="mx-auto flex h-dvh max-w-2xl flex-col bg-zinc-950">
     <header className="shrink-0 border-b border-zinc-800 px-3 py-1.5 pt-[max(0.375rem,env(safe-area-inset-top))]">
       <div className="flex items-center justify-between gap-3"><p className="text-sm text-sky-300">{line.region_name}</p><Link href={`/lines?${back}`} className="shrink-0 py-1 text-xs text-zinc-400">返回列表</Link></div>
-      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-0.5 text-sm"><span>{line.name_zh}<span className="ml-2 text-zinc-500">{({ '对话': '对话', talk: '对话', '旁白': '旁白', narrate: '旁白', '战斗': '战斗', battle: '战斗', npc: 'NPC', NPC: 'NPC', cut: '过场', pending: '待处理' } as Record<string,string>)[line.kind ?? ''] ?? line.kind ?? '未分类'}{['对话','talk'].includes(line.kind ?? '') ? <> - <span className={line.dialogue_mode === 'scene' ? 'inline-flex items-center rounded border border-emerald-600 bg-emerald-950 px-1.5 py-0.5 font-semibold text-emerald-300' : undefined}>{({ scene: '场景演出', field: '普通对话', mixed: '兼有演出', unknown: '待判定' } as Record<string,string>)[line.dialogue_mode ?? ''] ?? '待判定'}</span></> : null}</span></span><span className="text-zinc-400">第 {page} 页 · 第 {position ?? '—'} 条{queue.length > 0 ? ` / 共 ${queue.length} 条` : ''}</span></div>
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-0.5 text-sm"><span>{line.name_zh}<span className="ml-2 text-zinc-500">{({ '对话': '对话', talk: '对话', '旁白': '旁白', narrate: '旁白', '战斗': '战斗', battle: '战斗', npc: 'NPC', NPC: 'NPC', cut: '过场', pending: '待处理' } as Record<string,string>)[line.kind ?? ''] ?? line.kind ?? '未分类'}{['对话','talk'].includes(line.kind ?? '') ? <> - <span className={line.dialogue_mode === 'scene' ? 'inline-flex items-center rounded border border-emerald-600 bg-emerald-950 px-1.5 py-0.5 font-semibold text-emerald-300' : undefined}>{({ scene: '场景演出', field: '普通对话', mixed: '兼有演出', unknown: '待判定' } as Record<string,string>)[line.dialogue_mode ?? ''] ?? '待判定'}</span></> : null}</span></span><span className="text-zinc-400">{abnormalMode ? `第 ${abnormalNav?.position ?? "—"} 条 / 共 ${abnormalNav?.total ?? 0} 条` : <>第 {page} 页 · 第 {position ?? "—"} 条{queue.length > 0 ? ` / 共 ${queue.length} 条` : ""}</>}</span></div>
       <p className="mt-1 truncate font-mono text-[10px] text-zinc-600">{line.stem}</p>
     </header>
     <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-2" key={line.stem}>
@@ -187,12 +196,17 @@ export function MobileReview({ line, versions, initialQueue, context }: {
       <p className="mt-3 text-center text-xs text-zinc-500">标记对象：{target ? `${target.voice_gpu_key === 'jp-lock' ? '日文原声' : target.voice_gpu_key === 'cn-original' ? '原中文' : '中文结果'} #${target.id}` : '原中文'}</p>
       {error && <p role="alert" className="mt-3 rounded-lg bg-red-950 p-3 text-sm text-red-200">{error}</p>}
     </div>
-    <footer className="grid shrink-0 grid-cols-3 md:grid-cols-2 border-t border-zinc-700 bg-zinc-950 pb-[env(safe-area-inset-bottom)]">
-      <button type="button" disabled={busy || index <= 0} className="min-h-14 border-r border-zinc-800 text-base disabled:text-zinc-700" onClick={() => router.push(href(queue[index - 1], index - 1))}>上一条</button>
-      <button type="button" disabled={busy} className="min-h-14 border-r border-zinc-800 text-base text-red-400 disabled:opacity-40 md:hidden"
+    <footer className={`grid shrink-0 grid-cols-3 ${abnormalMode ? "" : "md:grid-cols-2"} border-t border-zinc-700 bg-zinc-950 pb-[env(safe-area-inset-bottom)]`}>
+      <button type="button" disabled={busy || (abnormalMode ? !abnormalNav?.previousHref : index <= 0)} className="min-h-14 border-r border-zinc-800 text-base disabled:text-zinc-700" onClick={() => abnormalMode ? abnormalNav?.previousHref && router.replace(abnormalNav.previousHref) : router.push(href(queue[index - 1], index - 1))}>上一条</button>
+      <button type="button" disabled={busy} className={`min-h-14 border-r border-zinc-800 text-base text-red-400 disabled:opacity-40 ${abnormalMode ? "" : "md:hidden"}`}
         onClick={() => void run(() => target ? update(target.id, abnormal ? 'candidate' : 'abnormal') : original('cn', 'abnormal'))}>{busy ? '保存中…' : abnormal ? '取消异常' : '标异常'}</button>
-      <button type="button" disabled={busy || index < 0 || index >= queue.length - 1} className="min-h-14 text-base disabled:text-zinc-700" onClick={() => router.push(href(queue[index + 1], index + 1))}>下一条</button>
+      <button type="button" disabled={busy || (abnormalMode ? !abnormalNav?.nextHref : index < 0 || index >= queue.length - 1)} className="min-h-14 text-base disabled:text-zinc-700" onClick={() => abnormalMode ? abnormalNav?.nextHref && router.replace(abnormalNav.nextHref) : router.push(href(queue[index + 1], index + 1))}>下一条</button>
     </footer>
+    {waveSource && <AudioEditDialog key={`${waveSource.source}-${waveSource.id ?? "original"}`} stem={line.stem}
+      source={waveSource.source} sourceId={waveSource.id} jp={reference} readOnly allowAutoAdjust autoPlayOnOpen
+      onClose={() => setWaveSource(null)}
+      onConfirmLock={async (id) => Boolean(id ? await update(id, "locked") : await original(waveSource.source === "jp" ? "jp" : "cn", "locked"))}
+      onSaved={() => { setWaveSource(null); if (abnormalMode) setTimeout(() => abnormalNav?.refresh(), 0); }} />}
     {conditionalSource && <ConditionalLockDialog stem={line.stem} source={conditionalSource} referenceDuration={line.jp_dur_s}
       italic={line.subtitle_italic} onClose={() => setConditionalSource(null)} onSelect={conditionalLock} />}
   </main>;

@@ -1,6 +1,7 @@
 "use client";
 
 import { AudioPlayButton as MiniPlay } from "@/components/audio-play-button";
+import dynamic from "next/dynamic";
 
 import { reportTtsPlayback } from "@/lib/tts-play-count";
 import type { TtsReviewState } from "@/lib/tts-review-state";
@@ -13,6 +14,9 @@ import { healthCaption, timingMarks, type Mark, type Timing } from "@/lib/timing
 import { isLockedFlag, useTtsSnapshot } from "./tts-snapshot";
 import { BeatRatio, beatHealth, useBeats } from "./beat-count";
 import { NetRatio } from "./net-ratio";
+
+// 仅点击场景演出锁定时加载波形编辑器，避免每页几十条记录都初始化音频。
+const AudioEditDialog = dynamic(() => import("../line/[stem]/audio-edit-dialog").then((module) => module.AudioEditDialog), { ssr: false });
 
 function fmt(n: number | null | undefined) {
   if (n == null || Number.isNaN(n)) return "—";
@@ -134,6 +138,7 @@ export function ModifiedPlay({
   locked = false,
   reviewState = locked ? "locked" : "candidate",
   lockReplacesEdit = false,
+  confirmWaveform = false,
   jpLock = false,
   ignored = false,
   isNew = false,
@@ -156,6 +161,7 @@ export function ModifiedPlay({
   locked?: boolean;
   reviewState?: TtsReviewState;
   lockReplacesEdit?: boolean;
+  confirmWaveform?: boolean;
   jpLock?: boolean;
   ignored?: boolean;
   isNew?: boolean;
@@ -168,6 +174,7 @@ export function ModifiedPlay({
   const [locking, setLocking] = useState(false);
   const [adopted, setAdopted] = useState(locked);
   const [review, setReview] = useState(reviewState);
+  const [confirming, setConfirming] = useState(false);
   useEffect(() => {
     setReview(reviewState);
     if (locked) {
@@ -202,6 +209,10 @@ export function ModifiedPlay({
         : "w-4 font-medium text-sky-400";
 
   function lockNow() {
+    if (confirmWaveform && lockReplacesEdit) {
+      setConfirming(true);
+      return;
+    }
     setLocking(true);
     void patchTtsWithConfirmation(stem, id, { reviewState: "locked" })
       .then((result) => {
@@ -215,6 +226,14 @@ export function ModifiedPlay({
 
   return (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+        {confirming ? <AudioEditDialog
+          key={id}
+          autoPlayOnOpen
+          stem={stem} sourceId={id} jp={jp}
+          onClose={() => setConfirming(false)}
+          onConfirmLock={async (targetId) => Boolean(await patchTtsWithConfirmation(stem, targetId!, { reviewState: "locked" }))}
+          onSaved={() => { setConfirming(false); pingTtsChanged(); }}
+        /> : null}
         {pendingAuto ? (
           <button
             type="button"
@@ -283,6 +302,7 @@ export function PlayCell({
   warn = 0.15,
   err = 0.3,
   lockReplacesEdit = false,
+  confirmWaveform = false,
   skipTiming = false,
   timingExempt = false,
   beatTexts,
@@ -301,6 +321,7 @@ export function PlayCell({
   warn?: number;
   err?: number;
   lockReplacesEdit?: boolean;
+  confirmWaveform?: boolean;
   skipTiming?: boolean;
   timingExempt?: boolean;
   beatTexts?: { jp: string | null; cn: string | null; modified?: string | null };
@@ -313,6 +334,7 @@ export function PlayCell({
   const live = useTtsSnapshot(stem);
   const skip = live?.skipTiming ?? skipTiming;
   const [busy, setBusy] = useState<"skip" | "jp" | null>(null);
+  const [confirmingOriginal, setConfirmingOriginal] = useState(false);
   const shown =
     live === undefined
       ? modified
@@ -330,6 +352,13 @@ export function PlayCell({
   const originalIssue = lineHealth.flag === "warn" || lineHealth.flag === "err";
   const listFix = lockReplacesEdit && originalIssue && !locked && !skip;
   async function skipTimingNow() {
+    if (confirmWaveform && lockReplacesEdit) {
+      setConfirmingOriginal(true);
+      return;
+    }
+    await lockOriginal();
+  }
+  async function lockOriginal() {
     setBusy("skip");
     try {
       const response = await fetch(`/api/lines/${encodeURIComponent(stem)}/flags`, {
@@ -340,8 +369,11 @@ export function PlayCell({
       const result = (await response.json()) as { error?: string };
       if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
       pingTtsChanged();
-    } catch {
-      /* keep button */
+      return true;
+    } catch (error) {
+      if (confirmingOriginal) throw error;
+      window.alert(error instanceof Error ? error.message : "锁定失败");
+      return false;
     } finally {
       setBusy(null);
     }
@@ -361,6 +393,15 @@ export function PlayCell({
   }
   return (
     <div className="flex min-w-0 flex-col gap-1 md:min-w-72">
+      {confirmingOriginal ? <AudioEditDialog
+        autoPlayOnOpen
+        stem={stem} source="cn" jp={jp}
+        onClose={() => setConfirmingOriginal(false)}
+        onConfirmLock={async (targetId) => targetId
+          ? Boolean(await patchTtsWithConfirmation(stem, targetId, { reviewState: "locked" }))
+          : lockOriginal()}
+        onSaved={() => { setConfirmingOriginal(false); pingTtsChanged(); }}
+      /> : null}
       <LangPlay
         label="日"
         src={`/api/audio/jp/${encodeURIComponent(stem)}`}
@@ -420,6 +461,7 @@ export function PlayCell({
           locked={shown.reviewState === "locked"}
           reviewState={shown.reviewState}
           lockReplacesEdit={lockReplacesEdit}
+          confirmWaveform={confirmWaveform}
           jpLock={Boolean(shown.jpLock)}
           isNew={Boolean(shown.isNew) && shown.reviewState !== "locked"}
           ignored={skip && locked}

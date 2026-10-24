@@ -539,11 +539,7 @@ export function TtsPanel({ stem }: { stem: string }) {
                 >
                   {busy ? "生成中…" : "Zero-shot 生成"}
                 </button>
-                <span className="text-xs text-zinc-500">
-                  {data.line.dialogue_mode === "field"
-                    ? "普通对话：按时长倍率控制生成语速，不按日文时长压缩、拉伸或补静音。并发生成 3 条供试听。"
-                    : "场景演出：并发 3 条原速 TTS，按日文说话时长压缩或拉伸，并对齐开头及总长；缩放窗口是手选倍率 ±0.2、步进 0.02。"}
-                </span>
+
               </div>
             </section>
             {LEGACY_EMBEDDING_TTS ? (

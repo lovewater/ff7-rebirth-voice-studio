@@ -57,3 +57,25 @@ body:has([data-mobile-review]) {
   min-height: 0;
   overflow: hidden;
 }
+
+/* 手机异常页与评测试听页共用只读布局，翻页栏不挤出底部评价按钮。 */
+body:has([data-abnormal-review]) {
+  display: flex;
+  flex-direction: column;
+}
+body:has([data-abnormal-review]) > header {
+  display: none;
+}
+[data-mobile-review][data-abnormal-review] {
+  height: auto;
+  min-height: 0;
+  flex: 1;
+  width: 100%;
+}
+body:has([data-abnormal-review]) [data-abnormal-navigation] [aria-label="异常翻页"] {
+  display: none;
+}
+
+@media (max-width: 767px), (pointer: coarse) {
+  [data-abnormal-desktop] { visibility: hidden; }
+}

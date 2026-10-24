@@ -45,7 +45,7 @@ export function partSplitRegions(leading: number, bodies: Float32Array[], sample
     return bodies.map((body,i)=>{const startSeconds=position,endSeconds=position+body.length/sampleRate;position=endSeconds+(gaps[i]??0);return {startSeconds,endSeconds,factor:factors[i]??1};});
 }
 
-/** 入口只看删拟声/环境音且裁首尾后的实际JP参考：恰好一处>=500ms长停顿。
+/** 入口只看删拟声/环境音且裁首尾后的实际JP参考：恰好一处>=450ms长停顿。
  * 中文需恰好两段（长停顿识别250ms）；按两段分别缩放，再恢复首尾与中间留白。
  * 总长度凑齐不是逐段合格的证据，因此即使拼成总长相等，仍必须看各段余差。
  * 返回null=不适用；返回status:error=已进入线路但失败，不能偷回旧整体拉伸掩盖错误。

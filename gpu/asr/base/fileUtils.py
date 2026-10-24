@@ -57,7 +57,9 @@ class FileUtils:
         """清理过期缓存文件。"""
         current_time = time.time()
         expired_files = []
-        for filename, info in self.audio_cache.items():
+        # 并发ASR请求会同时写缓存，遍历快照，避免dictionary changed size during iteration。
+        # 这类缓存竞态曾被上层错误包装成“base64格式错误”，导致正确音频无谓重TTS。
+        for filename, info in self.audio_cache.copy().items():
             if current_time - info["create_time"] >= self.file_expire_time:
                 expired_files.append(filename)
                 file_path = info["path"]
@@ -68,7 +70,7 @@ class FileUtils:
                         pass
 
         for filename in expired_files:
-            del self.audio_cache[filename]
+            self.audio_cache.pop(filename, None)  # 其他清理线程可能已经移除，重复清理应幂等
 
     def get_request_kwargs(self, url: str) -> dict:
         """根据代理配置生成请求参数。"""

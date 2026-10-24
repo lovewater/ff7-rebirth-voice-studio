@@ -289,7 +289,7 @@ export async function POST(
       reference_wav_b64: reference.toString("base64"),
     });
     const lexicon = await sql<Pronunciation[]>`
-      SELECT id, src, dst, note FROM pronunciations
+      SELECT id, src, dst, note FROM pronunciations WHERE usage = 'reference'
     `;
     const ttsForGpu = applyPronunciations(script.ttsText, lexicon);
     const generated = await gpuJson<{ audio_wav_b64: string; raw_audio_wav_b64: string; conversion_meta: Record<string, unknown> }>("/v1/tts", {

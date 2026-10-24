@@ -7,10 +7,12 @@ export function PageJump({
   page,
   pages,
   hrefTemplate,
+  pageFlags = {},
 }: {
   page: number;
   pages: number;
   hrefTemplate: string;
+  pageFlags?: Record<number, "ok" | "warn" | "err">;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -79,11 +81,18 @@ export function PageJump({
                   key={n}
                   type="button"
                   onClick={() => go(n)}
-                  className={
-                    n === page
-                      ? "inline-flex min-h-11 min-w-11 items-center justify-center rounded bg-zinc-100 px-1.5 text-sm font-medium text-zinc-900 md:min-h-8 md:min-w-8 md:text-xs"
-                      : "inline-flex min-h-11 min-w-11 items-center justify-center rounded px-1.5 text-sm text-zinc-400 hover:bg-zinc-700 hover:text-zinc-100 md:min-h-8 md:min-w-8 md:text-xs"
-                  }
+                  aria-label={`第${n}页${pageFlags[n] === "err" ? "，包含异常" : pageFlags[n] === "warn" ? "，包含警告" : ""}`}
+                  aria-current={n === page ? "page" : undefined}
+                  title={pageFlags[n] === "err" ? "包含异常" : pageFlags[n] === "warn" ? "包含警告" : undefined}
+                  className={`inline-flex min-h-11 min-w-11 items-center justify-center rounded px-1.5 text-sm md:min-h-8 md:min-w-8 md:text-xs ${
+                    pageFlags[n] === "err"
+                      ? "text-red-300 [&:hover]:bg-red-300 [&:hover]:text-zinc-950 focus-visible:bg-red-300 focus-visible:text-zinc-950"
+                      : pageFlags[n] === "warn"
+                        ? "text-amber-300 [&:hover]:bg-amber-300 [&:hover]:text-zinc-950 focus-visible:bg-amber-300 focus-visible:text-zinc-950"
+                        : n === page
+                          ? "bg-zinc-100 text-zinc-900 [&:hover]:bg-zinc-800 [&:hover]:text-zinc-100"
+                          : "text-zinc-400 [&:hover]:bg-zinc-300 [&:hover]:text-zinc-950 focus-visible:bg-zinc-300 focus-visible:text-zinc-950"
+                  } ${n === page ? "font-medium ring-1 ring-inset ring-current" : ""}`}
                 >
                   {n}
                 </button>

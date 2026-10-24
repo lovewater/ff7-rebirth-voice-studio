@@ -2,8 +2,8 @@ import { alignmentDetectionSignal } from "./alignment-transients";
 import { ALIGN_SILENCE_RATIO } from "./auto-run-rules";
 import { layoutPartTimeline } from "./speech-part-timeline";
 
-/** 日文入口500ms，中文分隔与最终组装仍为250ms，不能混用阈值。 */
-export const TWO_PART_JP_GAP_S = .5;
+/** 日文入口450ms，中文分隔与最终组装仍为250ms，不能混用阈值。 */
+export const TWO_PART_JP_GAP_S = .45;
 export const TWO_PART_CN_GAP_S = .25;
 
 type Wave = { samples: Float32Array; sampleRate: number };

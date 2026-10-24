@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { sql } from "@/lib/db";
+import { ttsSubtitleDisplay } from "@/lib/tts-subtitle-display";
 
 export const dynamic = "force-dynamic";
 
@@ -17,6 +18,7 @@ export type SequenceItem = {
   subtitle_italic: boolean;
   current: boolean;
   lockedTtsId: string | null;
+  modifiedSubtitle: string | null;
 };
 
 export async function GET(
@@ -72,12 +74,14 @@ export async function GET(
       text_zh: string | null;
       subtitle_italic: boolean;
       locked_tts_id: string | null;
+      selected_subtitle: string | null;
     }[]
   >`
     SELECT l.id, l.stem, l.speaker,
            COALESCE(s.name_zh, l.speaker) AS name_zh,
            l.text_jp, l.text_zh, l.subtitle_italic,
-           tv.id::text AS locked_tts_id
+           tv.id::text AS locked_tts_id,
+           selected.subtitle_text AS selected_subtitle
     FROM lines l
     LEFT JOIN speakers s ON s.code = l.speaker
     LEFT JOIN LATERAL (
@@ -85,6 +89,12 @@ export async function GET(
       WHERE stem = l.stem AND status = 'ready' AND review_state = 'locked'
       LIMIT 1
     ) tv ON true
+    LEFT JOIN LATERAL (
+      SELECT subtitle_text FROM line_tts_versions
+      WHERE stem = l.stem AND status = 'ready'
+      ORDER BY (review_state <> 'candidate') DESC, (parent_tts_id IS NULL) DESC, id DESC
+      LIMIT 1
+    ) selected ON true
     WHERE l.id = ANY(${ids})
     ORDER BY l.stem
   `;
@@ -98,6 +108,7 @@ export async function GET(
     subtitle_italic: row.subtitle_italic,
     current: row.stem === stem,
     lockedTtsId: row.locked_tts_id,
+    modifiedSubtitle: ttsSubtitleDisplay({ subtitle: row.selected_subtitle, original: row.text_zh }),
   }));
   return NextResponse.json({ items });
 }

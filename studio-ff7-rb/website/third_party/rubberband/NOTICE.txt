@@ -1,0 +1,34 @@
+Rubber Band Library 4.0.0 (R3 Finer engine), Copyright 2007-2024 Particular Programs Ltd.
+https://breakfastquay.com/rubberband/
+License: GPL-2.0-or-later, or a separate commercial licence from the copyright holder.
+See COPYING. Preserve this notice and corresponding source when distributing.
+This integration's new DSP bridge/adapters are GPL-2.0-or-later.
+
+This distribution builds the official release plus short-offline.patch, a local
+2026-10-20 correction to R3Stretcher.cpp: pending offline start compensation must
+not consume the effective output duration budget for very short selections.
+The patch changes two expressions; no audio algorithm is replaced.
+
+Corresponding source (served alongside this notice):
+  rubberband-4.0.0.tar.bz2  official complete release
+  short-offline.patch     local upstream modification
+  bridge.cpp             project WASM bridge
+  build.sh               complete compilation recipe
+  adapters.tar.gz        TypeScript adapters (browser Worker + Node + core)
+  COPYING                GNU GPL version 2; upstream permits version 2 or later
+
+Official release SHA256:
+  af050313ee63bc18b35b2e064e5dce05b276aaf6d1aa2b8a82ced1fe2f8028e9
+Production reference WASM SHA256 (local rebuilds may differ due to embedded source paths):
+  59215ceebe9dc618d1a88aefe1d0030ff519bda4e7b44fb0d45b8e02aac8fd37
+Compiler: Emscripten 3.1.6, Ubuntu noble package 3.1.6~dfsg-7, clang 15,
+  builtin FFT + builtin BQ resampler, single compilation unit, -O3 -flto,
+  no fast-math, no threading, no SIMD requirement, standalone WASM.
+Options: 0x20110000 = EngineFiner | ThreadingNever | WindowShort,
+  ProcessOffline, WindowShort, mono, pitch scale 1. Runtime asserts engine 3.
+
+GPL applies to distribution of programs combined with this library; providing
+only this library's licence/source does not replace the corresponding-source
+and licensing obligations for the combined program. Obtain a commercial licence
+from upstream for incompatible proprietary distribution. This notice does not
+unilaterally relicense unrelated existing application code.

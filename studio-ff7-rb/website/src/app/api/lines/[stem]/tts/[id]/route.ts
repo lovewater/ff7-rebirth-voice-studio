@@ -4,8 +4,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { isTtsReviewState } from "@/lib/tts-review-state";
 import { needsLockSubtitleConfirmation } from "@/lib/tts-lock-subtitle";
 import { twoLineSubtitle } from "@/lib/auto-run-subtitle";
+import { flattenSubtitleForReflow } from "@/lib/subtitle-reflow";
 import { createAutoRunSubtitleFormatter } from "@/lib/auto-run-subtitle-format";
-import { finalizeAutoSubtitle } from "@/lib/final-auto-subtitle";
+import { finalizeAutoSubtitle, normalizeLockSubtitlePunctuation } from "@/lib/final-auto-subtitle";
 import { sql } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
@@ -15,7 +16,7 @@ function valid(stem: string, id: string) {
 }
 
 class SubtitleConfirmationRequired extends Error {
-  constructor(public subtitleText: string, public originalText: string) { super("请确认要同步的字幕"); }
+  constructor(public subtitleText: string, public originalText: string, public sourceText?: string) { super("请确认要同步的字幕"); }
 }
 
 export async function PATCH(
@@ -28,10 +29,15 @@ export async function PATCH(
     reviewState?: "candidate" | "locked" | "abnormal";
     subtitleText?: string | null;
     requireSubtitleConfirmation?: boolean;
+    confirmSubtitleChanges?: boolean;
+    preserveSubtitle?: boolean;
   };
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return NextResponse.json({ error: "无效的音频更新请求" }, { status: 400 });
   }
+  // 只听和评价的手机入口明确沿用现有字幕，不弹出可编辑字幕或自动提稿。
+  const preserveSubtitle = body.preserveSubtitle === true && body.reviewState === "locked";
+  if (preserveSubtitle && Object.prototype.hasOwnProperty.call(body, "subtitleText")) return NextResponse.json({ error: "沿用字幕时不能同时修改字幕" }, { status: 400 });
   const hasState = Object.prototype.hasOwnProperty.call(body, "reviewState");
   if (hasState && !isTtsReviewState(body.reviewState)) {
     return NextResponse.json({ error: "reviewState 必须为 candidate、locked 或 abnormal" }, { status: 400 });
@@ -97,7 +103,7 @@ export async function PATCH(
 
       // 异常修订必须人工核对：优先当前覆盖字幕，否则沿用完整原字幕，
       // 不从去掉拟声词的TTS朗读稿推导，取消弹窗前不写入任何锁/字幕。
-      if (reviewState === "locked" && body.requireSubtitleConfirmation === true && !hasSub) {
+      if (reviewState === "locked" && !preserveSubtitle && (body.requireSubtitleConfirmation === true || body.confirmSubtitleChanges === true) && !hasSub) {
         const [line] = await tx<{ text_zh: string | null }[]>`SELECT text_zh FROM lines WHERE stem = ${stem}`;
         const original = (line?.text_zh ?? "").replace(/\\n/g, "\n");
         const manualProposal = needsLockSubtitleConfirmation({ isAutoFinal: target.is_auto_final,
@@ -105,11 +111,14 @@ export async function PATCH(
           ttsText: target.tts_text, original });
         const proposal = target.subtitle_text?.trim() ? target.subtitle_text : manualProposal
           ? twoLineSubtitle(target.tts_text.replace(/\[停顿=\d{1,4}\]/g, "")) || original : original;
-        throw new SubtitleConfirmationRequired(proposal, original);
+        if (body.requireSubtitleConfirmation === true || proposal.replace(/\\n/g, "\n").trim() !== original.trim()) {
+          throw new SubtitleConfirmationRequired(proposal, original, target.tts_text);
+        }
       }
       const newlyLocked = reviewState === "locked" && target.review_state !== "locked";
       if (
         newlyLocked &&
+        !preserveSubtitle &&
         !hasSub &&
         !target.is_jp_lock &&
         !target.subtitle_text?.trim()
@@ -125,7 +134,7 @@ export async function PATCH(
           // Abort the transaction BEFORE any lock/subtitle write. The client
           // edits this proposal, then sends subtitleText and reviewState together.
           const proposal = twoLineSubtitle(target.tts_text.replace(/\[停顿=\d{1,4}\]/g, ""));
-          if (proposal) throw new SubtitleConfirmationRequired(proposal, original.replace(/\\n/g, "\n"));
+          if (proposal) throw new SubtitleConfirmationRequired(proposal, original.replace(/\\n/g, "\n"), target.tts_text);
         }
       }
       if (reviewState && reviewState !== "candidate") {
@@ -166,17 +175,20 @@ export async function PATCH(
     return NextResponse.json({ ok: true, record: updated, skippedTiming: false, subtitleAutoFilled });
   } catch (error) {
     if (error instanceof SubtitleConfirmationRequired) {
-      // 事务已回滚，再复用自动字幕排版，避免等待模型时持有音频记录锁。
+      // 事务已回滚，再用本地函数整理字幕草稿。
       // 仅生成弹窗草稿，不写字幕、不改TTS稿和音频；取消确认仍保留原锁。
-      let proposal = error.subtitleText;
+      let proposal = flattenSubtitleForReflow(error.subtitleText);
       let subtitlePreparationError: string | undefined;
       try {
-        proposal = await createAutoRunSubtitleFormatter()(proposal);
+        proposal = await createAutoRunSubtitleFormatter({ reflow: true })(proposal, error.sourceText);
       } catch {
-        // 模型断行不可用时保留程序排版结果，让用户仍能确认或手工修改。
-        subtitlePreparationError = "自动语义断行未完成，请检查字幕分行。";
+        // 本地排版异常时保留原文，让用户仍能确认或手工修改。
+        proposal = twoLineSubtitle(proposal);
+        subtitlePreparationError = "自动断行未完成，请检查字幕分行。";
       }
-      proposal = finalizeAutoSubtitle(proposal, error.originalText) ?? error.originalText;
+      const changedCaption = finalizeAutoSubtitle(proposal, error.originalText);
+      // 正文没变时完整沿用原字幕，不能在回退后再改掉原稿标点与换行。
+      proposal = changedCaption === null ? error.originalText : normalizeLockSubtitlePunctuation(changedCaption);
       return NextResponse.json({ code: "SUBTITLE_CONFIRMATION_REQUIRED", error: error.message,
         subtitleText: proposal, originalText: error.originalText, subtitlePreparationError }, { status: 409 });
     }
