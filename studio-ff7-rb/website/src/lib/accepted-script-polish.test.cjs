@@ -3,7 +3,7 @@ const {test}=require('node:test'),assert=require('node:assert/strict'),fs=requir
 function setup(responses){const cache=new Map(),calls=[];function load(file){if(cache.has(file))return cache.get(file).exports;const m=new Module(file);cache.set(file,m);m.require=id=>{
  if(id==='./llm-chat-client')return{callChatCompletion:async input=>{calls.push(structuredClone(input));const value=responses.shift();if(value instanceof Error)throw value;return{content:typeof value==='string'?value:JSON.stringify(value)};}};
  return id.startsWith('./')?load(path.resolve(path.dirname(file),id+'.ts')):require(id);
- };m._compile(ts.transpileModule(fs.readFileSync(file,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,file);return m.exports;}return{...load(__dirname+'/accepted-script-polish.ts'),calls};}
+ };m._compile(ts.transpileModule(fs.readFileSync(file,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,file);return m.exports;}return{...load(__dirname+'/accepted-script-polish.ts'),...load(__dirname+'/round-speed-context.ts'),calls};}
 const parts=['算是达到合格线了','身为塔克斯','无论何时都要全力以赴别忘了'];
 const args={stem:'test',script:parts.join('，'),requiredParts:3,policy:'strict',textJp:'固定日文',textZh:'固定中文字幕',textEn:'original'};
 test('natural word-order edit preserves each segment and accepts only validated equal counts',async()=>{const c=setup([{parts:[...parts.slice(0,2),'别忘了无论何时都要全力以赴'],reason:'段内移词'}]);const r=await c.polishAcceptedScript(args);assert.equal(r.changed,true);assert.equal(r.script,'算是达到合格线了\n身为塔克斯\n别忘了无论何时都要全力以赴');assert.equal(c.calls.length,1);assert.equal(c.calls[0].task,'accepted-script-polish');assert.match(c.calls[0].messages[1].content,/固定中文字幕/);});
@@ -32,3 +32,7 @@ test('双语断句润色可仅移动片内停顿，保留正文和原有硬约�
  assert.match(prompt,/正文字符和顺序不变/);assert.match(prompt,/不跨段移动文字/);
  assert.equal(c.validatePolishParts(['我们','是不是上下颠倒了'],['我们是不是','上下颠倒了']).pass,false);
 });
+
+test('polish prompt carries soft speed guidance and labels unmeasured source honestly',async()=>{const c=setup([{parts}]);await c.polishAcceptedScript({...args,sourceTtsId:'not-measured'});const message=c.calls[0].messages.at(-1).content;assert.match(message,/已有音频的语速软参考/);assert.match(message,/不靠增加停顿掩盖吐字速度/);assert.match(message,/尚无对应音频实测/);assert.match(message,/原有校字、分段、时长、硬限/);});
+
+test('polish receives the selected audio measurements and retains them for correction',async()=>{const c=setup([{parts:['错误']},{parts}]);await c.withRoundSpeedContext(async()=>{c.rememberRoundSpeed({ttsId:'source',script:args.script,paceRatio:1.02,netRate:6.27,normalizedBeatRatio:.771,beatBand:{low:.85,high:1.15},beatExempt:true});await c.polishAcceptedScript({...args,sourceTtsId:'source'});});assert.equal(c.calls.length,2);for(const call of c.calls){const msg=call.messages.find(m=>m.content.includes('已有音频的语速软参考'));const evidence=JSON.parse(msg.content.split('\n').at(-1)).candidates;assert.equal(evidence.length,1);assert.equal(evidence[0].ttsId,'source');assert.equal(evidence[0].speedDescription,'速度有些稍快');assert.equal(evidence[0].netSpeech.rate,6.27);}});

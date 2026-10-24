@@ -1,3 +1,4 @@
+import { roundSpeedMessages } from "./round-speed-context";
 import { NATURAL_PUNCTUATION_HINT, BILINGUAL_PAUSE_HINT } from "./rewrite-punctuation-hint";
 import { callChatCompletion, type ChatMessage } from "./llm-chat-client";
 import { spokenCharacters } from "./auto-run-script-policy";
@@ -25,6 +26,7 @@ export function validatePolishParts(original: string[], proposed: unknown) {
 /** 成品通过后仅问一次润色，字数/格式不符最多纠正一次；不继承音频通过状态。 */
 export async function polishAcceptedScript(input: {
   stem: string; script: string; requiredParts: number; policy: BodyScriptPolicy;
+  sourceTtsId?: string;
   textJp: string; textZh: string; textEn: string;
 }) {
   const original = acceptedScriptParts(input.script, input.requiredParts, input.policy);
@@ -34,6 +36,7 @@ export async function polishAcceptedScript(input: {
     "你是游戏中文配音台词的最终文字润色编辑。当前稿已通过音频验收，只检查是否有更自然、凝练、优雅、适合人物说出口的表达，重点检查语序、修饰关系和生硬的翻译腔。\n硬要求：保持分段数量、顺序、每段汉字数及正文字符数完全不变，不跨段移动文字；每段核心语义、语气、对象、否定、条件、人物关系不变。优先段内移动已有词语，必要时可等字数替换，保留原中文准确自然的核心词和固定搭配，不堆修饰、不新增剧情。没有明显改善就原样返回，不为改而改。不要把自然口语改成生硬的书面训诫。遵守所给scriptPolicy；每个parts项对应一个原有大分片，保留并可调整片内自然标点，标点不计字数，不得添加停顿指令或段内换行。字数相同不代表时长相同，新稿仍要TTS和完整验收。\n只返回JSON：parts为完整分段字符串数组；reason说明具体语序和表达改善。" + "\n" + NATURAL_PUNCTUATION_HINT + "\n" + BILINGUAL_PAUSE_HINT },
     { role: "user", content: JSON.stringify({ japanese: input.textJp, originalChinese: input.textZh, english: input.textEn,
       scriptPolicy: outputPolicy, currentParts: original.map((text, index) => ({ index: index+1, text, hanCharacters: hanCount(text), spokenCharacters: spokenCharacters(text) })) }) }];
+  messages.push(...roundSpeedMessages(input.sourceTtsId));
   for (let attempt = 1; attempt <= 2; attempt++) {
     const result = await callChatCompletion({ messages, temperature: .2, task: "accepted-script-polish", stem: input.stem, attempts: 1 });
     let parsed: { parts?: unknown; reason?: string } = {};

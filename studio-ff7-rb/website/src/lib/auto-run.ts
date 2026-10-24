@@ -1,3 +1,4 @@
+import { rememberRoundSpeed } from "./round-speed-context";
 import type { CandidateSpeedMeasurements } from "./selection-speed";
 import { fastLongPressure } from "./fast-long-pressure";
 import { applyAmbientPolicy, IGNORED_AMBIENT_MAX_MS, type AmbientPolicyPlan } from "./ambient-policy";
@@ -1586,6 +1587,7 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
       const normalSpeedBeat = measureNormalSpeedBeatExemption(decodeWavMono(candidateAudio), candidateText, beat.result?.cn.han);
       candidate.normalSpeedBeat = normalSpeedBeat;
 
+
       const splitRegions=clip.conversion_meta?.auto_run_gap_alignment?.splitRegions;
       const actualParts = countParts(candidateAudio, .25, splitRegions);
       rememberRhythm(clip.id,candidateAudio,clip.spoken_text,splitRegions);
@@ -1649,6 +1651,11 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
       const comparison = ignoreBeat || enablePace ? waveformComparison : { ...waveformComparison, enabled: false, pass: true };
       const cnSpan = comparison.cnSpan;
       const ratio = comparison.spanRatio;
+      rememberRoundSpeed({ttsId:clip.id,script:candidateText,paceRatio:ratio,
+        netRate:normalSpeedBeat.rate,netSpeechSeconds:normalSpeedBeat.netSeconds,spokenSyllables:normalSpeedBeat.syllables,
+        normalizedBeatRatio:beat.result?.normalizedRatio??null,beatBand:autoBeatBand(referenceTextJp),
+        beatExempt:ignoreBeat||durationBeatReference||normalSpeedBeat.exempt,
+        beatExemption:normalSpeedBeat.exempt?"normal-cn-net-speed":durationBeatReference?"actual-short":slowLine?"slow":shortLine?"short":null});
       const pace = { ok: comparison.pass };
       if (ratio != null) roundRatios.push(ratio);
       if (ratio != null && comparison.jpSpan && comparison.cnSpan) roundSpans.push({ ttsId: clip.id,
@@ -1866,7 +1873,7 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
         const policy = sourceMeta?.conversion_meta?.body_script_policy ?? scriptPolicy;
         const source = sourceMeta?.conversion_meta?.body_grouping_script ?? selected.attemptInput?.script ?? chosen.clip.tts_text;
         try {
-          const polished = await polishAcceptedScript({stem:line.stem,script:source,requiredParts:requiredPartCount,policy,
+          const polished = await polishAcceptedScript({stem:line.stem,sourceTtsId:chosen.clip.id,script:source,requiredParts:requiredPartCount,policy,
             textJp:line.text_jp||"",textZh:line.text_zh||"",textEn:line.text_en||""});
           await log(runId,"accepted-script-polish",polished.changed ? "合格稿逐段等字数润色，额外一批TTS完整复验" : "润色后保留原合格稿",{...polished,sourceId:chosen.clip.id,acceptedId:splicedId,sourceScript:source,requiredParts:requiredPartCount,scriptPolicy:policy},"result");
           if (polished.changed) {

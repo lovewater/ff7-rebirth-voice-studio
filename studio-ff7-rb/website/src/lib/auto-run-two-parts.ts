@@ -1,5 +1,6 @@
-import { fastLongPromptValues } from "./fast-long-pressure";
+import { withRoundSpeedContext, roundSpeedMessages } from "./round-speed-context";
 import { NATURAL_PUNCTUATION_HINT } from "./rewrite-punctuation-hint";
+import { fastLongPromptValues } from "./fast-long-pressure";
 import { rewriteEditInstruction } from "./rewrite-edit-policy";
 import { calculateAttemptFeedback, renderAttemptFeedback, type AttemptInput } from "./attempt-feedback";
 import { speechChunks, type SpeechSplitRegion } from "./speech-segments";
@@ -49,7 +50,7 @@ type Context = {
 const contexts = new AsyncLocalStorage<Context>();
 /** 每批合成前更新，AsyncLocalStorage隔离并发句子；不影响其他自动任务。 */
 export function setBodyScriptPolicy(policy:BodyScriptPolicy){const c=contexts.getStore();if(c)c.scriptPolicy=policy;}
-export function withTwoPartContext<T>(fn: () => T): T { return contexts.run({ required: false, candidates: new Map(), attempts: new Map() }, fn); }
+export function withTwoPartContext<T>(fn: () => T): T { return withRoundSpeedContext(() => contexts.run({ required: false, candidates: new Map(), attempts: new Map() }, fn)); }
 /** 每个音频只更新自己的记录。稿ID来自实际朗读稿，四并发隔离，禁止继承旧稿测量。 */
 export function rememberAttempt(input: AttemptInput) {
     const c = contexts.getStore();
@@ -153,7 +154,7 @@ export function performanceRewriteMessages(messages: PromptMessage[], task: stri
         return messages;
     if (!['script-rewrite', 'fallback-duration-rewrite', 'two-parts-repair', 'three-parts-repair', 'rhythm-pick'].includes(task))
         return messages;
-    const extra: PromptMessage[] = [];
+    const extra: PromptMessage[] = task === "rhythm-pick" ? [] : roundSpeedMessages();
     if(task!=="rhythm-pick")extra.push({role:"user",content:"",promptKey:"rewrite.chinese-speed-limit",promptValues:{}});
     if(task!=="rhythm-pick")extra.push({role:"user",content:"",promptKey:"rewrite.fast-long-pressure",promptValues:fastLongPromptValues()});
     if (c.meaningAnchor && task !== 'rhythm-pick')
