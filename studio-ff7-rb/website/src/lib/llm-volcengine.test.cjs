@@ -50,6 +50,7 @@ test('manual route uses 官方GLM for rewriting and selection, retaining stem ow
   if(id==='@/lib/subtitle-layout')return{subtitleLayout:t=>t};
   if(id==='@/lib/beats')return{NORMAL_JP_CN_RATIO:1.2};
   if(id==='@/lib/rewrite-prompt')return{REWRITE_COUNT:5,REWRITE_LIMIT:10,REWRITE_POLICY:'test',REWRITE_MIN:.9,REWRITE_MAX:1.1,parseRewrite:JSON.parse,rewriteMessages:()=>[{role:'user',content:'重写'}],performanceLabel:()=>'',rewriteBand:()=>({low:.9,high:1.1}),rewritePace:()=> '正常',samePerformance:()=>true,takeUntilBoundary:()=>({before:[],after:[]})};
+  if(id==='@/lib/rewrite-context')return require('./rewrite-context.ts');
   throw Error('unexpected require '+id);
  };
  route._compile(ts.transpileModule(fs.readFileSync(`${__dirname}/../app/api/lines/[stem]/rewrite/route.ts`,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,__filename);

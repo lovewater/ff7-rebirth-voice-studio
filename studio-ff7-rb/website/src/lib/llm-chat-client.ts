@@ -1,3 +1,4 @@
+import { withGameFixedTerms } from "./game-fixed-terms";
 import { currentChatModel } from "./llm-model-context";
 import { setTimeout as delay } from "node:timers/promises";
 import { beginLlmCall, recordLlmCall } from "./llm-metrics";
@@ -130,7 +131,7 @@ export async function callChatCompletion(input: ChatCallOptions) {
   const maxTokens = checkedInteger(input.maxTokens ?? (local ? 16384 : 4096), 1, 131072, "输出上限");
   const temperature = input.temperature ?? (local ? 1 : 0.2);
   if (!Number.isFinite(temperature) || temperature < 0 || temperature > 2) throw new Error("模型温度无效");
-  const messages = input.messages.map(message => ({ role: message.role, content: message.content }));
+  const messages = await withGameFixedTerms(input.messages.map(message => ({ role: message.role, content: message.content })),input.task??"unspecified",input.stem);
   const body = JSON.stringify(volcengine ? volcengineChatBody({ model, messages, temperature, maxTokens, json: input.json !== false, thinking: input.volcengine?.thinking, reasoningEffort: input.volcengine?.reasoningEffort }) : { model, messages, temperature,
     ...(local ? { max_completion_tokens: maxTokens, top_p: 0.95, top_k: 20,
       // 不思考时完全去掉medium和preserve_thinking，不能让兼容模板重新打开思考。
