@@ -22,3 +22,13 @@ test('polish service, timing or assembly failure preserves the previously accept
 test('manual abnormal marking of old accepted audio prevents automatic polish fallback to it',async()=>{const c=fallbackRoute(false);await c.run();assert.equal(c.finished[0][1],'failed');assert.equal(c.finished[0][3],null);});
 
 test('polish retains punctuation inside semantic parts and treats the ten-character reminder as soft',async()=>{const c=setup([{parts:['算是达到合格线了','身为塔克斯','别忘了，无论何时都要全力以赴']}]);const r=await c.polishAcceptedScript(args);assert.equal(r.changed,true);assert.equal(r.policy,'lines');assert.match(r.script,/别忘了，/);assert.match(c.calls[0].messages[0].content,/连续10个或更多汉字/);assert.match(c.calls[0].messages[0].content,/不是硬性合格条件/);assert.equal(c.validatePolishParts(parts,parts).pass,true);});
+test('双语断句润色可仅移动片内停顿，保留正文和原有硬约束，不虚构英文时轴',async()=>{
+ const c=setup([{parts:['我们是不是……上下颠倒了？'],reason:'先带出疑问再停顿'}]);
+ const r=await c.polishAcceptedScript({...args,script:'我们……是不是上下颠倒了？',requiredParts:1,textJp:'わたしたち 逆さま？',textEn:'We just get turned upside down!?'});
+ assert.equal(r.changed,true);assert.equal(r.script,'我们是不是……上下颠倒了？');
+ const prompt=c.calls[0].messages[0].content;
+ assert.match(prompt,/同时参考日文和英文/);assert.match(prompt,/不能直接当成实际停顿/);
+ assert.match(prompt,/不得编造数值/);assert.match(prompt,/不强求各段等长或字数均分/);
+ assert.match(prompt,/正文字符和顺序不变/);assert.match(prompt,/不跨段移动文字/);
+ assert.equal(c.validatePolishParts(['我们','是不是上下颠倒了'],['我们是不是','上下颠倒了']).pass,false);
+});
