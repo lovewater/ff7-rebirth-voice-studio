@@ -1,5 +1,5 @@
-import { fastLongPressure } from "./fast-long-pressure";
 import { normalSpeedIgnoresBeat } from "./normal-speed-beat";
+import { fastLongPressure } from "./fast-long-pressure";
 
 export type FeedbackCheck = "text" | "parts" | "length" | "assembly" | "beat";
 export type AttemptMeasurement = {
@@ -20,7 +20,10 @@ export type AttemptMeasurement = {
     boundaryPass?: boolean;
   };
   characters?: { count: number; min: number; max: number };
-  netLength?: { deltaSeconds: number; pass: boolean };
+  /** 当前对时口径：段内停顿计入朗读跨度，段间留白不计；净语速独立。 */
+  readingLength?: { deltaSeconds: number; pass: boolean; referenceSeconds?: number; candidateSeconds?: number; parts?: {index:number;deltaMs:number;pass:boolean}[] };
+  /** 仅兼容旧记录；新流程不再发出净时长淘汰反馈。 */
+  netLength?: { deltaSeconds: number; pass: boolean; referenceSeconds?: number; candidateSeconds?: number };
   length?: { deltaSeconds: number; pass: boolean };
   assembly?: { deltaSeconds?: number; pass: boolean; failure?: "cannot-fit-gaps" | "unknown" };
   beat?: { enabled: boolean; ratio: number | null; low: number; high: number };
@@ -160,6 +163,22 @@ export function calculateAttemptFeedback(input: AttemptInput): AttemptFeedback {
     if (m.characters.count < m.characters.min) add("character-too-few", "字数不足。", "在允许范围内补全自然表达，保留中心意思。");
     if (m.characters.count > m.characters.max) add("character-too-many", "字数过多。", "精简冗余表达，保留中心意思和自然停顿。");
   }
+  if (trustworthyParts && m.readingLength && !m.readingLength.pass) {
+    const failedParts=m.readingLength.parts?.filter(part=>!part.pass)??[];
+    if(failedParts.length>1 || (m.parts && failedParts.length)) {
+      for(const part of failedParts){
+        if(!finite(part.deltaMs)||part.deltaMs===0){missing(`${partName(part.index)}朗读跨度缺少有效误差`);continue;}
+        if(result.issues.some(issue=>issue.part===part.index && ["part-short","part-long"].includes(issue.code)))continue;
+        add(part.deltaMs<0?"part-short":"part-long",`${partName(part.index)}朗读跨度${part.deltaMs<0?"偏短":"偏长"}（包含段内自然停顿）。`,
+          `只调整${partName(part.index)}的自然节奏，必要时调整该段表达；其他可用分段保持，段间空白不能抵消该段误差。`,"error",part.index);
+      }
+    } else if (!finite(m.readingLength.deltaSeconds) || m.readingLength.deltaSeconds === 0) missing("正文朗读跨度缺少有效误差");
+    else if (!result.issues.some(issue => issue.code === "part-short" || issue.code === "part-long")) {
+      const short = m.readingLength.deltaSeconds < 0;
+      add(short ? "reading-audio-short" : "reading-audio-long", `正文朗读跨度${short ? "偏短" : "偏长"}（包含段内自然停顿）。`,
+        short ? "先检查自然停顿、对齐和允许范围内的拉伸；仍无法对齐时再适当增加有意义的表达，段间留白不能补足段内时长。" : "先检查自然节奏和允许范围内的拉伸，仍无法对齐时再精简冗余表达。");
+    }
+  }
   if (m.netLength && !m.netLength.pass) {
     if (!finite(m.netLength.deltaSeconds) || m.netLength.deltaSeconds === 0) missing("正文净发声时长缺少有效误差");
     else {
@@ -185,20 +204,20 @@ function issueSuggestions(issues: FeedbackIssue[]) {
   // 同一候选同时收到“减字”和“补时长”时合并建议，不把互相冲突的指令丢给模型。
   const tooMany = issues.some(i => ["text-too-many", "character-too-many", "fast-and-long"].includes(i.code));
   const tooFew = issues.some(i => ["text-too-few", "character-too-few"].includes(i.code));
-  const short = issues.some(i => i.code === "part-short" || i.code === "audio-short" || i.code === "net-audio-short");
-  const long = issues.some(i => i.code === "part-long" || i.code === "audio-long" || i.code === "net-audio-long");
+  const short = issues.some(i => i.code === "part-short" || i.code === "audio-short" || (i.code === "net-audio-short" || i.code === "reading-audio-short"));
+  const long = issues.some(i => i.code === "part-long" || i.code === "audio-long" || (i.code === "net-audio-long" || i.code === "reading-audio-long"));
   const tooFast = issues.some(i => i.code === "speech-too-fast");
   // 一个方向约束整个稿时，逐段建议不能再反向加字/删字；不同分段各自长短不算互相冲突。
   let suggestions = [...new Set(issues.map(issue => {
-    if ((tooMany || tooFast) && ["part-short", "audio-short", "net-audio-short"].includes(issue.code))
+    if ((tooMany || tooFast) && ["part-short", "audio-short", "net-audio-short", "reading-audio-short"].includes(issue.code))
       return `${issue.part == null ? "偏短部分" : partName(issue.part)}优先调整自然停顿和发声节奏，避免继续增加文字。`;
-    if (tooFew && ["part-long", "audio-long", "net-audio-long"].includes(issue.code))
+    if (tooFew && ["part-long", "audio-long", "net-audio-long", "reading-audio-long"].includes(issue.code))
       return `${issue.part == null ? "偏长部分" : partName(issue.part)}优先减少不必要停顿、收紧节奏，不因时长问题继续删字。`;
     return issue.suggestion;
   }))];
   if (tooMany && short) suggestions.unshift("字数与时长要求存在冲突：精简冗余，同时用自然停顿补足偏短部分，不恢复失败长稿。");
   if (tooFew && long) suggestions.unshift("字数与时长要求存在冲突：补全表达，同时收紧偏长部分的节奏，不能简单反复增字、删字。");
-  if (tooFew && tooFast) suggestions = ["字数容量与实际语速的要求冲突。先保持中心意思，调整发声节奏并重试，不同时要求增字和减字。"];
+  if (tooFew && tooFast) suggestions = ["字数容量与实际语速的要求冲突。先保持中心意思，调整发声节奏并重试，不同时要求增字和减字。"]; 
   return suggestions;
 }
 
@@ -227,7 +246,7 @@ export function summarizeDraftFeedback(attempts: AttemptFeedback[]): (AttemptFee
     const best=[...pool].sort((a,b)=>score(a)-score(b))[0];
     const direction=(i:FeedbackIssue):[string,string]|null=>{
       if(i.code==="part-short"||i.code==="part-long")return [`part:${i.part}`,i.code];
-      for(const [scope,short,long] of [["beat","text-too-few","text-too-many"],["characters","character-too-few","character-too-many"],["length","audio-short","audio-long"],["net","net-audio-short","net-audio-long"]])if(i.code===short||i.code===long)return [scope,i.code];
+      for(const [scope,short,long] of [["beat","text-too-few","text-too-many"],["characters","character-too-few","character-too-many"],["length","audio-short","audio-long"],["net","net-audio-short","net-audio-long"],["reading","reading-audio-short","reading-audio-long"]])if(i.code===short||i.code===long)return [scope,i.code];
       return null;
     };
     const directions=new Map<string,Set<string>>();
@@ -254,8 +273,8 @@ export function calculateHistoryGuidance(attempts: AttemptFeedback[]) {
   const warnings = drafts.filter(a => a.status === "warning");
   if (warnings.length) return { conflict: false, canKeep: warnings.map(a => a.draftId), suggestions: ["已有仅含警告的可用稿，必须保留。若继续改善，只针对它剩余的问题，不能被失败旧稿替换。"] };
   const has = (codes: string[]) => drafts.some(d => d.issues.some(i => codes.includes(i.code)));
-  if (has(["text-too-many"]) && has(["part-short", "audio-short"])) return { conflict: true, canKeep: [] as string[], suggestions: ["历史尝试中同时出现字数过多和音频偏短。不要在失败长稿和短稿之间来回切换；优先通过自然断句、停顿和必要的小幅措辞调整寻找折中，不能只按最后一条退回原因改稿。"] };
-  if (has(["text-too-few"]) && has(["part-long", "audio-long"])) return { conflict: true, canKeep: [] as string[], suggestions: ["历史尝试中同时出现字数不足和音频偏长。补全表达时优先收紧不必要停顿，不简单恢复冗长旧稿，也不再次删成信息不足的短稿。"] };
+  if (has(["text-too-many"]) && has(["part-short", "audio-short", "reading-audio-short"])) return { conflict: true, canKeep: [] as string[], suggestions: ["历史尝试中同时出现字数过多和音频偏短。不要在失败长稿和短稿之间来回切换；优先通过自然断句、停顿和必要的小幅措辞调整寻找折中，不能只按最后一条退回原因改稿。"] };
+  if (has(["text-too-few"]) && has(["part-long", "audio-long", "reading-audio-long"])) return { conflict: true, canKeep: [] as string[], suggestions: ["历史尝试中同时出现字数不足和音频偏长。补全表达时优先收紧不必要停顿，不简单恢复冗长旧稿，也不再次删成信息不足的短稿。"] };
   return { conflict: false, canKeep: [] as string[], suggestions: ["结合各稿自己的问题寻找改进；不能把不同稿件的测量或结论混用。"] };
 }
 
@@ -266,11 +285,11 @@ export function resolveHistorySuggestions(attempts: AttemptFeedback[]) {
   const drafts = summarizeDraftFeedback(attempts);
   const guidance = calculateHistoryGuidance(drafts);
   if (!guidance.conflict) return { drafts, guidance };
-  const hasTooMany = drafts.some(d => d.issues.some(i => ["text-too-many", "character-too-many", "fast-and-long"].includes(i.code)));
+  const hasTooMany = drafts.some(d => d.issues.some(i => ["text-too-many", "character-too-many"].includes(i.code)));
   return { guidance, drafts: drafts.map(d => {
-    const short = d.issues.some(i => ["part-short", "audio-short"].includes(i.code));
-    const long = d.issues.some(i => ["part-long", "audio-long"].includes(i.code));
-    const many = d.issues.some(i => ["text-too-many", "character-too-many", "fast-and-long"].includes(i.code));
+    const short = d.issues.some(i => ["part-short", "audio-short", "reading-audio-short"].includes(i.code));
+    const long = d.issues.some(i => ["part-long", "audio-long", "reading-audio-long"].includes(i.code));
+    const many = d.issues.some(i => ["text-too-many", "character-too-many"].includes(i.code));
     const few = d.issues.some(i => ["text-too-few", "character-too-few"].includes(i.code));
     if (hasTooMany && short && !many) return { ...d, suggestions: ["保留精简表达，优先调整偏短部分的自然断句和停顿；必要时小幅调整措辞，不恢复字数过多的失败长稿。"] };
     if (hasTooMany && many && !short) return { ...d, suggestions: ["精简冗余表达并保留自然停顿，不删回已证实发声不足的失败短稿。"] };

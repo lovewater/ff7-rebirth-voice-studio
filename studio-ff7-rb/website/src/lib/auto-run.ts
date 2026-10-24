@@ -1706,7 +1706,7 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
       feedbackInput.measurement!.text={pass:judged.ok,missing:judged.missing,extra:judged.extra,repeated:judged.repeated,unrelated:judged.unrelated};
       feedbackInput.measurement!.hardSpeed={enabled:chineseSpeed.enabled,pass:chineseSpeed.pass};
       feedbackInput.measurement!.characters=characters?{count:characters.characters,min:characters.min,max:characters.max}:undefined;
-      feedbackInput.measurement!.netLength=comparison.enabled?{pass:pace.ok,deltaSeconds:comparison.cnSpan&&comparison.jpSpan?(comparison.cnSpan.span-comparison.jpSpan.span)/1000:NaN}:undefined;
+      feedbackInput.measurement!.netLength=comparison.enabled?{pass:pace.ok,referenceSeconds:comparison.jpSpan?comparison.jpSpan.span/1000:undefined,candidateSeconds:comparison.cnSpan?comparison.cnSpan.span/1000:undefined,deltaSeconds:comparison.cnSpan&&comparison.jpSpan?(comparison.cnSpan.span-comparison.jpSpan.span)/1000:NaN}:undefined;
       await saveAttemptFeedback(runId,candidate,feedbackInput);
       if(partsOk && judged.ok && chineseSpeed.pass && !speedBeatPressure.triggered && lengthOk && pace.ok && (!characters || characters.pass) && beatCheck.enabled && !beatCheck.pass)
         punctuationEligible.push({ttsId:clip.id,script:clip.spoken_text,normalizedRatio:beatCheck.ratio,band:autoBeatBand(referenceTextJp)});

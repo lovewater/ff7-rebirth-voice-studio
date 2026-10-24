@@ -21,3 +21,24 @@ test('结构重写诊断不能覆盖尚未解禁的标点权限；解禁后才�
  const unlocked=instruction([a],a.script,true);
  assert.match(unlocked,/允许重建断句、重新分配/);assert.match(unlocked,/"allowRewrite":true/);
 });
+
+const {timingCharacterSuggestions:characterAdvice}=load(__dirname+'/rewrite-edit-policy.ts');
+function singleReading(script='妈妈，不要',candidate=.768,reference=1.133){return {draftId:'d',script,requiredChecks:['text','length','beat'],measurement:{draftId:'d',audioId:'audio',netRate:5.2,text:{pass:true},hardSpeed:{enabled:true,pass:true},length:{pass:true,deltaSeconds:0},beat:{enabled:false,ratio:null,low:.85,high:1.15},readingLength:{pass:false,candidateSeconds:candidate,referenceSeconds:reference,deltaSeconds:candidate-reference}}};}
+test('short verified line gets five-to-six soft characters, starting from smaller edit instead of blind expansion',()=>{
+ const a=singleReading(),suggestions=characterAdvice(a);assert.deepEqual(suggestions.map(r=>[r.current,r.low,r.high,r.deltaLow,r.deltaHigh]),[[4,5,6,1,2]]);
+ assert.equal(policy([a]).mode,'timing-rewrite');const prompt=instruction([a],a.script,true);assert.match(prompt,/建议先尝试5–6字，约增加1–2字/);assert.match(prompt,/不是最低字数或硬上限/);assert.match(prompt,/允许自然补全或合并表达/);assert.match(prompt,/新稿必须重新TTS核字和实测/);
+ assert.doesNotMatch(instruction([a],a.script,false),/【时长改稿参考字数/);
+});
+test('long line suggests fewer characters; passed or missing measurements do not invent targets',()=>{
+ const a=singleReading('妈妈，不要你别走',1.4,1);assert.deepEqual(characterAdvice(a).map(r=>[r.current,r.low,r.high]),[[7,5,5]]);
+ a.measurement.readingLength.pass=true;assert.deepEqual(characterAdvice(a),[]);a.measurement.readingLength.pass=false;delete a.measurement.readingLength.referenceSeconds;assert.deepEqual(characterAdvice(a),[]);
+});
+test('unverified text, wrong draft, unknown readings and contradictory measurements cannot drive character targets',()=>{
+ for(const change of [a=>a.measurement.text.pass=false,a=>a.measurement.draftId='other',a=>a.script='妈妈，别走2步',a=>a.measurement.readingLength.deltaSeconds=1,a=>a.measurement.readingLength.referenceSeconds=NaN,a=>a.measurement.hardSpeed.pass=false]){const a=singleReading();change(a);assert.deepEqual(characterAdvice(a),[]);}
+ const a=singleReading();a.measurement.netRate=7.5;a.measurement.beat={enabled:true,ratio:.5,low:.85,high:1.15};assert.deepEqual(characterAdvice(a),[]);
+});
+test('two and three parts only estimate failed segments with matching verified boundaries',()=>{
+ for(const n of [2,3]){const a=input();a.script=['妈妈','不要走','等一等'].slice(0,n).join('\n');a.measurement.parts={required:n,actual:n,texts:a.script.split('\n'),checks:Array.from({length:n},(_,i)=>({index:i+1,status:i===1?'error':'correct',deltaSeconds:i===1?-.4:0,originalSeconds:i===1?.6:1,referenceSeconds:1}))};const result=characterAdvice(a);assert.equal(result.length,1);assert.equal(result[0].part,2);assert.equal(result[0].current,3);assert.equal(result[0].low,5);a.measurement.parts.boundaryPass=false;assert.deepEqual(characterAdvice(a),[]);}
+});
+
+test('legacy replay is explicitly labelled and a one-character line cannot be shortened to zero',()=>{const a=singleReading();a.measurement.netLength=a.measurement.readingLength;delete a.measurement.readingLength;assert.equal(characterAdvice(a)[0].timingBasis,'legacy-net-speech');assert.deepEqual(characterAdvice(singleReading('嗯',2,1)),[]);});

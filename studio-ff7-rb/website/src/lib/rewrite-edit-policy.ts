@@ -2,6 +2,52 @@ import { calculateAttemptFeedback, type AttemptInput } from "./attempt-feedback"
 
 export type RewriteEditMode = "local-polish" | "timing-rewrite" | "structure-rewrite" | "constraint-rewrite" | "retry-original" | "verify-first";
 
+/** 字数只是本稿时长改写的软参考，不是新增验收门槛。
+ * 按同一音频“中文字数×参考朗读跨度/中文朗读跨度”估算，段内停顿计入，
+ * 不拿净语速乘整句槽长、不按日文拍数凑字。只对已核字、边界可靠且时长失败的稿给建议；
+ * 数字/英文缺少可靠读法、缺测、方向冲突时不猜，短句保留向下取整的更小改动选择。
+ */
+export function timingCharacterSuggestions(input: AttemptInput) {
+  const m = input.measurement;
+  if (!m || m.draftId !== input.draftId || !m.audioId || m.text?.pass !== true) return [];
+  const feedback = calculateAttemptFeedback(input);
+  if (feedback.status === "invalid" || feedback.issues.some(i => i.code.startsWith("text-") && !["text-too-few","text-too-many"].includes(i.code))) return [];
+  const valid = (n: number | undefined): n is number => typeof n === "number" && Number.isFinite(n) && n > 0;
+  const compact = (text: string) => text.replace(/[\s\p{P}\p{S}]/gu, "");
+  const estimate = (text: string, original: number | undefined, reference: number | undefined, part?: number) => {
+    const body = compact(text);
+    if (!/^\p{Script=Han}+$/u.test(body) || !valid(original) || !valid(reference) || original === reference) return null;
+    const current = [...body].length, shorter = original > reference;
+    if (shorter && current <= 1) return null;
+    // 同一稿“应增字”却同时存在过快/字数过多等反馈时，不再发相反的字数建议。
+    const conflict = shorter ? ["text-too-few","character-too-few"] : ["text-too-many","character-too-many","speech-too-fast","fast-and-long"];
+    if (feedback.issues.some(i => conflict.includes(i.code))) return null;
+    const projected = current * reference / original;
+    if (!Number.isFinite(projected)) return null;
+    const low = shorter ? Math.max(1,Math.min(current-1,Math.floor(projected))) : Math.max(current+1,Math.floor(projected));
+    const high = shorter ? Math.max(low,Math.min(current-1,Math.ceil(projected))) : Math.max(low,Math.ceil(projected));
+    return { ...(part === undefined ? {} : { part }), current, low, high, deltaLow:low-current, deltaHigh:high-current,
+      referenceSeconds:reference, candidateSeconds:original };
+  };
+  if (m.parts) {
+    const p = m.parts;
+    if (p.actual !== p.required || p.boundaryPass === false || p.layoutPass === false || p.checks.length !== p.required
+      || p.texts?.length !== p.required || compact(p.texts.join("")) !== compact(input.script)) return [];
+    return p.checks.flatMap(check => {
+      if (check.status === "correct" || !Number.isFinite(check.deltaSeconds) || check.deltaSeconds === 0
+        || !valid(check.originalSeconds) || !valid(check.referenceSeconds)
+        || Math.sign(check.deltaSeconds) !== Math.sign(check.originalSeconds-check.referenceSeconds)) return [];
+      const value = estimate(p.texts![check.index-1] ?? "", check.originalSeconds, check.referenceSeconds, check.index);
+      return value ? [{...value, timingBasis:"verified-part-span"}] : [];
+    });
+  }
+  const reading = m.readingLength ?? m.netLength;
+  if (!reading || reading.pass || !valid(reading.candidateSeconds) || !valid(reading.referenceSeconds)
+    || !Number.isFinite(reading.deltaSeconds) || Math.sign(reading.deltaSeconds) !== Math.sign(reading.candidateSeconds-reading.referenceSeconds)) return [];
+  const value = estimate(input.script, reading.candidateSeconds, reading.referenceSeconds);
+  return value ? [{...value, timingBasis:m.readingLength ? "reading-span" : "legacy-net-speech"}] : [];
+}
+
 /** 只用当前稿的一条真实音频分档，不能拼接多条音频的合格段或借用旧稿结论。 */
 export function rewriteEditPolicy(attempts: AttemptInput[], currentScript?: string) {
   if (currentScript !== undefined) attempts = attempts.filter(a => a.script === currentScript);
@@ -26,13 +72,13 @@ export function rewriteEditPolicy(attempts: AttemptInput[], currentScript?: stri
     || issues.some(i => i.code === "assembly-gap")) mode = "structure-rewrite";
   else if (issues.some(i => i.code === "assembly-unknown")) mode = "verify-first";
   else if (m.parts?.checks.some(p => p.status === "error" || Math.abs(p.deltaSeconds) > .3000001)
-    || issues.some(i => i.severity === "error" && ["audio-short", "audio-long", "net-audio-short", "net-audio-long", "assembly-length"].includes(i.code))) mode = "timing-rewrite";
+    || issues.some(i => i.severity === "error" && ["audio-short", "audio-long", "net-audio-short", "net-audio-long", "reading-audio-short", "reading-audio-long", "assembly-length"].includes(i.code))) mode = "timing-rewrite";
   else if (issues.some(i => i.severity === "error")) mode = "constraint-rewrite";
   else if (feedback.missingChecks.length) mode = "verify-first";
   else if (usable && m.length && m.hardSpeed && (!m.parts || m.parts.checks.length === m.parts.required && m.parts.checks.every(p => Number.isFinite(p.deltaSeconds) && Math.abs(p.deltaSeconds) <= .3000001))) mode = "local-polish";
   else mode = "verify-first";
   return { mode, draftId: input.draftId, audioId: m?.audioId ?? null, script: input.script,
-    reasons: [...issues.map(i => i.reason), ...feedback.missingChecks] };
+    reasons: [...issues.map(i => i.reason), ...feedback.missingChecks], characterSuggestions: timingCharacterSuggestions(input) };
 }
 
 export function rewriteEditInstruction(attempts: AttemptInput[], currentScript?: string, allowRewrite?: boolean) {
@@ -50,6 +96,12 @@ export function rewriteEditInstruction(attempts: AttemptInput[], currentScript?:
     "所有改稿都优先保留原游戏中文字幕中已经准确、自然的核心词语、固定搭配和判断含义。外语及独立译文用于核对语义；另一种译法也成立，不构成替换原表达的理由。增减字数、重组句式不等于顺手换近义词；相同字数的换词不能作为解决长度问题的理由。确需更换核心表达时，在reason或plan中说明原表达的具体问题或必须替换的原因。不新增事实，不漏核心信息。",
     policy ? JSON.stringify({ ...policy, ...(allowRewrite === undefined ? {} : { allowRewrite }) }) : "尚无本轮可用于分档的实测候选；按当前任务明确给出的事实处理，不把旧稿测量套给新稿。",
     allowRewrite === false ? "本轮权限为allowRewrite=false：仅允许调整标点、分行及停顿位置，正文字符及顺序必须保持不变。结构/时长问题只描述失败事实，本轮不授权文字重写；不能因诊断档位而忽略权限。累计三批仍不通过后的结构改稿会由程序放开权限。" : policy ? directions[policy.mode] : "",
+    policy?.characterSuggestions.length && allowRewrite !== false ? [
+      "【时长改稿参考字数：软建议，不是合格条件】",
+      ...policy.characterSuggestions.map(row => `${row.part === undefined ? "本句" : `第${row.part}段`}当前${row.current}字，建议先尝试${row.low === row.high ? row.low : `${row.low}–${row.high}`}字，约${row.deltaLow > 0 ? "增加" : "减少"}${Math.min(Math.abs(row.deltaLow),Math.abs(row.deltaHigh)) === Math.max(Math.abs(row.deltaLow),Math.abs(row.deltaHigh)) ? Math.abs(row.deltaLow) : `${Math.min(Math.abs(row.deltaLow),Math.abs(row.deltaHigh))}–${Math.max(Math.abs(row.deltaLow),Math.abs(row.deltaHigh))}`}字。`),
+      "按该稿对应音频的实测时长估算，timingBasis标明朗读跨度或旧版净发声口径，不混用；标点和空白不计字数；不是最低字数或硬上限。优先从更接近原稿字数的一端小幅调整，自然准确时可以偏离建议，不为了凑数增加修饰、重复意思或堆标点。",
+      "保留核心含义不等于原词组必须独立保留，允许自然补全或合并表达，避免先说一遍再换个说法重复。所有建议服从本轮修改权限及已有约束；新稿必须重新TTS核字和实测，不能宣称达到该字数就能通过。",
+    ].join("\n") : "",
     "以上分档只属于列出的稿件与音频。新稿必须重新TTS、核字和实测，不能继承通过状态；原任务allowRewrite=false等正文不可改约束仍须遵守。",
   ].filter(Boolean).join("\n");
 }
