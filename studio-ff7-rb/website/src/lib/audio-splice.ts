@@ -1,3 +1,4 @@
+import { alignmentDetectionSignal } from "./alignment-transients";
 import { spawn } from "node:child_process";
 import { ALIGN_SILENCE_RATIO, AMBIENT_MIN_MS, AMBIENT_PEAK, AMBIENT_VAD_MS, FX_HI, FX_LO, LENGTH_SLACK_S, SCALE_HI, SCALE_LO, SILENCE_MAX_RATIO, SILENCE_MIN_RATIO } from "./auto-run-rules";
 import { decodeWavMono, encodeWavMono, stretchWav } from "./wav-stretch";
@@ -418,11 +419,14 @@ function pieceJpRange(plan: OnoPlan, pieces: SplicePiece[], piece: SplicePiece, 
   };
 }
 
-export function speechBoundsSamples(samples: Float32Array, peakRatio = ALIGN_SILENCE_RATIO) {
+export function speechBoundsSamples(samples: Float32Array, peakRatio = ALIGN_SILENCE_RATIO, sampleRate?: number) {
+  // 5%对时边界统一忽略孤立微弱凸起；0.5%保守保音裁边保持旧行为。
+  const signal = peakRatio === ALIGN_SILENCE_RATIO ? alignmentDetectionSignal(samples, sampleRate ?? 0) : null;
+  if (signal) samples = signal.samples;
   let peak = 0;
   for (let i = 0; i < samples.length; i += 1) peak = Math.max(peak, Math.abs(samples[i]));
   if (peak <= 1e-8) return null;
-  const threshold = peak * peakRatio;
+  const threshold = (signal?.peak ?? peak) * peakRatio;
   let first = 0;
   while (first < samples.length && Math.abs(samples[first]) < threshold) first += 1;
   let last = samples.length - 1;
@@ -433,7 +437,7 @@ export function speechBoundsSamples(samples: Float32Array, peakRatio = ALIGN_SIL
 
 export function jpEdgeSilence(jpWav: Buffer, slotS?: number) {
   const { sampleRate, samples } = decodeWavMono(jpWav);
-  const bounds = speechBoundsSamples(samples);
+  const bounds = speechBoundsSamples(samples, ALIGN_SILENCE_RATIO, sampleRate);
   const durS = samples.length / sampleRate;
   const slot = slotS && slotS > 0 ? slotS : durS;
   if (!bounds) return { leadS: 0, tailS: Math.max(0, slot), startS: 0, endS: 0, durS, slotS: slot };
@@ -452,7 +456,7 @@ export function jpEdgeSilence(jpWav: Buffer, slotS?: number) {
 /** Strip leading silence, then put `leadS` of silence in front. Keeps the rest of the clip. */
 export function setLeadWav(buffer: Buffer, leadS: number) {
   const { sampleRate, samples } = decodeWavMono(buffer);
-  const bounds = speechBoundsSamples(samples);
+  const bounds = speechBoundsSamples(samples, ALIGN_SILENCE_RATIO, sampleRate);
   const body = bounds ? samples.subarray(bounds.start) : samples;
   const lead = Math.max(0, Math.round(Math.max(0, leadS) * sampleRate));
   const out = new Float32Array(lead + body.length);
@@ -463,7 +467,7 @@ export function setLeadWav(buffer: Buffer, leadS: number) {
 /** Strip trailing silence, then put `tailS` of silence at the end. Keeps the rest of the clip. */
 export function setTailWav(buffer: Buffer, tailS: number) {
   const { sampleRate, samples } = decodeWavMono(buffer);
-  const bounds = speechBoundsSamples(samples);
+  const bounds = speechBoundsSamples(samples, ALIGN_SILENCE_RATIO, sampleRate);
   const body = bounds ? samples.subarray(0, bounds.end) : samples;
   const tail = Math.max(0, Math.round(Math.max(0, tailS) * sampleRate));
   const out = new Float32Array(body.length + tail);
@@ -474,7 +478,7 @@ export function setTailWav(buffer: Buffer, tailS: number) {
 /** Same as the editor's 自动对齐: park first sound at `leadS`, pad/trim to `durS`. */
 export function alignWavToSlot(buffer: Buffer, leadS: number, durS: number) {
   const { sampleRate, samples } = decodeWavMono(buffer);
-  const bounds = speechBoundsSamples(samples);
+  const bounds = speechBoundsSamples(samples, ALIGN_SILENCE_RATIO, sampleRate);
   if (!bounds) throw new Error("成品里听不到说话，无法对齐");
   const lead = Math.max(0, Math.round(Math.max(0, leadS) * sampleRate));
   const body = samples.subarray(bounds.start);
@@ -561,7 +565,7 @@ export function mixSegments(jpWav: Buffer, ttsWav: Buffer, plan: OnoPlan, pieces
       if (!speech) throw new Error("环境音后缺少原日文正文范围，无法保留原始间距");
       const startS = Math.max(event.jp.endMs, speech.startMs) / 1000;
       const original = decodeWavMono(sliceWav(jpWav, startS, speech.endMs / 1000));
-      const bounds = speechBoundsSamples(original.samples);
+      const bounds = speechBoundsSamples(original.samples, ALIGN_SILENCE_RATIO, original.sampleRate);
       if (!bounds) throw new Error("环境音后原日文没有有效起声，无法保留原始间距");
       fixedGap = Math.max(0, startS + bounds.start / original.sampleRate - event.jp.endMs / 1000);
       // 中文片段的开头静音不叠加到日文间距上；环境音保持原采样、不缩放。

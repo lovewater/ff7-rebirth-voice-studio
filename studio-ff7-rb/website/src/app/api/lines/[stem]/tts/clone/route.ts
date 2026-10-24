@@ -12,7 +12,7 @@ import { sql } from "@/lib/db";
 import { applyPronunciations, type Pronunciation } from "@/lib/pronounce";
 import { DUR_OK_S, type Timing } from "@/lib/timing";
 import { ensurePromptTailSilence, limitWavEdgeSilence, gpuJsonAt, matchPeak10Loudness, normalizeScript, TTS_URLS, wavTiming, withTts } from "@/lib/tts-gpu";
-import { layoutSpeechWav, pickSpeechStretch } from "@/lib/wav-stretch";
+import { layoutSpeechWav, pickSpeechStretch, wavAlignmentTiming } from "@/lib/wav-stretch";
 import { audioToMonoWav } from "@/lib/audio-splice";
 import { resolvePromptRef } from "@/lib/prompt-refs";
 
@@ -194,6 +194,13 @@ export async function POST(
       dur: slotDur,
       speech: slotSpeech,
     };
+    // 对齐/拉伸使用当前参考的检测结果，不让旧缓存或日文微弱尖峰变成目标。
+    // wavTiming及保存后的净语速测量保持原样，不能把对时滤波扩散到语速口径。
+    const alignmentReference = gapReference ?? manualGapReference;
+    if (syncToJp && alignmentReference) {
+      const detected = wavAlignmentTiming(alignmentReference);
+      jpTiming.start = detected.start; jpTiming.end = detected.end; jpTiming.speech = detected.speech;
+    }
     const target = syncToJp ? timingTarget(jpTiming) : null;
     const promptB64 = prompt.toString("base64");
     const liveUrls = [...healthByUrl.keys()];
@@ -214,7 +221,7 @@ export async function POST(
           align_start_s: alignStartS,
         });
         const raw = matchPeak10Loudness(Buffer.from(generated.audio_wav_b64, "base64"), prompt);
-        const timing = wavTiming(raw);
+        const timing = wavAlignmentTiming(raw);
         return { generated, audio: raw, timing, url, health: healthByUrl.get(url)! };
       })),
     );

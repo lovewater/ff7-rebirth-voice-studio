@@ -1,5 +1,6 @@
 /** Browser-side PCM edits for generated TTS clips. */
 
+import { alignmentDetectionSignal } from "./alignment-transients";
 import { ALIGN_SILENCE_RATIO } from "./auto-run-rules";
 
 export function mixMono(buffer: AudioBuffer): Float32Array {
@@ -29,10 +30,11 @@ function clampIndex(n: number, len: number) {
   return n | 0;
 }
 
-/** First/last index of samples at ≥5% of peak. `end` is exclusive. */
-export function speechBounds(samples: Float32Array): { start: number; end: number } | null {
-  let peak = 0;
-  for (let i = 0; i < samples.length; i += 1) peak = Math.max(peak, Math.abs(samples[i]));
+/** 对时首末边界：先忽略符合约定的孤立微弱凸起，再按原峰值5%定位；end不含。 */
+export function speechBounds(samples: Float32Array, sampleRate?: number): { start: number; end: number } | null {
+  const signal = alignmentDetectionSignal(samples, sampleRate ?? 0);
+  samples = signal.samples;
+  const peak = signal.peak;
   if (peak <= 1e-8) return null;
   const threshold = peak * ALIGN_SILENCE_RATIO;
   let first = 0;
@@ -51,7 +53,7 @@ export function alignToJpSlot(
 ): AudioBuffer {
   const sr = buffer.sampleRate;
   const src = mixMono(buffer);
-  const bounds = speechBounds(src);
+  const bounds = speechBounds(src, sr);
   if (!bounds) throw new Error("成品里听不到说话，无法对齐");
   const lead = Math.max(0, Math.round(slot.start * sr));
   const body = src.subarray(bounds.start);

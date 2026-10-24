@@ -3,7 +3,7 @@ const fs=require('node:fs'),Module=require('node:module'),ts=require('typescript
 const m=new Module(__filename);
 m.require=id=>{
  if(id==='./auto-run-rules')return require('./auto-run-rules.ts');
- if(id==='./speech-part-timeline'){const t=new Module(__filename);t._compile(ts.transpileModule(fs.readFileSync(`${__dirname}/speech-part-timeline.ts`,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,__filename);return t.exports;}
+ if(['./speech-part-timeline','./alignment-transients'].includes(id)){const t=new Module(__filename);t._compile(ts.transpileModule(fs.readFileSync(`${__dirname}/${id.slice(2)}.ts`,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,__filename);return t.exports;}
  return require(id);
 };
 m._compile(ts.transpileModule(fs.readFileSync(`${__dirname}/gap-only-align.ts`,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,`${__dirname}/gap-only-align.ts`);
@@ -59,4 +59,11 @@ test('两三段不匹配、四段或三段装不下不能启动高级对齐',()=
  const four=wave(1000,[[.3,1],[.3,0],[.3,1],[.3,0],[.3,1],[.3,0],[.3,1]]);
  const huge=wave(1000,[[1,1],[.3,0],[1,1],[.3,0],[1,1]]);
  assert.equal(plan(three,cn()),null);assert.equal(plan(four,four),null);assert.equal(plan(three,huge),null);
+});
+for(const count of [2,3])test(`${count}段对齐忽略前置孤立微弱凸起，不误增段且正文PCM原样复制`,()=>{
+ const make=()=>wave(1000,[[.45,0],...[...Array(count)].flatMap((_,i)=>[[.3,1],...(i<count-1?[[.6,0]]:[])]),[.2,0]]);
+ const ref=make(),edited=make();for(const at of [90,100,120,139]){ref.samples[at]=.05;edited.samples[at]=.05;}
+ // 整句峰值约.806，凸起约6.2%；跨度50ms但累计越线4ms。
+ const p=plan(ref,edited),out=align(ref,edited);assert.equal(p.partCount,count);assert.equal(p.leading,450);
+ p.parts.forEach((part,i)=>assert.deepEqual(out.slice(p.starts[i],p.starts[i]+part.end-part.start),edited.samples.slice(part.start,part.end)));
 });

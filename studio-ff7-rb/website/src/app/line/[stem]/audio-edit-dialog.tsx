@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Button, ConfigProvider, Dropdown, theme } from "antd";
 import {
   alignToJpSlot,
+  speechBounds,
   bufferFromMono,
   mixMono,
   deleteRange,
@@ -512,7 +513,9 @@ export function AudioEditDialog({ stem, sourceId, source = "tts", jp, onClose, o
   }
 
   function autoAlign() {
-    const start = jp.start;
+    // 用当前日文PCM检测开口，避免旧起点缓存绕过孤立微弱凸起规则。
+    const bounds = jpBuffer ? speechBounds(mixMono(jpBuffer), jpBuffer.sampleRate) : null;
+    const start = bounds && jpBuffer ? bounds.start / jpBuffer.sampleRate : jp.start;
     const dur = jp.dur;
     if (start == null || start < 0) {
       setError("这句没有日文起，无法自动对齐");

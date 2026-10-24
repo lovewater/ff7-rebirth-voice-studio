@@ -1,3 +1,4 @@
+import { alignmentDetectionSignal } from "./alignment-transients";
 import { ALIGN_SILENCE_RATIO } from "./auto-run-rules";
 import { layoutPartTimeline } from "./speech-part-timeline";
 
@@ -11,15 +12,12 @@ type Part = { start: number; end: number };
 
 /** 命名约定：两段声音称“两端对话工作流”，三段声音称“三段对话工作流”。
  * 编辑器仅按波形找两/三段：5%峰值、10ms窗、内部>=250ms静音；无需ASR或模型。
+ * 检测前共用alignment-transients规则忽略孤立微弱凸起，原音频不变。
  * 首尾留白不算分段，其他段数不启用高级对齐；自动工作流日文入口另用500ms。
  */
-export function internalSpeechParts({ samples, sampleRate }: Wave, minimumSeconds = 0.25) {
+export function internalSpeechParts({ samples: original, sampleRate }: Wave, minimumSeconds = 0.25) {
+  const { samples, peak } = alignmentDetectionSignal(original, sampleRate);
   if (!Number.isFinite(sampleRate) || sampleRate <= 0 || !samples.length) return null;
-  let peak = 0;
-  for (const sample of samples) {
-    if (!Number.isFinite(sample)) return null;
-    peak = Math.max(peak, Math.abs(sample));
-  }
   if (peak <= 1e-8) return null;
   const threshold = peak * ALIGN_SILENCE_RATIO;
   let start = 0, end = samples.length;

@@ -1,3 +1,4 @@
+import { alignmentDetectionSignal } from "./alignment-transients";
 import { parseWavPcm16 } from "./tts-gpu";
 
 function corr(a: Float32Array, ao: number, b: Float32Array, bo: number, n: number) {
@@ -63,6 +64,18 @@ export function decodeWavMono(buffer: Buffer): { sampleRate: number; samples: Fl
     samples[frame] = sum / wav.channels;
   }
   return { sampleRate: wav.sampleRate, samples };
+}
+
+/** 对齐/拉伸专用时序，忽略孤立微弱凸起。不可替换净语速使用的wavTiming。 */
+export function wavAlignmentTiming(buffer: Buffer) {
+  const wave = decodeWavMono(buffer);
+  const { samples, peak } = alignmentDetectionSignal(wave.samples, wave.sampleRate);
+  const duration = samples.length / wave.sampleRate;
+  let first = 0, end = samples.length;
+  if (peak <= 1e-8) return { start: 0, end: 0, duration, speech: 0 };
+  while (first < end && Math.abs(samples[first]) < peak * .05) first++;
+  while (end > first && Math.abs(samples[end - 1]) < peak * .05) end--;
+  return { start: first / wave.sampleRate, end: end / wave.sampleRate, duration, speech: (end - first) / wave.sampleRate };
 }
 
 export function encodeWavMono(sampleRate: number, samples: Float32Array): Buffer {
