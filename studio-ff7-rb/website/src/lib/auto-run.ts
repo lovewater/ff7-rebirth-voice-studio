@@ -1,3 +1,4 @@
+import { fastLongPressure } from "./fast-long-pressure";
 import { applyAmbientPolicy, IGNORED_AMBIENT_MAX_MS, type AmbientPolicyPlan } from "./ambient-policy";
 import { rewriteContextChinese } from "./rewrite-context";
 import { currentChatModel } from "./llm-model-context";
@@ -1675,9 +1676,13 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
         provider: "qwen-local", waveform: asr.raw,
       }, "asr");
       const judged = await judgeSpokenText({ spoken: clip.spoken_text, asr: asr.text, lexicon: rules });
+      // 单独豁免比值不等于同时豁免“偏快且中文偏长”；沿用原正常区间和本句比值下限。
+      const speedBeatPressure=fastLongPressure({netRate:normalSpeedBeat.rate,hardSpeed:chineseSpeed,evidenceVerified:partsOk&&judged.ok,
+        beat:{ratio:beat.result?.normalizedRatio??null,low:autoBeatBand(referenceTextJp).low}});
+      await sql`UPDATE line_tts_versions SET conversion_meta=COALESCE(conversion_meta,'{}'::jsonb)||${sql.json({speed_beat_pressure:speedBeatPressure})} WHERE id=${clip.id}`;
       Object.assign(candidate, {
         reviewed: true,
-        hardIssueCount: judged.missing.length + judged.extra.length + judged.repeated.length + judged.unrelated.length + (chineseSpeed.pass ? 0 : 1),
+        hardIssueCount: judged.missing.length + judged.extra.length + judged.repeated.length + judged.unrelated.length + (chineseSpeed.pass ? 0 : 1) + (speedBeatPressure.triggered ? 1 : 0),
         pronunciationIssueCount: judged.pronunciationIssueCount,
         reason: judged.reason,
       });
@@ -1692,7 +1697,7 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
       feedbackInput.measurement!.characters=characters?{count:characters.characters,min:characters.min,max:characters.max}:undefined;
       feedbackInput.measurement!.netLength=comparison.enabled?{pass:pace.ok,deltaSeconds:comparison.cnSpan&&comparison.jpSpan?(comparison.cnSpan.span-comparison.jpSpan.span)/1000:NaN}:undefined;
       await saveAttemptFeedback(runId,candidate,feedbackInput);
-      if(partsOk && judged.ok && chineseSpeed.pass && lengthOk && pace.ok && (!characters || characters.pass) && beatCheck.enabled && !beatCheck.pass)
+      if(partsOk && judged.ok && chineseSpeed.pass && !speedBeatPressure.triggered && lengthOk && pace.ok && (!characters || characters.pass) && beatCheck.enabled && !beatCheck.pass)
         punctuationEligible.push({ttsId:clip.id,script:clip.spoken_text,normalizedRatio:beatCheck.ratio,band:autoBeatBand(referenceTextJp)});
       if (judged.ok && partsOk && normalSpeedBeat.exempt) normalSpeedEvidence.push({candidateId:clip.id,script:candidateText,rate:normalSpeedBeat.rate!,netSeconds:normalSpeedBeat.netSeconds,referenceSeconds:speakingTime?.speechSeconds??0,candidateSeconds:candidateNet?.speechSeconds??0});
       if (judged.ok && partsOk) {
@@ -1708,7 +1713,12 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
         deltaMs: comparison.deltaMs, absoluteToleranceMs: comparison.absoluteToleranceMs, ratioPass: comparison.ratioPass, absolutePass: comparison.absolutePass,
         referenceSpanMs: comparison.jpSpan?.span, candidateSpanMs: comparison.cnSpan?.span,
       }, "result");
-      if (partsOk && judged.ok && chineseSpeed.pass && lengthOk && pace.ok && beatCheck.pass && (!characters || characters.pass)) passed.push({ clip, asr, paceRatio: ratio, pronunciationNotes: judged.pronunciationNotes });
+      if (speedBeatPressure.triggered) {
+        const message=`#${clip.id} 净语速${speedBeatPressure.rate!.toFixed(3)}高于正常区间${speedBeatPressure.normalLow}–${speedBeatPressure.normalHigh}，且比${speedBeatPressure.normalizedRatio!.toFixed(3)}低于${speedBeatPressure.beatLow}：优先精简后重新TTS，不因未超硬上限而直接通过`;
+        failNotes.push(message);
+        await log(runId,"fast-and-long",message,{ttsId:clip.id,...speedBeatPressure},"result");
+      }
+      if (partsOk && judged.ok && chineseSpeed.pass && !speedBeatPressure.triggered && lengthOk && pace.ok && beatCheck.pass && (!characters || characters.pass)) passed.push({ clip, asr, paceRatio: ratio, pronunciationNotes: judged.pronunciationNotes });
       else failNotes.push(`中文净语速${chineseSpeed.rate?.toFixed(3)??"不可测"}音节/秒：${chineseSpeed.pass?"过关":"超9.0，必须放慢或精简，不能加静音伪装"}；${lengthFact}；字:${judged.ok ? "过" : judged.reason} 语速:${pace.ok ? "过" : (ratio?.toFixed(3) ?? "无")} 拍数比:${normalSpeedBeat.exempt ? `中文净语速${normalSpeedBeat.low}–${normalSpeedBeat.high}，忽略` : durationBeatReference ? "实测偏短仅参考" : ignoreBeat ? (slowLine ? "慢速不检查" : "短句不检查") : `${beatCheck.ratio?.toFixed(3) ?? "无"}(${beatCheck.pass ? "过" : "不过"})`}${characters ? ` 字数:${characters.characters}(${characters.pass ? "过" : "不过"}，要求${characters.min}–${characters.max})` : ""}`);
     }
     // 润色只验证这一批；不再次进入结构重试或常规改稿，旧合格成品不混入新稿候选。

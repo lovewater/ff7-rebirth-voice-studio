@@ -1,3 +1,4 @@
+import { fastLongPromptValues } from "./fast-long-pressure";
 import { NATURAL_PUNCTUATION_HINT } from "./rewrite-punctuation-hint";
 import { rewriteEditInstruction } from "./rewrite-edit-policy";
 import { calculateAttemptFeedback, renderAttemptFeedback, type AttemptInput } from "./attempt-feedback";
@@ -154,6 +155,7 @@ export function performanceRewriteMessages(messages: PromptMessage[], task: stri
         return messages;
     const extra: PromptMessage[] = [];
     if(task!=="rhythm-pick")extra.push({role:"user",content:"",promptKey:"rewrite.chinese-speed-limit",promptValues:{}});
+    if(task!=="rhythm-pick")extra.push({role:"user",content:"",promptKey:"rewrite.fast-long-pressure",promptValues:fastLongPromptValues()});
     if (c.meaningAnchor && task !== 'rhythm-pick')
         extra.push({ role: 'user', content: '', promptKey: 'two-parts.meaning-anchor', promptValues: { input_json: JSON.stringify(c.meaningAnchor) } });
     if (c.preserved?.length && task !== 'rhythm-pick')

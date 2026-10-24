@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-require-imports */
 const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),Module=require('node:module'),ts=require('typescript');
-const m=new Module(__filename);m.require=id=>id==='./normal-speed-beat'?require('./normal-speed-beat.ts'):require(id);
+const m=new Module(__filename);m.require=id=>{if(id==='./normal-speed-beat')return require('./normal-speed-beat.ts');if(id==='./fast-long-pressure'){const h=new Module(__filename);h.require=()=>require('./normal-speed-beat.ts');h._compile(ts.transpileModule(fs.readFileSync(__dirname+'/fast-long-pressure.ts','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,__filename);return h.exports;}return require(id);};
 m._compile(ts.transpileModule(fs.readFileSync(__dirname+'/attempt-feedback.ts','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,__filename);
 const {calculateAttemptFeedback:calc,renderAttemptFeedback:render,summarizeDraftFeedback:group}=m.exports;
 function input(){return {draftId:'稿1',script:'第一行正文\n第二行正文',requiredChecks:['text','parts','length','assembly','beat'],measurement:{draftId:'稿1',audioId:'音频1',netRate:7.5,text:{pass:true},parts:{required:2,actual:2,checks:[{index:1,status:'correct',deltaSeconds:0},{index:2,status:'correct',deltaSeconds:0}]},length:{pass:true,deltaSeconds:0},assembly:{pass:true,deltaSeconds:0},beat:{enabled:true,ratio:1,low:.85,high:1.15}}};}
@@ -160,4 +160,16 @@ test('同稿同段生成长短相反时不展示互相冲突的字数建议',()=
  a.measurement.parts.checks[1]={...part(2,'error',-.4),originalSeconds:.635,referenceSeconds:1.132};
  const b=structuredClone(a);b.measurement.audioId='另一次';b.measurement.parts.checks[1]={...part(2,'error',.4),originalSeconds:1.8,referenceSeconds:1.132};
  assert.doesNotMatch(render([calc(a),calc(b)]),/本段建议约/);
+});
+test('比单独豁免时，偏快+可靠的中文偏长仍退回精简；比缺失不伪造',()=>{
+ const a=input();a.measurement.hardSpeed={enabled:true,pass:true};a.measurement.netRate=8.45;a.measurement.beat={enabled:false,ratio:.7,low:.85,high:1.15};
+ const r=calc(a);assert.equal(r.status,'rejected');assert.equal(r.beatIgnored,true);assert.ok(r.issues.some(i=>i.code==='fast-and-long'));assert.match(advice(r),/缩短朗读稿/);
+ a.measurement.readingLength={pass:false,deltaSeconds:-.5};assert.doesNotMatch(advice(calc(a)),/适当增加文字|增加有意义的表达/);
+ a.measurement.beat.ratio=null;delete a.measurement.readingLength;assert.equal(calc(a).status,'accepted');
+ a.measurement.beat.ratio=1.3;assert.equal(calc(a).status,'accepted');a.measurement.beat.ratio=.7;a.measurement.netRate=7;assert.equal(calc(a).status,'accepted');
+ a.measurement.netRate=8.45;a.measurement.text={pass:false,missing:['缺字']};assert.ok(!calc(a).issues.some(i=>i.code==='fast-and-long'));
+});
+test('分片对应不可靠时先修结构，不用偏快+比值要求改字',()=>{
+ const a=input();a.measurement.netRate=8.45;a.measurement.hardSpeed={enabled:true,pass:true};a.measurement.beat={enabled:false,ratio:.7,low:.85,high:1.15};a.measurement.parts.boundaryPass=false;
+ assert.ok(!calc(a).issues.some(i=>i.code==='fast-and-long'));assert.doesNotMatch(advice(calc(a)),/缩短朗读稿/);
 });
