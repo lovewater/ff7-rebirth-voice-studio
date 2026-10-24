@@ -709,7 +709,7 @@ export function AudioEditDialog({ stem, sourceId, source = "tts", jp, onClose, o
             <ConfigProvider theme={{ algorithm: theme.darkAlgorithm, token: { colorPrimary: "#0369a1" } }}>
               {gapAlignment ? (
                 <HoverDrop items={[{ key: "ordinary", label: "自动对齐" }]} onItem={autoAlign}>
-                  <Button type="primary" onClick={advancedAutoAlign}>
+                  <Button type="primary" title="中文两段时取日文最长停顿分两组，首段贴头、末段贴尾；中文三段时按三段对齐，只调整留白" onClick={advancedAutoAlign}>
                     高级自动对齐
                   </Button>
                 </HoverDrop>
