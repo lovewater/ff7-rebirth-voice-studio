@@ -31,7 +31,8 @@ export function timingCharacterSuggestions(input: AttemptInput) {
   };
   if (m.parts) {
     const p = m.parts;
-    if (p.actual !== p.required || p.boundaryPass === false || p.layoutPass === false || p.checks.length !== p.required
+    // 组装失败不抹去已经核字、对应可靠的逐段测量；切口或段数不符仍不能据此改字。
+    if (p.actual !== p.required || p.boundaryPass === false || p.checks.length !== p.required
       || p.texts?.length !== p.required || compact(p.texts.join("")) !== compact(input.script)) return [];
     return p.checks.flatMap(check => {
       if (check.status === "correct" || !Number.isFinite(check.deltaSeconds) || check.deltaSeconds === 0
@@ -46,6 +47,21 @@ export function timingCharacterSuggestions(input: AttemptInput) {
     || !Number.isFinite(reading.deltaSeconds) || Math.sign(reading.deltaSeconds) !== Math.sign(reading.candidateSeconds-reading.referenceSeconds)) return [];
   const value = estimate(input.script, reading.candidateSeconds, reading.referenceSeconds);
   return value ? [{...value, timingBasis:m.readingLength ? "reading-span" : "legacy-net-speech"}] : [];
+}
+
+/** 仅从选中的同一条音频给逐段改稿方向，组装失败与分段对应失败分别处理。 */
+function partRewriteDirections(input: AttemptInput) {
+  const m = input.measurement, p = m?.parts;
+  if (!m || m.draftId !== input.draftId || !m.audioId || m.text?.pass !== true || !p
+    || p.actual !== p.required || p.boundaryPass === false || p.checks.length !== p.required) return [];
+  const checks = Array.from({length:p.required}, (_,i) => p.checks.find(check => check.index === i+1));
+  if (checks.some(check => !check || !Number.isFinite(check.deltaSeconds)
+    || (check.status !== "correct" && (check.deltaSeconds === 0
+      || !Number.isFinite(check.originalSeconds) || !Number.isFinite(check.referenceSeconds)
+      || check.originalSeconds! <= 0 || check.referenceSeconds! <= 0
+      || Math.sign(check.deltaSeconds) !== Math.sign(check.originalSeconds!-check.referenceSeconds!))))) return [];
+  return checks.map(check => ({part:check!.index, direction:check!.status === "correct" ? "keep" as const
+    : check!.deltaSeconds > 0 ? "shorten" as const : "lengthen" as const}));
 }
 
 /** 只用当前稿的一条真实音频分档，不能拼接多条音频的合格段或借用旧稿结论。 */
@@ -78,7 +94,8 @@ export function rewriteEditPolicy(attempts: AttemptInput[], currentScript?: stri
   else if (usable && m.length && m.hardSpeed && (!m.parts || m.parts.checks.length === m.parts.required && m.parts.checks.every(p => Number.isFinite(p.deltaSeconds) && Math.abs(p.deltaSeconds) <= .3000001))) mode = "local-polish";
   else mode = "verify-first";
   return { mode, draftId: input.draftId, audioId: m?.audioId ?? null, script: input.script,
-    reasons: [...issues.map(i => i.reason), ...feedback.missingChecks], characterSuggestions: timingCharacterSuggestions(input) };
+    reasons: [...issues.map(i => i.reason), ...feedback.missingChecks], characterSuggestions: timingCharacterSuggestions(input),
+    partDirections: partRewriteDirections(input) };
 }
 
 export function rewriteEditInstruction(attempts: AttemptInput[], currentScript?: string, allowRewrite?: boolean) {
@@ -91,11 +108,18 @@ export function rewriteEditInstruction(attempts: AttemptInput[], currentScript?:
     "retry-original": "当前音频校字未通过，先保持台词按原稿重TTS；漏字、多字或错读不能直接证明正确台词需要重写，不按这条音频增减文字。",
     "verify-first": "当前证据不足以可靠确定改稿幅度，或失败原因尚未明确。先补齐核字、分段及实测检查；若现有流程要求原稿重试，保持原稿。不要凭缺失测量推断应大改或宣称已符合300ms条件。",
   };
+  const scopedParts = policy && ["timing-rewrite", "structure-rewrite"].includes(policy.mode)
+    && policy.partDirections.some(part => part.direction !== "keep") ? policy.partDirections : [];
   return [
     "【程序裁定的本轮改稿范围】",
     "所有改稿都优先保留原游戏中文字幕中已经准确、自然的核心词语、固定搭配和判断含义。外语及独立译文用于核对语义；另一种译法也成立，不构成替换原表达的理由。增减字数、重组句式不等于顺手换近义词；相同字数的换词不能作为解决长度问题的理由。确需更换核心表达时，在reason或plan中说明原表达的具体问题或必须替换的原因。不新增事实，不漏核心信息。",
     policy ? JSON.stringify({ ...policy, ...(allowRewrite === undefined ? {} : { allowRewrite }) }) : "尚无本轮可用于分档的实测候选；按当前任务明确给出的事实处理，不把旧稿测量套给新稿。",
-    allowRewrite === false ? "本轮权限为allowRewrite=false：仅允许调整标点、分行及停顿位置，正文字符及顺序必须保持不变。结构/时长问题只描述失败事实，本轮不授权文字重写；不能因诊断档位而忽略权限。累计三批仍不通过后的结构改稿会由程序放开权限。" : policy ? directions[policy.mode] : "",
+    allowRewrite === false ? "本轮权限为allowRewrite=false：仅允许调整标点、分行及停顿位置，正文字符及顺序必须保持不变。结构/时长问题只描述失败事实，本轮不授权文字重写；不能因诊断档位而忽略权限。累计三批仍不通过后的结构改稿会由程序放开权限。" : scopedParts.length ? [
+      "【本轮逐段改稿任务：优先于整体改写的一般说明】",
+      ...scopedParts.map(part => `第${part.part}段：${part.direction === "shorten" ? "实测偏长，本轮精简该段、缩短表达，不得反向扩写。" : part.direction === "lengthen" ? "实测偏短，先调整自然停顿；必要时仅在原句已有含义内补全表达，不新增事实，不重复意思。" : "实测时长已合格，保持该段正文与节奏。"}`),
+      "只处理以上失败段；不得为凑段数添加新的句子、事实、推断或解释。组装失败仍须处理，但不能因此忽略可靠的逐段长短证据，也不授权无关的整体扩写。",
+      "逐段方向和参考字数是本轮改稿要求，新音频仍须完整核字、实测和组装验收。",
+    ].join("\n") : policy ? directions[policy.mode] : "",
     policy?.characterSuggestions.length && allowRewrite !== false ? [
       "【时长改稿参考字数：软建议，不是合格条件】",
       ...policy.characterSuggestions.map(row => `${row.part === undefined ? "本句" : `第${row.part}段`}当前${row.current}字，建议先尝试${row.low === row.high ? row.low : `${row.low}–${row.high}`}字，约${row.deltaLow > 0 ? "增加" : "减少"}${Math.min(Math.abs(row.deltaLow),Math.abs(row.deltaHigh)) === Math.max(Math.abs(row.deltaLow),Math.abs(row.deltaHigh)) ? Math.abs(row.deltaLow) : `${Math.min(Math.abs(row.deltaLow),Math.abs(row.deltaHigh))}–${Math.max(Math.abs(row.deltaLow),Math.abs(row.deltaHigh))}`}字。`),

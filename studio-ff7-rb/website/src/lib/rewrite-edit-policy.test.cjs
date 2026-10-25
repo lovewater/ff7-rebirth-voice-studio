@@ -42,3 +42,26 @@ test('two and three parts only estimate failed segments with matching verified b
 });
 
 test('legacy replay is explicitly labelled and a one-character line cannot be shortened to zero',()=>{const a=singleReading();a.measurement.netLength=a.measurement.readingLength;delete a.measurement.readingLength;assert.equal(characterAdvice(a)[0].timingBasis,'legacy-net-speech');assert.deepEqual(characterAdvice(singleReading('嗯',2,1)),[]);});
+
+function gilgamesh(){const a=input();a.script='我们基本上都是，放着不管的';a.measurement.parts={required:2,actual:2,texts:['我们基本上都是。','放着不管的。'],layoutPass:false,checks:[{index:1,status:'error',deltaSeconds:.516172619,originalSeconds:1.426349206,referenceSeconds:.696208333},{index:2,status:'correct',deltaSeconds:-.000017,originalSeconds:.92,referenceSeconds:.894166667}]};return a;}
+test('吉尔伽美什岛回归：组装失败保留可靠的第一段压缩建议，第二段保持',()=>{
+ const a=gilgamesh(),p=policy([a]);assert.equal(p.mode,'structure-rewrite');
+ assert.deepEqual(p.characterSuggestions.map(r=>[r.part,r.current,r.low,r.high]),[[1,7,3,4]]);
+ assert.deepEqual(p.partDirections,[{part:1,direction:'shorten'},{part:2,direction:'keep'}]);
+ const prompt=instruction([a],a.script,true);assert.match(prompt,/第1段：实测偏长，本轮精简该段/);assert.match(prompt,/第2段：实测时长已合格，保持该段正文与节奏/);
+ assert.match(prompt,/建议先尝试3–4字/);assert.match(prompt,/不得为凑段数添加新的句子、事实/);
+ assert.doesNotMatch(prompt,/允许重建断句、重新分配|不要受最小改动限制/);
+ const restricted=instruction([a],a.script,false);assert.match(restricted,/仅允许调整标点/);assert.doesNotMatch(restricted,/【本轮逐段改稿任务|【时长改稿参考字数/);
+});
+test('组装失败仍不允许错位、漏字、缺测或旧稿产生逐段改稿方向',()=>{
+ for(const change of [a=>a.measurement.parts.boundaryPass=false,a=>a.measurement.parts.actual=1,a=>a.measurement.text.pass=false,a=>a.measurement.draftId='old',a=>delete a.measurement.parts.checks[0].originalSeconds,a=>a.measurement.parts.checks[0].deltaSeconds=-.5]){
+  const a=gilgamesh();change(a);assert.deepEqual(policy([a]).partDirections,[]);assert.deepEqual(characterAdvice(a),[]);
+ }
+});
+test('一段长一段短分别下发方向，不按总长抵消；三段也适用',()=>{
+ const a=gilgamesh();a.measurement.parts.checks[1]={index:2,status:'error',deltaSeconds:-.4,originalSeconds:.5,referenceSeconds:.9};
+ assert.deepEqual(policy([a]).partDirections,[{part:1,direction:'shorten'},{part:2,direction:'lengthen'}]);
+ assert.match(instruction([a],a.script,true),/第2段：实测偏短，先调整自然停顿/);
+ a.measurement.parts.required=a.measurement.parts.actual=3;a.measurement.parts.checks.push({index:3,status:'correct',deltaSeconds:0});
+ assert.deepEqual(policy([a]).partDirections.at(-1),{part:3,direction:'keep'});
+});
