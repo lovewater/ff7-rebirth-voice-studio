@@ -1,5 +1,5 @@
 type LexiconEntry = { src: string; dst: string; note: string | null };
-export type SpokenReviewInput = { spoken: string; asr: string; lexicon: LexiconEntry[] };
+export type SpokenReviewInput = { spoken: string; asr: string; lexicon: LexiconEntry[]; pronunciationText?: string };
 
 /** 校字不是重翻译。ASR 的同/近音写法不能证明 TTS 读错；缺字则不放宽。
  * 模型列证据，程序用硬伤数组决定淘汰，用轻微疑点数量决定合格候选的优先级。

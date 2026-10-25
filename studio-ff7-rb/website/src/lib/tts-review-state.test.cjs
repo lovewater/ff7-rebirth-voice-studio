@@ -37,6 +37,7 @@ function route(){
  const file=__dirname+'/../app/api/lines/[stem]/tts/[id]/route.ts',m=new Module(file);
  m.require=id=>{
   if(id.startsWith('node:'))return require(id);
+  if(id==='@/lib/inline-pinyin')return require('./inline-pinyin.ts');
   if(id==='next/server')return{NextResponse:{json:(body,options)=>({status:options?.status??200,body})}};
   if(id==='@/lib/db')return{sql};
   if(id==='@/lib/tts-review-state')return require('./tts-review-state.ts');

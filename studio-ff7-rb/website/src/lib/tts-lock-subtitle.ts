@@ -1,3 +1,4 @@
+import { stripInlinePinyin } from "./inline-pinyin";
 /** 锁定时仅为未确认的手动朗读稿提出字幕同步。
  * 自动工作流最终成品已完成拟声恢复、排版与原文比对：覆盖为空表示沿用原文，
  * 不能再拿删过拟声的tts_text猜字幕，否则会误弹确认并把“哼/嘿嘿”等原文删掉。
@@ -10,6 +11,6 @@ export function needsLockSubtitleConfirmation(input: {
   ttsText: string; original: string;
 }) {
   if (input.isAutoFinal || input.isJapaneseOriginal || input.subtitle?.trim()) return false;
-  const comparable = (text: string) => text.replace(/\\n/g, "\n").replace(/\[停顿=\d{1,4}\]/g, "").replace(/[\p{P}\s]/gu, "");
+  const comparable = (text: string) => stripInlinePinyin(text).replace(/\\n/g, "\n").replace(/\[停顿=\d{1,4}\]/g, "").replace(/[\p{P}\s]/gu, "");
   return comparable(input.ttsText) !== comparable(input.original);
 }

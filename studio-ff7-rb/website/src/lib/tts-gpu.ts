@@ -1,3 +1,4 @@
+import { stripInlinePinyin } from "./inline-pinyin";
 import { spawn } from "node:child_process";
 import { ALIGN_SILENCE_RATIO } from "./auto-run-rules";
 import { prepareTtsPronunciationBody } from "./tts-pronunciation-db";
@@ -73,7 +74,7 @@ export function normalizeScript(value: unknown, sourceZh?: string) {
     }
   }
   const textWithoutPauses = ttsText.replace(PAUSE_RE, "");
-  const spokenText = textWithoutPauses.trim();
+  const spokenText = stripInlinePinyin(textWithoutPauses).trim();
   if (!spokenText) throw new Error("TTS 文字不能只有停顿");
   if (textWithoutPauses.includes("[停顿")) {
     throw new Error("停顿格式应为 [停顿=500]");

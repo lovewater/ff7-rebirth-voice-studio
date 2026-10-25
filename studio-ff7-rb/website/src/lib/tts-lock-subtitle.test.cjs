@@ -1,6 +1,9 @@
 /* eslint-disable @typescript-eslint/no-require-imports */
 const {test}=require('node:test'),assert=require('node:assert/strict');
-const {needsLockSubtitleConfirmation:needs}=require('./tts-lock-subtitle.ts');
+const outerModule=require('node:module'),outerTs=require('typescript'),outerFs=require('node:fs');
+const lockPolicy=new outerModule(__filename);lockPolicy.require=id=>require(id+'.ts');
+lockPolicy._compile(outerTs.transpileModule(outerFs.readFileSync(__dirname+'/tts-lock-subtitle.ts','utf8'),{compilerOptions:{module:outerTs.ModuleKind.CommonJS,target:outerTs.ScriptTarget.ES2022}}).outputText,__filename);
+const {needsLockSubtitleConfirmation:needs}=lockPolicy.exports;
 const base={isAutoFinal:false,isJapaneseOriginal:false,subtitle:null,ttsText:'就算你后悔也来不及了！',original:'哼，就算你后悔也来不及了！'};
 test('final automatic audio inheriting original caption must not propose its body-only TTS text',()=>{
  assert.equal(needs({...base,isAutoFinal:true}),false);
@@ -32,6 +35,7 @@ function lockRoute(isAutoFinal, options={}) {
  const file=__dirname+'/../app/api/lines/[stem]/tts/[id]/route.ts',m=new Module(file);
  m.require=id=>{
   if(id.startsWith('node:'))return require(id);
+  if(id==='@/lib/inline-pinyin')return require('./inline-pinyin.ts');
   if(id==='next/server')return{NextResponse:{json:(body,options)=>({status:options?.status||200,body})}};
   if(id==='@/lib/subtitle-reflow'){
    const file=__dirname+'/subtitle-reflow.ts',reflowModule=new Module(file);reflowModule.require=id=>require(id+'.ts');
@@ -47,7 +51,7 @@ function lockRoute(isAutoFinal, options={}) {
    if(options.formatError)throw Error('layout unavailable');
    return options.formatted??require('./auto-run-subtitle.ts').autoRunSubtitle(draft);
   }};
-  if(id==='@/lib/tts-lock-subtitle')return require('./tts-lock-subtitle.ts');
+  if(id==='@/lib/tts-lock-subtitle')return lockPolicy.exports;
   return{};
  };
  m._compile(ts.transpileModule(fs.readFileSync(file,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText,file);

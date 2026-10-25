@@ -1,3 +1,4 @@
+import { stripInlinePinyin } from "@/lib/inline-pinyin";
 import { NextRequest, NextResponse } from "next/server";
 import type { BeatPair } from "@/lib/beats";
 
@@ -18,7 +19,7 @@ export async function POST(req: NextRequest) {
           p.jp.length > 5000 || p.cn.length > 5000)) {
       return NextResponse.json({ error: "无效的日中文本" }, { status: 400 });
     }
-    pairs = body.pairs;
+    pairs = body.pairs.map((p:BeatPair)=>({...p,cn:stripInlinePinyin(p.cn)}));
   } catch {
     return NextResponse.json({ error: "无效请求" }, { status: 400 });
   }

@@ -1,3 +1,4 @@
+import { tailBodyAudio, appendPreservedTail } from "./preserved-tail";
 import { applyScales, concatWavs, mixSegments, wavDuration } from "./audio-splice";
 import { SCALE_LO } from "./auto-run-rules";
 import type { OnoPlan, SplicePiece } from "./auto-run-onomatopoeia";
@@ -17,6 +18,16 @@ export function italicCandidateDecision(textOk: boolean, fits: boolean, beatPass
  * 不补长、不强制分段对齐，不缩放原声或剪掉发声。压缩后仍超长则由调用方重试。
  */
 export function fitItalicAudio(jp: Buffer, tts: Buffer, plan: OnoPlan, pieces: SplicePiece[], target: number) {
+  if (!plan.preservedTail) return fitItalicBody(jp, tts, plan, pieces, target);
+  const tail = plan.preservedTail, bodyPlan = { ...plan, preservedTail: undefined,
+    enabled: plan.onomatopoeia.length > 0 || plan.ambient.length > 0 };
+  const packed = fitItalicBody(tailBodyAudio(jp, tail), tts, bodyPlan, pieces, tail.startMs / 1000);
+  const restored = appendPreservedTail(jp, packed.audio, tail);
+  const d = decodeWavMono(restored.audio), duration = d.samples.length / d.sampleRate;
+  return { ...packed, audio: restored.audio, fit: { ...packed.fit, target: duration,
+    actual_s: duration, wav_s: duration, body_fit: packed.fit, preserved_tail: restored.metadata } };
+}
+function fitItalicBody(jp: Buffer, tts: Buffer, plan: OnoPlan, pieces: SplicePiece[], target: number) {
   const packed = mixSegments(jp, tts, plan, pieces, target);
   if (!packed.length) throw new Error("斜体拼接结果为空");
   const total = packed.reduce((sum, part) => sum + part.duration, 0);

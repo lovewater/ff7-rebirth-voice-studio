@@ -527,6 +527,7 @@ export function TtsPanel({ stem }: { stem: string }) {
                     onChange={(event) => setTtsText(event.target.value)}
                     className="w-full rounded border border-zinc-700 bg-zinc-900 p-3 text-sm leading-6 outline-none focus:border-sky-700"
                   />
+                  <p className="mt-1 text-xs text-zinc-500">可写 陆[LIU4]号街道 指定前一字读音；注音不计入校字或拍数。</p>
                   <BeatCount enabled={(data.line.kind === "对话" || data.line.kind === "talk") && data.line.dialogue_mode === "scene" && !data.line.subtitle_italic} jp={data.line.text_jp} cn={ttsText} label="当前 TTS 拍数" />
                 </div>
               </div>
@@ -571,7 +572,7 @@ export function TtsPanel({ stem }: { stem: string }) {
                     className="w-full rounded border border-zinc-700 bg-zinc-900 p-3 text-sm leading-6 outline-none focus:border-sky-700"
                   />
                   <p className="mt-1 text-xs text-zinc-500">
-                    停顿格式 {data.pauseSyntax}，50–5000ms。生成语音不会改字幕。
+                    停顿格式 {data.pauseSyntax}，50–5000ms。可写 陆[LIU4] 指定读音；生成语音不会改字幕。
                   </p>
                   <div className="mt-3 flex items-center gap-3">
                     <button
@@ -786,7 +787,8 @@ export function TtsPanel({ stem }: { stem: string }) {
                         <div className="mt-2 whitespace-pre-wrap text-xs text-zinc-500">朗读稿：{record.tts_text}</div>
                       ) : null}
                       {record.voice_gpu_key !== "jp-lock" && record.conversion_meta?.pipeline !== "jp-lock" ? (
-                        <BeatCount enabled={(data.line.kind === "对话" || data.line.kind === "talk") && data.line.dialogue_mode === "scene" && !data.line.subtitle_italic} jp={data.line.text_jp} cn={record.tts_text} label={`#${record.id} 朗读稿拍数`} />
+
+                  <BeatCount enabled={(data.line.kind === "对话" || data.line.kind === "talk") && data.line.dialogue_mode === "scene" && !data.line.subtitle_italic} jp={data.line.text_jp} cn={record.tts_text} label={`#${record.id} 朗读稿拍数`} />
                       ) : null}
                       <div className="mt-1 text-xs text-zinc-500">
                         起 {durationText(record.start_s)} · 止 {durationText(record.end_s)} · 长 {durationText(record.dur_s)} · 说 {durationText(record.speech_s)}

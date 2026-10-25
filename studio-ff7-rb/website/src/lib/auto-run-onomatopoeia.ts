@@ -9,6 +9,7 @@ import { ORIGINAL_VOICE_REUSE_POLICY } from "./onomatopoeia-reuse-policy";
 export type TimeSpan = { startMs: number; endMs: number; text?: string };
 
 export type OnoPlan = {
+  preservedTail?: import("./preserved-tail").PreservedTail;
   enabled: boolean;
   reason: string;
   thinking: string;

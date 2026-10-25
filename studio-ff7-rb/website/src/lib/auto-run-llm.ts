@@ -1,3 +1,4 @@
+import { inlinePinyinReview } from "./inline-pinyin";
 import { rhythmPickMessages, type RhythmPickInput } from "./rhythm-pick-context";
 import type { VolcengineCallOptions } from "./llm-volcengine";
 import { withTranslationReferences } from "./rewrite-translation-reference";
@@ -40,7 +41,8 @@ export function parseJsonObject(raw: string) {
 }
 
 export async function judgeSpokenText(input: SpokenReviewInput) {
-  const { content, thinking } = await rewriteChat(spokenReviewMessages(input), 0.1, "text-review");
+  const review = inlinePinyinReview(input);
+  const { content, thinking } = await rewriteChat(spokenReviewMessages(review), 0.1, "text-review");
   const parsed = parseJsonObject(content);
   return {
     ...parseSpokenReview(parsed, input.asr),

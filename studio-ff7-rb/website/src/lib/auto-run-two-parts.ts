@@ -1,3 +1,4 @@
+import { tailBodyAudio, appendPreservedTail } from "./preserved-tail";
 import { withRoundSpeedContext, roundSpeedMessages } from "./round-speed-context";
 import { NATURAL_PUNCTUATION_HINT } from "./rewrite-punctuation-hint";
 import { fastLongPromptValues } from "./fast-long-pressure";
@@ -139,6 +140,20 @@ export function alignmentCheck(clip: {
 }
 export function inspectFinal(audio: Buffer, required: boolean|number, splitRegions: SpeechSplitRegion[] = []) { const parts=countParts(audio, .25, splitRegions),wanted=required===true?2:required||null;return {required:wanted,actual:parts,pass:!wanted||parts===wanted}; }
 export function assemblePreserved(jp: Buffer, cn: Buffer, plan: OnoPlan, pieces: SplicePiece[], target: number, reference: Buffer, splitRegions: SpeechSplitRegion[] = []) {
+    if (plan.preservedTail) {
+        const tail = plan.preservedTail;
+        const bodyPlan = { ...plan, preservedTail: undefined,
+            enabled: plan.onomatopoeia.length > 0 || plan.ambient.length > 0 };
+        const packed = assemblePreservedBody(tailBodyAudio(jp, tail), cn, bodyPlan, pieces, tail.startMs / 1000, reference, splitRegions);
+        const restored = appendPreservedTail(jp, packed.audio, tail);
+        const d = decodeWavMono(restored.audio), duration = d.samples.length / d.sampleRate;
+        return { ...packed, audio: restored.audio, fit: { ...packed.fit,
+            version: "preserved-tail-v1", target: duration, actual_s: duration, wav_s: duration,
+            body_fit: packed.fit, preserved_tail: restored.metadata } };
+    }
+    return assemblePreservedBody(jp, cn, plan, pieces, target, reference, splitRegions);
+}
+function assemblePreservedBody(jp: Buffer, cn: Buffer, plan: OnoPlan, pieces: SplicePiece[], target: number, reference: Buffer, splitRegions: SpeechSplitRegion[]) {
     // 环境音不等于保留情绪：单段正文+环境音沿用整句编辑，允许最终正文轻微缩放。
     // 只有真实两/三段或需要保留情绪原声时，才用逐段/情绪严格等长装配。
     if (!contexts.getStore()?.required && !plan.onomatopoeia.length)

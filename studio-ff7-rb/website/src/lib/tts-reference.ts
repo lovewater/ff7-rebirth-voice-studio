@@ -14,13 +14,14 @@ const REFERENCE_EDGE_PEAK_RATIO = 0.005;
 export function buildSpeechReference(wav: Buffer, pcm: PcmLayout, remove: {
   onomatopoeia: ReferenceSpan[];
   ambient: ReferenceSpan[];
+  preservedTail?: ReferenceSpan;
   speech?: ReferenceSpan[];
 }) {
   const { sampleRate, blockAlign, dataOffset, dataBytes } = pcm;
   if (!(sampleRate > 0) || !(blockAlign > 0) || blockAlign % 2 !== 0 || dataOffset < 8 || dataBytes % blockAlign !== 0
     || dataOffset + dataBytes > wav.length) throw new Error("参考音频不是有效的 PCM WAV");
   const frames = dataBytes / blockAlign;
-  const cuts = [...remove.onomatopoeia, ...remove.ambient].map((span) => {
+  const cuts = [...remove.onomatopoeia, ...remove.ambient, ...(remove.preservedTail ? [remove.preservedTail] : [])].map((span) => {
     if (!Number.isFinite(span.startMs) || !Number.isFinite(span.endMs) || span.endMs <= span.startMs) {
       throw new Error("参考音频删除区间无效");
     }

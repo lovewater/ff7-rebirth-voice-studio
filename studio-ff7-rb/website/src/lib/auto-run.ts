@@ -1,3 +1,5 @@
+import { stripInlinePinyin } from "./inline-pinyin";
+import { locatePreservedTail, tailBodyAsr, tailBodyAudio, appendPreservedTail, type PreservedTail } from "./preserved-tail";
 import { referenceWordEvidence } from "./reference-word-evidence";
 import { rememberRoundSpeed } from "./round-speed-context";
 import type { CandidateSpeedMeasurements } from "./selection-speed";
@@ -529,6 +531,7 @@ async function saveSplicedEdit(runId: string, stem: string, sourceId: string, au
     ambient: plan.ambient,
     speech: plan.speech,
     splice: pieces,
+    ...(plan.preservedTail ? {preserved_tail:plan.preservedTail} : {}),
     ...(source.conversion_meta?.body_comparison ? {body_comparison:source.conversion_meta.body_comparison} : {}),
     ...(source.conversion_meta?.chinese_speed ? {chinese_speed:source.conversion_meta.chinese_speed} : {}),
     ...extra,
@@ -552,6 +555,7 @@ async function saveSplicedEdit(runId: string, stem: string, sourceId: string, au
 }
 
 async function countBeats(jp: string, cn: string, includeSpeechReading = false) {
+  cn = stripInlinePinyin(cn);
   const response = await fetch(`${process.env.MORA_URL ?? "http://127.0.0.1:8000"}/beats`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -904,7 +908,7 @@ async function runItalicNatural(runId: string, line: LinePack, recovery: RunReco
       const audio=await audioToMonoWav(await readFile(dataFile(clip.audio_path!))),timing=wavTiming(audio);
       const local=await asrQwen(clip),asr=localTtsAsr(local.text,local.raw,timing);
       candidate.asr=asr;
-      const judged=await judgeSpokenText({spoken:clip.spoken_text,asr:asr.text,lexicon:rules});
+      const judged=await judgeSpokenText({spoken:clip.spoken_text,asr:asr.text,lexicon:rules,pronunciationText:clip.tts_text});
       candidate.reviewed=true;candidate.reason=judged.reason;
       candidate.hardIssueCount=judged.missing.length+judged.extra.length+judged.repeated.length+judged.unrelated.length+(judged.ok?0:1);
       candidate.pronunciationIssueCount=judged.pronunciationIssueCount;
@@ -997,7 +1001,7 @@ async function runCasual(runId: string, line: LinePack, recovery: RunRecovery) {
       candidate.beatDeviation = 0;
       const asr = await asrQwen(clip);
       await log(runId, "asr", `#${clip.id} Qwen：${asr.text || "（空）"}`, { ttsId: clip.id, text: asr.text }, "asr");
-      const judged = await judgeSpokenText({ spoken: clip.spoken_text, asr: asr.text, lexicon: rules });
+      const judged = await judgeSpokenText({ spoken: clip.spoken_text, asr: asr.text, lexicon: rules, pronunciationText:clip.tts_text });
       Object.assign(candidate, {
         reviewed: true,
         hardIssueCount: judged.missing.length + judged.extra.length + judged.repeated.length + judged.unrelated.length,
@@ -1233,13 +1237,14 @@ async function generateFeedbackCandidates(runId: string, line: LinePack, recover
  * 原稿TTS→实测发声→ASR日文参考改稿→再TTS，共三轮；不做中文ASR/校字/拟声猜切。
  * 全轮择优后只编辑一次，仍待人工复核；建议字数不影响合格判定。
  */
-async function runWholeLineFallback(runId: string, line: LinePack, recovery: RunRecovery, jpWav: Buffer, reason = "日文字幕与 ASR 字轴无法可靠对齐") {
+async function runWholeLineFallback(runId: string, line: LinePack, recovery: RunRecovery, jpWav: Buffer, reason = "日文字幕与 ASR 字轴无法可靠对齐", tailSource?: {tail:PreservedTail;original:Buffer;asr:SeedAsrResult}) {
   if (line.subtitle_italic) {
     const duration = decodeWavMono(jpWav).samples.length / decodeWavMono(jpWav).sampleRate;
     const plan: OnoPlan = {enabled:false, reason, thinking:"", speech:[{startMs:0,endMs:duration*1000}],
       onomatopoeia:[], ambient:[], cnTtsText:line.text_zh||"", originalCnTtsText:line.text_zh||"",
       jpSpeechText:line.text_jp||"", subtitleRestore:subtitleRestorePlan(line.text_zh||"",line.text_zh||"")};
-    await runItalicNatural(runId,line,recovery,jpWav,plan,jpWav);
+    if (tailSource) plan.preservedTail = tailSource.tail;
+    await runItalicNatural(runId,line,recovery,tailSource?.original ?? jpWav,plan,jpWav);
     return;
   }
   await log(runId, "whole-line-fallback", `工作流：整体 fallback（整句降级）；${reason}`, {
@@ -1247,8 +1252,17 @@ async function runWholeLineFallback(runId: string, line: LinePack, recovery: Run
     skipReview: true, skipRewrite: false, skipSegmentation: true,
   }, "result");
   const script = normalizeScript(line.text_zh || "").ttsText;
+  let fallbackPrompt = `jp/${line.stem}.mp3`;
+  if (tailSource) {
+    fallbackPrompt = path.posix.join("tts",line.stem,`auto-run-${runId}-tail-body-fallback.wav`);
+    await mkdir(path.dirname(dataFile(fallbackPrompt)),{recursive:true});
+    await writeFile(dataFile(fallbackPrompt),jpWav);
+    await sql`UPDATE line_auto_runs SET reference_audio_path=${fallbackPrompt},
+      reference_text_jp=${tailSource.asr.text},reference_seed_asr=${sql.json(JSON.parse(JSON.stringify(tailSource.asr)))} WHERE id=${runId}`;
+  }
   const candidates = await generateFeedbackCandidates(runId, line, recovery, script, {
-    promptPath: `jp/${line.stem}.mp3`, subtitleText: autoRunSubtitle(line.text_zh || ""),
+    promptPath: fallbackPrompt, subtitleText: autoRunSubtitle(line.text_zh || ""),
+    ...(tailSource ? {preservePromptAudio:true,layoutSlot:{start:wavTiming(jpWav).start,dur:line.jp_dur_s!,speech:wavTiming(jpWav).speech}} : {}),
   }, jpWav);
   const chosen = closestFallback(candidates);
   if (!chosen?.clip.audio_path) throw new Error("整句降级线路没有返回可播放音频");
@@ -1264,7 +1278,12 @@ async function runWholeLineFallback(runId: string, line: LinePack, recovery: Run
     jpSpeechText: line.text_jp || "", subtitleRestore: subtitleRestorePlan(line.text_zh || "", line.text_zh || ""),
   };
   const pieces: SplicePiece[] = [{ src: "tts", startMs: 0, endMs: null }];
-  const mixed = spliceMix(jpWav, ttsWav, plan, pieces, target);
+  const bodyMixed = spliceMix(jpWav, ttsWav, plan, pieces, target);
+  const restored = tailSource ? appendPreservedTail(tailSource.original,bodyMixed.audio,tailSource.tail) : null;
+  const fullDuration = restored ? wavTiming(restored.audio).duration : 0;
+  const mixed = restored ? {...bodyMixed,audio:restored.audio,fit:{...bodyMixed.fit,target:fullDuration,
+    actual_s:fullDuration,wav_s:fullDuration,body_fit:bodyMixed.fit,preserved_tail:restored.metadata}} : bodyMixed;
+  if (tailSource) plan.preservedTail = tailSource.tail;
   const selected = await saveSplicedEdit(runId, line.stem, chosen.clip.id, mixed.audio, plan, pieces, {
     fit: mixed.fit, workflow: "whole-line-fallback", manual_review_required: true,
     quality_review: "manual-required", fallback_reason: reason,
@@ -1318,9 +1337,9 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
     else await runWholeLineFallback(runId, line, recovery, jpWav, reason);
     return;
   }
-  const jpAsr = jpHit.result;
+  let jpAsr = jpHit.result;
   // 切片边界以实际解码长度为准；DB旧MP3时长可能差几毫秒，不能把文件尾误判为正文内部。
-  const durationMs = Math.round(decodeWavMono(jpWav).samples.length / decodeWavMono(jpWav).sampleRate * 1000);
+  let durationMs = Math.round(decodeWavMono(jpWav).samples.length / decodeWavMono(jpWav).sampleRate * 1000);
   await log(runId, "asr", jpHit.cached
     ? `日文（缓存）：${jpAsr.text || "（空）"}`
     : `日文：${jpAsr.text || "（空）"}`, {
@@ -1337,8 +1356,21 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
     await runEmptySeedOriginal(runId, line, jpFile);
     return;
   }
-  const asrWords = jpAsr.words.length ? jpAsr.words : jpAsr.utterances.flatMap((row) => row.words);
-  const decodedJp = decodeWavMono(jpWav);
+  let asrWords = jpAsr.words.length ? jpAsr.words : jpAsr.utterances.flatMap((row) => row.words);
+  let decodedJp = decodeWavMono(jpWav);
+  const preservedTail = locatePreservedTail({ ...decodedJp, textJp: line.text_jp || "", words: asrWords,
+    blocks: missingAudioBlocks({ ...decodedJp, words: asrWords }) });
+  if (preservedTail) {
+    jpAsr = tailBodyAsr(jpAsr, preservedTail); asrWords = jpAsr.words;
+    decodedJp = decodeWavMono(tailBodyAudio(jpWav, preservedTail)); durationMs = preservedTail.startMs;
+    await log(runId,"preserved-tail","正文完整确认：尾部到文件结束作为一个原声整体保留，不分类、不计正文时长，最终按原位置拼回",{
+      ...preservedTail, bodyText:jpAsr.text, bodyWordCount:asrWords.length,
+    },"result");
+  }
+  const fallback = (reason?: string) => runWholeLineFallback(runId,
+    preservedTail ? {...line,jp_dur_s:preservedTail.startMs/1000} : line, recovery,
+    preservedTail ? tailBodyAudio(jpWav,preservedTail) : jpWav, reason,
+    preservedTail ? {tail:preservedTail,original:jpWav,asr:jpAsr} : undefined);
   // 切片对象使用ASR自己的字幕与字轴，避免官方字幕的汉字/假名写法差异阻断定位。
   // 官方日文仍传给模型作语义依据，并用于参考正文/拍数；绝不将ASR误字回填字幕。
   let subtitleClauses = alignJapaneseClauses(jpAsr.text, asrWords);
@@ -1358,7 +1390,7 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
   // 漏识别补救不限头尾：只有一块独立有声缺口才询问模型；两块及以上直接降级。
   // 是否缺字幕、缺几块以及前后对应均由模型按语义判断，代码不再删首段猜缺文。
   if (audioBlocks.length > 1) {
-    await runWholeLineFallback(runId, line, recovery, jpWav, `发现${audioBlocks.length}块未被字轴覆盖的声音，禁止猜测多块对应`);
+    await fallback(`发现${audioBlocks.length}块未被字轴覆盖的声音，禁止猜测多块对应`);
     return;
   }
   if (audioBlocks.length === 1) {
@@ -1384,11 +1416,11 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
     }
     // 不确定/非拟声/多块缺文/切口不成立，都不能继续猜测，仍保证降级线路输出一条音频。
     if (!missingFragment && !confirmedAmbient && !integratedInternalSound) {
-      await runWholeLineFallback(runId, line, recovery, jpWav, "未能确认唯一缺失拟声与唯一声音缺口对应");
+      await fallback("未能确认唯一缺失拟声与唯一声音缺口对应");
       return;
     }
   } else if (!subtitleClauses.length) {
-    await runWholeLineFallback(runId, line, recovery, jpWav);
+    await fallback();
     return;
   }
   await log(runId, "ono", "模型切拟声和正文");
@@ -1408,7 +1440,7 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
     });
   } catch (error) {
     // 分类服务未能给出可用结果，切换独立整句降级线路，仍生成最终编辑产物。
-    await runWholeLineFallback(runId, line, recovery, jpWav, `拟声分类不可用：${error instanceof Error ? error.message : String(error)}`);
+    await fallback(`拟声分类不可用：${error instanceof Error ? error.message : String(error)}`);
     return;
   }
   if (missingFragment) {
@@ -1438,6 +1470,7 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
   plan.ambient = segments.filter((span)=>span.kind==="ambient");
   // 已确认的短拟声也必须从参考中删除，不再用时长门槛绕过清理。
   plan = applyAmbientPolicy(plan);
+  if (preservedTail) plan = {...plan,preservedTail,enabled:true};
   if (plan.ignoredAmbient?.length) await log(runId, "ambient-ignored",
     "环境音不超过450ms：忽略分类，原音仍整句用于克隆，不删除或单独拼回；情绪拟声不受影响",
     { maxDurationMs: IGNORED_AMBIENT_MAX_MS, ignoredAmbient: plan.ignoredAmbient }, "result");
@@ -1454,7 +1487,7 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
   if (unknown.length || !plan.speech.length) {
     // 波形切分还有未知块（包括ASR与解码长度差造成的短尾）或没有可靠正文时，不能猜成环境音。
     // 此时尚未生成中文候选，抛错会导致“无音频”；必须走独立整句反馈降级，保留原始日文整体参考。
-    await runWholeLineFallback(runId, line, recovery, jpWav, unknown.length
+    await fallback(unknown.length
       ? "日文原声存在待判定声音，无法可靠切分" : "日文原声没有可确认的正文");
     return;
   }
@@ -1478,7 +1511,7 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
   if ([2,3].includes(referencePartsEvidence.chunks.length)) await log(runId,"reference-word-evidence",
     referenceEvidence.pass ? "波形分段已通过原始ASR正文对应确认" : referenceEvidence.reason,referenceEvidence,"result");
   if (!referenceEvidence.pass) {
-    await runWholeLineFallback(runId,line,recovery,jpWav,referenceEvidence.reason);
+    await fallback(referenceEvidence.reason);
     return;
   }
   const promptTiming = wavTiming(reference.audio);
@@ -1841,7 +1874,7 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
         normalizedBeatRatio: beat.result?.normalizedRatio ?? null, beatVersion: beat.result?.version ?? null,
         provider: "qwen-local", waveform: asr.raw,
       }, "asr");
-      const judged = await judgeSpokenText({ spoken: clip.spoken_text, asr: asr.text, lexicon: rules });
+      const judged = await judgeSpokenText({ spoken: clip.spoken_text, asr: asr.text, lexicon: rules, pronunciationText:clip.tts_text });
       // 单独豁免比值不等于同时豁免“偏快且中文偏长”；沿用原正常区间和本句比值下限。
       const speedBeatPressure=fastLongPressure({netRate:normalSpeedBeat.rate,hardSpeed:chineseSpeed,evidenceVerified:partsOk&&judged.ok,
         beat:{ratio:beat.result?.normalizedRatio??null,low:autoBeatBand(referenceTextJp).low}});

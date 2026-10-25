@@ -1,3 +1,4 @@
+import { stripInlinePinyin } from "@/lib/inline-pinyin";
 import { rm } from "node:fs/promises";
 import path from "node:path";
 import { NextRequest, NextResponse } from "next/server";
@@ -110,7 +111,7 @@ export async function PATCH(
           isJapaneseOriginal: target.is_jp_lock, subtitle: target.subtitle_text,
           ttsText: target.tts_text, original });
         const proposal = target.subtitle_text?.trim() ? target.subtitle_text : manualProposal
-          ? twoLineSubtitle(target.tts_text.replace(/\[停顿=\d{1,4}\]/g, "")) || original : original;
+          ? twoLineSubtitle(stripInlinePinyin(target.tts_text).replace(/\[停顿=\d{1,4}\]/g, "")) || original : original;
         if (body.requireSubtitleConfirmation === true || proposal.replace(/\\n/g, "\n").trim() !== original.trim()) {
           throw new SubtitleConfirmationRequired(proposal, original, target.tts_text);
         }
@@ -133,7 +134,7 @@ export async function PATCH(
           ttsText: target.tts_text, original })) {
           // Abort the transaction BEFORE any lock/subtitle write. The client
           // edits this proposal, then sends subtitleText and reviewState together.
-          const proposal = twoLineSubtitle(target.tts_text.replace(/\[停顿=\d{1,4}\]/g, ""));
+          const proposal = twoLineSubtitle(stripInlinePinyin(target.tts_text).replace(/\[停顿=\d{1,4}\]/g, ""));
           if (proposal) throw new SubtitleConfirmationRequired(proposal, original.replace(/\\n/g, "\n"), target.tts_text);
         }
       }

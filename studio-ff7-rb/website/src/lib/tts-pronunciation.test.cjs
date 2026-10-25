@@ -3,7 +3,7 @@ const {test}=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs'),Module=require('node:module'),ts=require('typescript');
 function load(file,overrides={}){
  const m=new Module(file);m.filename=file;m.paths=Module._nodeModulePaths(__dirname);
- m.require=id=>id in overrides?overrides[id]:require(id);
+ m.require=id=>id in overrides?overrides[id]:id.startsWith(".")&&fs.existsSync(require("node:path").resolve(require("node:path").dirname(file),id+".ts"))?load(require("node:path").resolve(require("node:path").dirname(file),id+".ts")):require(id);
  m._compile(ts.transpileModule(fs.readFileSync(file,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText,file);
  return m.exports;
 }

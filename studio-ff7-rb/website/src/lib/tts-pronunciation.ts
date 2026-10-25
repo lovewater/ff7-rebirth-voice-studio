@@ -1,3 +1,4 @@
+import { inlinePinyinForTts } from "./inline-pinyin";
 import dictionary from "./pronunciation/liao3.json";
 
 export type TtsPronunciationRule = { word: string; replacement: string };
@@ -10,6 +11,7 @@ export type TtsPronunciationRule = { word: string; replacement: string };
  * 得了、明了、知了和独立的不了存在分词歧义，不能全局替换。
  */
 export function applyTtsPronunciation(text: string, entries: TtsPronunciationRule[] = dictionary.rules): string {
+  text = inlinePinyinForTts(text);
   const rules = [...entries].sort((a, b) => b.word.length - a.word.length);
   let result = "";
   for (let i = 0; i < text.length;) {
