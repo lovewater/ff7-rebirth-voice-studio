@@ -23,6 +23,8 @@ function harness() {
     if(id==='node:fs/promises') return {readFile:async()=>Buffer.alloc(44)};
     if(id.startsWith('node:'))return require(id);
     if(id==='./db') return {sql};
+    if(id==='./preserved-tail')return {locatePreservedTail:()=>null};
+    if(id==='./inline-pinyin')return {stripInlinePinyin:x=>x};
     if(id==='./rewrite-context')return require('./rewrite-context.ts');
     if(id==='./auto-run-two-parts')return {setMeaningAnchor:()=>{}};
     if(id==='./fallback-feedback')return require('./fallback-feedback.ts');

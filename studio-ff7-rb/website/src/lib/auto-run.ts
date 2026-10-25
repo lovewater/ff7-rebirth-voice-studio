@@ -1,3 +1,4 @@
+import { pureInterjectionOriginal } from "./pure-interjection";
 import { runCasualDurationWorkflow, compactCasualText, type CasualDurationAttempt } from "./casual-duration-workflow";
 import { stripInlinePinyin } from "./inline-pinyin";
 import { locatePreservedTail, tailBodyAsr, tailBodyAudio, appendPreservedTail, preservedBodyDurationMs, type PreservedTail } from "./preserved-tail";
@@ -837,6 +838,11 @@ async function executeAutoRunMeasured(runId: string, stem: string, options: { fo
         workflow:"singing-original",reason:"原台词含音符：唱歌不处理，直接锁定完整日文原声",lock:true,
       });
     }
+    else if (pureInterjectionOriginal(line.text_zh)) {
+      await runOriginalJapanese(runId,line,await readFile(dataFile(`jp/${line.stem}.mp3`)),{
+        workflow:"pure-interjection-original",reason:"整句仅语气、呼声或拟声：直接锁定完整日文，不要求日文字幕或中日读音一致",lock:true,keepOriginalSubtitle:true,
+      });
+    }
     else if (pureShushuOriginal(line.text_jp, line.text_zh)) {
       // 必须在任何Seed/Qwen/模型调用之前分流；不看ASR，也不把原声再合成一遍。
       await runOriginalJapanese(runId,line,await readFile(dataFile(`jp/${line.stem}.mp3`)),{
@@ -1088,13 +1094,13 @@ async function pickPassedClip(
 }
 
 /** 共用原声保存：仅在已选定原声线路后调用；完整复制MP3并附原中文字幕。
- * 不切分、不转码、不拉伸、不调用TTS/中文ASR。只有明确含♪的唱歌分支自动锁定。
+ * 不切分、不转码、不拉伸、不调用TTS/中文ASR。唱歌及用户确认的整句纯语气分支可直接锁定。
  * 进入条件由调用者明确记录：有官方字幕但Seed空，或无官方字幕且中文经模型判为全拟声。
  */
-async function runOriginalJapanese(runId: string, line: LinePack, original: Buffer, route: { workflow: string; reason: string; lock?: boolean }) {
+async function runOriginalJapanese(runId: string, line: LinePack, original: Buffer, route: { workflow: string; reason: string; lock?: boolean; keepOriginalSubtitle?: boolean }) {
   await log(runId, "workflow", `工作流：保留日文原声；${route.reason}`, { workflow: route.workflow }, "result");
-  const subtitle = route.lock ? singingSubtitle(line.text_zh || "") : twoLineSubtitle(line.text_zh || "");
-  const label = subtitle || line.text_jp || "（日文原声）";
+  const subtitle = route.keepOriginalSubtitle ? null : route.lock ? singingSubtitle(line.text_zh || "") : twoLineSubtitle(line.text_zh || "");
+  const label = (route.keepOriginalSubtitle ? line.text_zh : subtitle) || line.text_jp || "（日文原声）";
   const [record] = await sql<{ id: string }[]>`
     INSERT INTO line_tts_versions (
       stem, auto_run_id, speaker, voice_version_id, voice_gpu_key,
@@ -1117,12 +1123,21 @@ async function runOriginalJapanese(runId: string, line: LinePack, original: Buff
       completed_at = now(), error = NULL
     FROM line_meta m WHERE v.id = ${record.id} AND m.stem = v.stem
   `;
-  if(route.lock)await sql.begin(async tx=>{
-    await tx`SELECT stem FROM lines WHERE stem=${line.stem} FOR UPDATE`;
-    await tx`UPDATE line_tts_versions SET review_state='candidate',used_at=NULL WHERE stem=${line.stem} AND review_state IN ('locked','abnormal')`;
-    await tx`UPDATE line_tts_versions SET review_state='locked',used_at=now() WHERE id=${record.id} AND status='ready'`;
-  });
-  await log(runId, route.workflow, `${route.reason}；保存完整日文原声为 #${record.id}，附${route.lock?"括号歌词并锁定":"原中文字幕"}`, {
+  if(route.lock) {
+    const locked = await sql.begin(async tx=>{
+      await tx`SELECT stem FROM lines WHERE stem=${line.stem} FOR UPDATE`;
+      const marked = await tx`SELECT id FROM line_tts_versions WHERE stem=${line.stem} AND review_state IN ('locked','abnormal') FOR UPDATE`;
+      if (marked.length) return false;
+      await tx`UPDATE line_tts_versions SET review_state='locked',used_at=now() WHERE id=${record.id} AND status='ready' AND review_state='candidate'`;
+      return true;
+    });
+    if (!locked) {
+      await log(runId,"original-lock-preserved","已有人工标记，保留人工选择，不覆盖",{ttsId:record.id},"result");
+      await finish(runId,"failed","已有人工标记，保留人工选择",null,{preserveSubtitle:true,noModelRetry:true});
+      return;
+    }
+  }
+  await log(runId, route.workflow, `${route.reason}；保存完整日文原声为 #${record.id}，附${route.keepOriginalSubtitle?"原字幕不改并锁定":route.lock?"括号歌词并锁定":"原中文字幕"}`, {
     selectedId: record.id, source: `jp/${line.stem}.mp3`, subtitleText: subtitle,
     skipTts: true, skipChineseAsr: true, skipSegmentation: true, skipRewrite: true,locked:!!route.lock,
   }, "result");
@@ -2190,8 +2205,9 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
   await finishWithFallback(runId, recovery, failReason);
 }
 
+
 /** 明确指定的新普通对话批次入口；独立于场景演出与默认双模型工作流。
- * 原稿一次+最多三次反馈，最后统一交人工异常审核，绝不自动锁定。
+ * 纯语气先直接锁日文；其余原稿一次+最多三次反馈，最后交人工异常审核。
  */
 export async function executeCasualDurationReview(runId: string, stem: string) {
   return withLlmMetrics(runId, stem, async () => {
@@ -2206,6 +2222,12 @@ export async function executeCasualDurationReview(runId: string, stem: string) {
     let passed = false, selected: CasualDurationAttempt | undefined, error: string | null = null;
     try {
       await guard();
+      if (pureInterjectionOriginal(line.text_zh)) {
+        await runOriginalJapanese(runId,line,await readFile(dataFile(`jp/${stem}.mp3`)),{
+          workflow:"pure-interjection-original",reason:"纯语气/呼声优先确认日文，不进入时长合成及人工异常流程",lock:true,keepOriginalSubtitle:true,
+        });
+        return;
+      }
       const jp = decodeWavMono(await audioToMonoWav(await readFile(dataFile(`jp/${stem}.mp3`))));
       const target = jp.samples.length / jp.sampleRate;
       const rules = await lexicon();
