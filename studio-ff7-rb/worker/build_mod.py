@@ -44,6 +44,7 @@ import psycopg
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from cn_iostore import extract_chunk_ids, parse_utoc  # noqa: E402
+from battle_bank import material_entries, validate_replacements  # noqa: E402
 from extract_txtres import clean_text, find_lang, parse_txtres  # noqa: E402
 from fill_regions import SEED, STORY_ORDER  # noqa: E402
 
@@ -655,7 +656,8 @@ def load_lines(regions: list[str] | None) -> list[dict]:
     # Only chunks that already live in a zzz_cn_voice pack can be swapped.
     # Lines imported from movie banks (pack jp-only) are not in those packs.
     # psycopg treats % as a placeholder, so the LIKE wildcard is doubled.
-    clauses = ["l.pack LIKE 'zzz_cn_voice_%%'"]
+    clauses = ["l.pack LIKE 'zzz_cn_voice_%%'",
+               "NOT EXISTS (SELECT 1 FROM line_meta bm WHERE bm.stem=l.stem AND bm.extra ? 'bank_material_index')"]
     args: list = []
     if regions is not None:
         clauses.append("l.region = ANY(%s)")
@@ -711,6 +713,74 @@ def _extra(row: dict) -> dict:
     if not isinstance(extra, dict):
         raise RuntimeError(f"{row['stem']}: line_meta.extra is not an object")
     return extra
+
+
+def load_battle_bank_lines(regions: list[str] | None) -> list[dict]:
+    with psycopg.connect(DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT l.stem, l.pack, t.id, t.audio_path, t.voice_gpu_key, m.extra
+                FROM lines l JOIN line_meta m USING(stem)
+                JOIN line_tts_versions t ON t.stem=l.stem
+                WHERE m.extra ? 'bank_material_index'
+                  AND t.status='ready' AND t.review_state='locked'
+                  AND (%s::text[] IS NULL OR l.region=ANY(%s::text[]))
+                ORDER BY l.stem
+            """, (regions, regions))
+            columns = [d[0] for d in cur.description]
+            return [dict(zip(columns, row)) for row in cur.fetchall()]
+
+
+def rebuild_battle_bank(bank: str, original: bytes, rows: list[dict]) -> bytes:
+    """Only supply selected WAVs to AudioMog; every other HCA stays original."""
+    entries = material_entries(original)
+    selected = {}
+    for row in rows:
+        index = int(_extra(row)["bank_material_index"])
+        if index < 0 or index >= len(entries) or index in selected:
+            raise RuntimeError(f"{bank}: invalid/duplicate material index {index}")
+        if (row["voice_gpu_key"] == "jp-lock"
+                and _extra(row).get("original_material_sha256") != entries[index]["digest"]):
+            raise RuntimeError(f"{bank}: material {index} is not the verified original Japanese stream")
+        selected[index] = row
+    changed = {i for i, r in selected.items()
+               if r["voice_gpu_key"] not in ("cn-original", "jp-lock")}
+    if not changed:
+        return original
+    digest = hashlib.sha256(original)
+    for index in sorted(changed):
+        row = selected[index]
+        digest.update(json.dumps([index, row["id"], row["audio_path"]]).encode())
+        digest.update((DATA / row["audio_path"]).read_bytes())
+    cache = BUILD_ROOT / "cache" / f"{bank}-materials-{digest.hexdigest()[:24]}.uasset"
+    if cache.exists():
+        result = repair_audio_exports(original, cache.read_bytes())
+        validate_replacements(original, result, changed)
+        return result
+    with tempfile.TemporaryDirectory(prefix="ff7-battle-", dir=BUILD_ROOT / "tmp") as tmp:
+        folder = Path(tmp)
+        (folder / f"{bank}.uasset").write_bytes(original)
+        project = folder / f"{bank}_Project"
+        project.mkdir()
+        settings = project / "RebuildSettings.json"
+        settings.write_text(json.dumps({"UseWavFilesIfAvailable": True}))
+        for index in sorted(changed):
+            entry, row = entries[index], selected[index]
+            if entry["codec"] != 7 or not entry["size"]:
+                raise RuntimeError(f"{bank}: material {index} is not voiced HCA")
+            proc = subprocess.run([
+                "ffmpeg", "-y", "-v", "error", "-i", str(DATA / row["audio_path"]),
+                "-ar", str(entry["rate"]), "-ac", str(entry["channels"]),
+                "-c:a", "pcm_s16le", str(project / f"{bank}_{index:03d}.wav"),
+            ], capture_output=True, timeout=60)
+            if proc.returncode:
+                raise RuntimeError(f"{bank}: WAV conversion failed for material {index}")
+        run_audiomog(settings)
+        result = repair_audio_exports(original, (project / f"{bank}.uasset").read_bytes())
+        validate_replacements(original, result, changed)
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_bytes(result)
+        return result
 
 
 def chunk_id_bytes(hex_id: str) -> bytes:
@@ -1068,6 +1138,7 @@ def main() -> int:
         if sub and sub != base:
             sub_rows.append(r)
     added = [] if args.limit else load_added_lines(regions)
+    battle_rows = [] if args.limit else load_battle_bank_lines(regions)
     added_groups = group_added(added)
     print(
         f"语音 {len(rows)} 条，其中锁定 {len(locked)} 条，锁定且字幕不同 {len(sub_rows)} 条",
@@ -1098,7 +1169,7 @@ def main() -> int:
             raise SystemExit(f"{path} 已经在 {known_chunks[cid]} 里，不能再补一份")
 
     missing_audio = []
-    for r in locked + added:
+    for r in locked + added + battle_rows:
         if not r["audio_path"] or not (DATA / r["audio_path"]).is_file():
             missing_audio.append(r["stem"])
     if missing_audio:
@@ -1154,6 +1225,19 @@ def main() -> int:
                 done += 1
                 if done % 25 == 0 or done == len(tasks):
                     print(f"  语音 {done}/{len(tasks)}", flush=True)
+
+    battle_groups: dict[str, list[dict]] = defaultdict(list)
+    for row in battle_rows:
+        battle_groups[_extra(row)["bank_stem"]].append(row)
+    for bank, group in battle_groups.items():
+        if bank not in originals:
+            raise RuntimeError(f"Battle bank {bank} is not in the selected source packs")
+        if any(r["stem"] == bank for r in locked):
+            raise RuntimeError(f"{bank}: whole-bank lock conflicts with individual material locks")
+        result = rebuild_battle_bank(bank, originals[bank], group)
+        if result != originals[bank]:
+            rebuilt[bank] = result
+        print(f"  战斗语音库 {bank}，已选条目 {len(group)}", flush=True)
 
     voice_bytes: dict[str, bytes] = {}
     for r in rows:
@@ -1347,6 +1431,8 @@ def main() -> int:
         "added_pack": ADD_PACK if added_bytes else None,
         "added_banks": len(added_bytes),
         "added_lines": len(added),
+        "battle_bank_lines": len(battle_rows),
+        "battle_banks": len(battle_groups),
         "subtitle_files": len(text_chunks),
         "subtitle_lines": subtitle_line_count,
         "validation": {
