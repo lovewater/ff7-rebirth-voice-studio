@@ -15,4 +15,4 @@ export TRANSLATION_ENV_FILE="${TRANSLATION_ENV_FILE:-$translation_state_dir/mode
 # 每天单独小日志，自动清理14天前的调度日志；完整模型输入输出已进数据库。
 find "$translation_state_dir" -maxdepth 1 -name 'run-*.log' -mtime +14 -delete
 printf '%s\n' "$$" > "$translation_state_dir/watchdog.pid"
-exec "$translation_node" "$translation_site_dir/scripts/translate-dialogue.cjs" >>"$translation_state_dir/run-$(date +%F).log" 2>&1
+exec "$translation_node" "$translation_site_dir/scripts/translate-dialogue.cjs" "$@" >>"$translation_state_dir/run-$(date +%F).log" 2>&1

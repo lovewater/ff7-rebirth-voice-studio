@@ -5,9 +5,9 @@ req('@next/env').loadEnvConfig(base,false,{info(){},error(){}});
 const parentEnv=path.dirname(base)+'/.env';
 for(const line of (fs.existsSync(parentEnv)?fs.readFileSync(parentEnv,'utf8'):'').split(/\r?\n/)){
  const m=line.match(/^([A-Z_][A-Z0-9_]*)=(.*)$/);
- if(m&&m[1].startsWith('SELF_HOSTED_'))process.env[m[1]]=m[2].trim().replace(/^(['"])(.*)\1$/,'$2');
+ if(m&&/^(SELF_HOSTED_|VOLCENGINE_LLM_|TRANSLATION_)/.test(m[1]))process.env[m[1]]=m[2].trim().replace(/^(['"])(.*)\1$/,'$2');
 }
-// 翻译专用端点可覆盖通用自部署配置，真实地址/密钥仅存ignored env，绝不硬编码。
+// 可读取翻译专用运行配置；真实地址/密钥仅存ignored env，绝不硬编码。
 const config=process.env.TRANSLATION_ENV_FILE;
 if(config)for(const line of fs.readFileSync(config,'utf8').split(/\r?\n/)){
  const m=line.match(/^([A-Z_][A-Z0-9_]*)=(.*)$/);

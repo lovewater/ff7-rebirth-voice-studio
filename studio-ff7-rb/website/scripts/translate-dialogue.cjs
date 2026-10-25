@@ -2,7 +2,7 @@
 // 中文注释约定：这是独立资料翻译，不是TTS改稿。只写translate_zh_jp/en，绝不改text_zh和锁定。
 const fs=require('node:fs'),path=require('node:path');
 const {base,load}=require('./translation/load-production.cjs');
-const {translationTokenLimit,parseTranslation}=require('./translation/output-policy.cjs');
+const {parseTranslation}=require('./translation/output-policy.cjs');
 const {loadNames,compileNames,currentEnglishNames,promptNames,validateNames}=require('./translation/names.cjs');
 const {sql}=load(base+'/src/lib/db.ts');
 const {callChatCompletion}=load(base+'/src/lib/llm-chat-client.ts');
@@ -17,6 +17,11 @@ process.on('SIGTERM',()=>{stopping=true;});process.on('SIGINT',()=>{stopping=tru
 const log=(event,data={})=>console.log(JSON.stringify({at:new Date().toISOString(),event,...data}));
 const sourceColumn=lang=>lang==='jp'?'text_jp':'text_en';
 const targetColumn=lang=>lang==='jp'?'translate_zh_jp':'translate_zh_en';
+const scopeFile=process.env.TRANSLATION_SCOPE_FILE;
+const scopeStems=scopeFile?JSON.parse(fs.readFileSync(scopeFile,'utf8')):null;
+if(scopeFile&&(!Array.isArray(scopeStems)||!scopeStems.length||scopeStems.some(s=>typeof s!=='string'||!s.trim())))throw Error('翻译范围必须是非空stem数组');
+const priorityStem=process.env.TRANSLATION_PRIORITY_STEM||'';
+const translationModel='minimax-m3';
 
 /** 固定使用数据库证据识别同演出，沿列表稳定id顺序，在边界停下。
  * 每个方向只取同语言非空的最多两条，遇到不同演出不得越界。
@@ -36,22 +41,22 @@ function contextFor(rows,index,lang){
 }
 
 async function seed(){
- // 同源文本没有变化的已完成项不再请求；源文改变才清掉旧译文并重新排队。
+ // 仅填缺失译文，不覆盖已有译文；范围内每种语言独立排队。
  for(const lang of ['jp','en']){
   const src=sql(sourceColumn(lang)),dst=sql(targetColumn(lang));
   await sql`INSERT INTO line_translation_jobs(stem,source_language,source_hash,status)
-   SELECT stem,${lang},md5(${src}),CASE WHEN ${dst} IS NOT NULL THEN 'done' ELSE 'pending' END FROM lines
-   WHERE nullif(btrim(${src}),'') IS NOT NULL
+   SELECT stem,${lang},md5(${src}),'pending' FROM lines
+   WHERE nullif(btrim(${src}),'') IS NOT NULL AND nullif(btrim(${dst}),'') IS NULL
+    AND (${scopeStems===null} OR stem=ANY(${scopeStems||[]}::text[]))
    ON CONFLICT(stem,source_language) DO UPDATE SET source_hash=excluded.source_hash,status='pending',attempts=0,
     next_attempt_at=now(),claimed_at=NULL,completed_at=NULL,error=NULL,name_review_target=NULL,name_review_priority=0,updated_at=now()
-   WHERE line_translation_jobs.source_hash<>excluded.source_hash`;
-  await sql`UPDATE lines l SET ${dst}=NULL FROM line_translation_jobs j
-   WHERE j.stem=l.stem AND j.source_language=${lang} AND j.status='pending' AND j.attempts=0 AND j.name_review_target IS NULL AND ${dst} IS NOT NULL`;
+   WHERE line_translation_jobs.source_hash<>excluded.source_hash OR line_translation_jobs.status='done'`;
  }
- // watchdog受flock保证单实例：旧进程退出后所有running可回收，不必等待固定超时。
- await sql`UPDATE line_translation_jobs SET status='retry',next_attempt_at=now(),claimed_at=NULL,error='worker-restarted',updated_at=now() WHERE status='running'`;
+ await sql`UPDATE line_translation_jobs SET status='retry',next_attempt_at=now(),claimed_at=NULL,error='worker-restarted',updated_at=now()
+  WHERE status='running' AND (${scopeStems===null} OR stem=ANY(${scopeStems||[]}::text[]))`;
+ await sql`UPDATE line_translation_jobs SET next_attempt_at=now() WHERE status='retry' AND (${scopeStems===null} OR stem=ANY(${scopeStems||[]}::text[]))`;
 }
-async function status(){return await sql`SELECT source_language,status,count(*)::int AS count FROM line_translation_jobs GROUP BY source_language,status ORDER BY source_language,status`;}
+async function status(){return await sql`SELECT source_language,status,count(*)::int AS count FROM line_translation_jobs WHERE (${scopeStems===null} OR stem=ANY(${scopeStems||[]}::text[])) GROUP BY source_language,status ORDER BY source_language,status`;}
 async function main(){
  if(process.argv.includes('--status')){console.log(JSON.stringify(await status()));return;}
  if(fs.existsSync(stopFile)){log('paused');return;}
@@ -59,7 +64,7 @@ async function main(){
  guardConnection=await sql.reserve();
  const [guard]=await guardConnection`SELECT pg_try_advisory_lock(7707,20261019) AS acquired`;
  if(!guard.acquired){log('already-running');return;}
- if(!process.env.SELF_HOSTED_LLM_URL||!process.env.SELF_HOSTED_LLM_MODEL)throw Error('未配置翻译自部署模型，禁止回退收费服务');
+ if(!process.env.VOLCENGINE_LLM_URL||!process.env.VOLCENGINE_LLM_KEY)throw Error('未配置MiniMax连接，禁止回退离线模型');
  await seed();
  if(process.argv.includes('--prepare')){log('prepared',{status:await status()});return;}
  // 同时只保留一套只读官方源文。各任务重新核对hash；长任务不把译文作为下一条上下文。
@@ -67,19 +72,25 @@ async function main(){
  const byStem=new Map(rows.map((r,i)=>[r.stem,i]));
  const glossary=compileNames(loadNames(stateDir));
  const limitArg=process.argv.find(x=>x.startsWith('--limit=')),limit=limitArg?Number(limitArg.slice(8)):Infinity;
- log('started',{concurrency:3,sourceRows:rows.length,model:process.env.SELF_HOSTED_LLM_MODEL,thinking:false,maxOutputTokens:512});
+ log('started',{concurrency:3,sourceRows:rows.length,model:translationModel,thinking:false,maxOutputTokens:512,scope:scopeStems?.length??'all-missing'});
  async function worker(slot){
   while(!stopping&&!fs.existsSync(stopFile)&&claimed<limit){
    // 逐条事务领取，三个worker不会领取同一个任务。done立即落库就是断点。
    const job=await sql.begin(async tx=>{
     const [j]=await tx`SELECT j.* FROM line_translation_jobs j JOIN lines l USING(stem)
      WHERE j.status IN ('pending','retry') AND j.next_attempt_at<=now()
-     ORDER BY j.name_review_priority DESC,l.id,j.source_language LIMIT 1 FOR UPDATE OF j SKIP LOCKED`;
+      AND (${scopeStems===null} OR j.stem=ANY(${scopeStems||[]}::text[]))
+      AND ((j.source_language='jp' AND nullif(btrim(l.text_jp),'') IS NOT NULL AND nullif(btrim(l.translate_zh_jp),'') IS NULL)
+       OR (j.source_language='en' AND nullif(btrim(l.text_en),'') IS NOT NULL AND nullif(btrim(l.translate_zh_en),'') IS NULL))
+     ORDER BY (j.stem=${priorityStem}) DESC,j.name_review_priority DESC,l.id,j.source_language LIMIT 1 FOR UPDATE OF j SKIP LOCKED`;
     if(!j)return null;
     await tx`UPDATE line_translation_jobs SET status='running',attempts=attempts+1,claimed_at=now(),updated_at=now() WHERE stem=${j.stem} AND source_language=${j.source_language}`;return j;
    });
    if(!job){
-    const [n]=await sql`SELECT count(*)::int AS count FROM line_translation_jobs WHERE status<>'done'`;
+    const [n]=await sql`SELECT count(*)::int AS count FROM line_translation_jobs j JOIN lines l USING(stem) WHERE j.status<>'done'
+      AND (${scopeStems===null} OR j.stem=ANY(${scopeStems||[]}::text[]))
+      AND ((j.source_language='jp' AND nullif(btrim(l.text_jp),'') IS NOT NULL AND nullif(btrim(l.translate_zh_jp),'') IS NULL)
+       OR (j.source_language='en' AND nullif(btrim(l.text_en),'') IS NOT NULL AND nullif(btrim(l.translate_zh_en),'') IS NULL))`;
     if(!n.count)return;await sleep(5000);continue;
    }
    claimed++;const started=Date.now();log('claim',{slot,stem:job.stem,lang:job.source_language});
@@ -96,16 +107,16 @@ async function main(){
      {role:'user',content:'',promptKey:'translation.independent.input',promptValues:{sourceLanguage:lang==='jp'?'日文':'英文',current:line[col],...context}},
      ...nameMessages
     ]);
-    const output=await callChatCompletion({messages,modelId:'self-hosted',task:'independent-translation-'+lang,
+    const output=await callChatCompletion({messages,modelId:'volcengine',task:'independent-translation-'+lang,
      stem:job.stem,promptKeys:['translation.independent.system','translation.independent.input',...(names.length?['translation.name-glossary']:[])],
-     selfHostedThinking:false,json:true,maxTokens:translationTokenLimit(line[col]),attempts:3,selfHosted:{timeoutMs:1800000,idleTimeoutMs:120000}});
-    // 语法错误由流式适配器重试；字段不合规在此拒绝，进入现有checkpoint退避重试。
+     json:true,maxTokens:512,attempts:3,volcengine:{model:translationModel,thinking:'disabled',reasoningEffort:'none'}});
+    // MiniMax返回值仍严格校验；字段不合规进入原有checkpoint退避重试。
     const translated=parseTranslation(output.content,line[col]);
     validateNames(translated,line[col],lang,names);
     const written=await sql.begin(async tx=>{
-     const [saved]=await tx`UPDATE lines SET ${dst}=${translated.trim()} WHERE stem=${job.stem} AND md5(${sql(col)})=${job.source_hash} RETURNING stem`;
+     const [saved]=await tx`UPDATE lines SET ${dst}=${translated.trim()} WHERE stem=${job.stem} AND md5(${sql(col)})=${job.source_hash} AND nullif(btrim(${dst}),'') IS NULL RETURNING stem`;
      if(!saved){await tx`UPDATE line_translation_jobs SET status='retry',next_attempt_at=now()+interval '1 hour',error='source-changed-restart-required',updated_at=now() WHERE stem=${job.stem} AND source_language=${lang}`;return false;}
-     await tx`UPDATE line_translation_jobs SET status='done',completed_at=now(),updated_at=now(),error=NULL,model=${process.env.SELF_HOSTED_LLM_MODEL},name_reference_revision=${glossary.revision} WHERE stem=${job.stem} AND source_language=${lang}`;return true;
+     await tx`UPDATE line_translation_jobs SET status='done',completed_at=now(),updated_at=now(),error=NULL,model=${translationModel},name_reference_revision=${glossary.revision} WHERE stem=${job.stem} AND source_language=${lang}`;return true;
     });
     log(written?'done':'source-changed',{slot,stem:job.stem,lang,elapsedMs:Date.now()-started});
    }catch(error){
