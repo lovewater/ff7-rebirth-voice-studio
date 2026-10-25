@@ -25,6 +25,9 @@ function harness() {
     if(id==='./db') return {sql};
     if(id==='./preserved-tail')return {locatePreservedTail:()=>null};
     if(id==='./inline-pinyin')return {stripInlinePinyin:x=>x};
+    if(id==='./pure-interjection')return require('./pure-interjection.ts');
+    if(id==='./singing-original')return {isSingingLine:()=>false};
+    if(id==='./shushu-emotion')return {pureShushuOriginal:()=>false};
     if(id==='./rewrite-context')return require('./rewrite-context.ts');
     if(id==='./auto-run-two-parts')return {setMeaningAnchor:()=>{}};
     if(id==='./fallback-feedback')return require('./fallback-feedback.ts');
@@ -42,7 +45,7 @@ function harness() {
   };
   mod._compile(ts.transpileModule(readFileSync(`${__dirname}/auto-run.ts`,'utf8'),{
     compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true},
-  }).outputText + '\nexports.testHooks={runPerformance,runCasual,loadRewriteContext,setAsr:fn=>asrSeedFile=fn,setClone:fn=>generateClone=fn};', `${__dirname}/auto-run.ts`);
+  }).outputText + '\nexports.testHooks={runPerformance,runCasual,loadRewriteContext,executeAutoRunMeasured,setLine:fn=>loadLine=fn,setSimple:fn=>runCasualDuration=fn,setAsr:fn=>asrSeedFile=fn,setClone:fn=>generateClone=fn};', `${__dirname}/auto-run.ts`);
   const api=mod.exports.testHooks;
   api.setAsr(async()=>({result:{text:'おおとりか',words:[],utterances:[]},cached:true}));
   api.setClone(async(...args)=>{calls.clone.push(args);throw stop;});
@@ -79,4 +82,13 @@ test('rewrite context uses locked neighboring Chinese while keeping current in-r
     assert.ok(calls.queries.some(q=>q.includes("review_state='locked'")));
     assert.equal(result.line.text_zh,original);
   } finally {global.fetch=previousFetch;}
+});
+
+test('italic scene dispatches directly to casual duration without Japanese ASR, performance planning or automatic abnormal marking',async()=>{
+ const {api,calls}=harness();let captured;
+ const italic={...line,stem:'WORLD_QST_01_0600_0200_00_red',dialogue_mode:'scene',subtitle_italic:true};
+ api.setLine(async()=>italic);api.setSimple(async(...args)=>{captured=args;});
+ await api.executeAutoRunMeasured('1',italic.stem,{forceGenerate:false});
+ assert.equal(captured[0],'1');assert.equal(captured[1],italic);assert.equal(captured[2],false);
+ assert.equal(calls.planner.length,0);assert.equal(calls.clone.length,0);
 });

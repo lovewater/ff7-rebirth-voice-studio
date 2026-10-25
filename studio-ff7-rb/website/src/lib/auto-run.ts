@@ -849,6 +849,7 @@ async function executeAutoRunMeasured(runId: string, stem: string, options: { fo
         workflow:"xiu-only-original",reason:"整句为重复咻／シュ情绪，纯机械保留完整日文原声及中文字幕",
       });
     }
+    else if (line.subtitle_italic) await runCasualDuration(runId, line, false);
     else if (kind === "performance") await runPerformance(runId, line, recovery);
     else await runCasual(runId, line, recovery);
   } catch (error) {
@@ -957,7 +958,7 @@ async function runItalicNatural(runId: string, line: LinePack, recovery: RunReco
 
 async function runCasual(runId: string, line: LinePack, recovery: RunRecovery) {
   if (line.subtitle_italic) {
-    await runWholeLineFallback(runId, line, recovery, await audioToMonoWav(await readFile(dataFile(`jp/${line.stem}.mp3`))), "斜体自然时长流程");
+    await runCasualDuration(runId, line, false);
     return;
   }
   await log(runId, "workflow", "工作流：普通对话流程", { workflow: "casual" }, "result");
@@ -2214,8 +2215,16 @@ export async function executeCasualDurationReview(runId: string, stem: string) {
     const line = await loadLine(stem);
     if (!line || !["field", "unknown"].includes(line.dialogue_mode || ""))
       throw new Error("普通时长流程只允许field/unknown台词");
+    return runCasualDuration(runId,line,true);
+  });
+}
+
+/** 斜体共用自然语速时长流程：不调用日文ASR、拟声分类、拍数或分段对口型。 */
+async function runCasualDuration(runId: string, line: LinePack, markAbnormal: boolean) {
+    const stem=line.stem;
+    const workflow=line.subtitle_italic ? "italic-casual-duration-v1" : "casual-duration-review-v1";
     const guard = async () => {
-      const marked = await sql`SELECT id FROM line_tts_versions WHERE stem=${stem} AND review_state IN ('locked','abnormal') LIMIT 1`;
+      const marked = await sql`SELECT id FROM line_tts_versions WHERE stem=${stem} AND (review_state='locked' OR (${markAbnormal} AND review_state='abnormal')) LIMIT 1`;
       if (marked.length) throw new Error("已有人工选择，停止本条处理并保留人工状态");
     };
     const attempts: CasualDurationAttempt[] = [];
@@ -2231,7 +2240,7 @@ export async function executeCasualDurationReview(runId: string, stem: string) {
       const jp = decodeWavMono(await audioToMonoWav(await readFile(dataFile(`jp/${stem}.mp3`))));
       const target = jp.samples.length / jp.sampleRate;
       const rules = await lexicon();
-      await log(runId, "workflow", "普通对话：原话先读，完整且总长不超过原声则通过；最多三次反馈，最终统一人工异常", {workflow:"casual-duration-review-v1",target,maxFeedbackRounds:3,manualReview:"abnormal"}, "result");
+      await log(runId, "workflow", `${line.subtitle_italic?"斜体按普通对话":"普通对话"}：原话先读，核字完整且总长不超过原声即通过；最多三次反馈，不分段对口型`, {workflow,target,maxFeedbackRounds:3,manualReview:markAbnormal?"abnormal":"candidate"}, "result");
       const result = await runCasualDurationWorkflow({
         original: line.text_zh || "", target, guard,
         attempt: async (script, round) => {
@@ -2244,13 +2253,13 @@ export async function executeCasualDurationReview(runId: string, stem: string) {
           const duration = wave.samples.length / wave.sampleRate;
           const row: CasualDurationAttempt = {id:clip.id,script,duration,textPassed:false,reason:"核字未完成"};
           attempts.push(row);
-          await sql`UPDATE line_tts_versions SET conversion_meta=COALESCE(conversion_meta,'{}'::jsonb)||${sql.json({workflow:"casual-duration-review-v1",duration_review:{round,target,duration,textPassed:false,reason:row.reason,original:round===0}})}::jsonb WHERE id=${clip.id} AND auto_run_id=${runId}`;
+          await sql`UPDATE line_tts_versions SET conversion_meta=COALESCE(conversion_meta,'{}'::jsonb)||${sql.json({workflow,duration_review:{round,target,duration,textPassed:false,reason:row.reason,original:round===0}})}::jsonb WHERE id=${clip.id} AND auto_run_id=${runId}`;
           const asr = await asrQwen(clip);
           // 完全相同的正文直接核过；有字面差异才由同通道模型核近音/漏字。
           const exact = !!compactCasualText(clip.spoken_text) && compactCasualText(clip.spoken_text)===compactCasualText(asr.text || "");
           const judged = exact ? {ok:true,reason:"ASR正文逐字一致"} : await judgeSpokenText({spoken:clip.spoken_text,asr:asr.text,lexicon:rules,pronunciationText:clip.tts_text});
           Object.assign(row,{textPassed:judged.ok,reason:judged.reason});
-          await sql`UPDATE line_tts_versions SET conversion_meta=COALESCE(conversion_meta,'{}'::jsonb)||${sql.json({workflow:"casual-duration-review-v1",duration_review:{round,target,duration,textPassed:judged.ok,asr:asr.text,reason:judged.reason,original:round===0}})}::jsonb WHERE id=${clip.id} AND auto_run_id=${runId}`;
+          await sql`UPDATE line_tts_versions SET conversion_meta=COALESCE(conversion_meta,'{}'::jsonb)||${sql.json({workflow,duration_review:{round,target,duration,textPassed:judged.ok,asr:asr.text,reason:judged.reason,original:round===0}})}::jsonb WHERE id=${clip.id} AND auto_run_id=${runId}`;
           await log(runId,"casual-duration-attempt",`第${round+1}次：核字${judged.ok?"通过":"未过"}，${duration.toFixed(3)}s / 上限${target.toFixed(3)}s`,{...row,round,target,asr:asr.text},"result");
           return row;
         },
@@ -2283,7 +2292,7 @@ export async function executeCasualDurationReview(runId: string, stem: string) {
     }
     // 先归组并保留完整日志，再标记审核；自动通过与人工状态是两个独立维度。
     await finish(runId,passed?"passed":"failed",error,selected?.id ?? null,{preserveSubtitle:true,noModelRetry:true});
-    if (selected) await sql.begin(async tx => {
+    if (selected && markAbnormal) await sql.begin(async tx => {
       await tx`SELECT stem FROM lines WHERE stem=${stem} FOR UPDATE`;
       const marked = await tx`SELECT id FROM line_tts_versions WHERE stem=${stem} AND review_state IN ('locked','abnormal') FOR UPDATE`;
       if (marked.length) {
@@ -2293,5 +2302,4 @@ export async function executeCasualDurationReview(runId: string, stem: string) {
       await tx`UPDATE line_tts_versions SET review_state='abnormal',used_at=now() WHERE id=${selected.id} AND stem=${stem} AND auto_run_id=${runId} AND status='ready' AND review_state='candidate'`;
       await tx`INSERT INTO line_auto_run_events(run_id,step,level,message,payload) VALUES(${runId},'manual-review','result','按用户要求统一标为人工异常，等待逐条审核',${tx.json({ttsId:selected.id,automaticPassed:passed,workflow:"casual-duration-review-v1"})})`;
     });
-  });
 }
