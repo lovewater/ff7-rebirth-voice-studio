@@ -1,4 +1,4 @@
-import { tailBodyAudio, appendPreservedTail } from "./preserved-tail";
+import { tailBodyAudio, appendPreservedTail, preservedBodyDurationMs } from "./preserved-tail";
 import { applyScales, concatWavs, mixSegments, wavDuration } from "./audio-splice";
 import { SCALE_LO } from "./auto-run-rules";
 import type { OnoPlan, SplicePiece } from "./auto-run-onomatopoeia";
@@ -21,7 +21,7 @@ export function fitItalicAudio(jp: Buffer, tts: Buffer, plan: OnoPlan, pieces: S
   if (!plan.preservedTail) return fitItalicBody(jp, tts, plan, pieces, target);
   const tail = plan.preservedTail, bodyPlan = { ...plan, preservedTail: undefined,
     enabled: plan.onomatopoeia.length > 0 || plan.ambient.length > 0 };
-  const packed = fitItalicBody(tailBodyAudio(jp, tail), tts, bodyPlan, pieces, tail.startMs / 1000);
+  const packed = fitItalicBody(tailBodyAudio(jp, tail), tts, bodyPlan, pieces, preservedBodyDurationMs(tail) / 1000);
   const restored = appendPreservedTail(jp, packed.audio, tail);
   const d = decodeWavMono(restored.audio), duration = d.samples.length / d.sampleRate;
   return { ...packed, audio: restored.audio, fit: { ...packed.fit, target: duration,

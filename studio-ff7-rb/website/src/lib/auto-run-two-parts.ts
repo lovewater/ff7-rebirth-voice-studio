@@ -1,4 +1,4 @@
-import { tailBodyAudio, appendPreservedTail } from "./preserved-tail";
+import { tailBodyAudio, appendPreservedTail, preservedBodyDurationMs } from "./preserved-tail";
 import { withRoundSpeedContext, roundSpeedMessages } from "./round-speed-context";
 import { NATURAL_PUNCTUATION_HINT } from "./rewrite-punctuation-hint";
 import { fastLongPromptValues } from "./fast-long-pressure";
@@ -144,7 +144,7 @@ export function assemblePreserved(jp: Buffer, cn: Buffer, plan: OnoPlan, pieces:
         const tail = plan.preservedTail;
         const bodyPlan = { ...plan, preservedTail: undefined,
             enabled: plan.onomatopoeia.length > 0 || plan.ambient.length > 0 };
-        const packed = assemblePreservedBody(tailBodyAudio(jp, tail), cn, bodyPlan, pieces, tail.startMs / 1000, reference, splitRegions);
+        const packed = assemblePreservedBody(tailBodyAudio(jp, tail), cn, bodyPlan, pieces, preservedBodyDurationMs(tail) / 1000, reference, splitRegions);
         const restored = appendPreservedTail(jp, packed.audio, tail);
         const d = decodeWavMono(restored.audio), duration = d.samples.length / d.sampleRate;
         return { ...packed, audio: restored.audio, fit: { ...packed.fit,

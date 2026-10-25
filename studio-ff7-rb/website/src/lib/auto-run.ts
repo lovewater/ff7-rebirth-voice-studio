@@ -1,5 +1,5 @@
 import { stripInlinePinyin } from "./inline-pinyin";
-import { locatePreservedTail, tailBodyAsr, tailBodyAudio, appendPreservedTail, type PreservedTail } from "./preserved-tail";
+import { locatePreservedTail, tailBodyAsr, tailBodyAudio, appendPreservedTail, preservedBodyDurationMs, type PreservedTail } from "./preserved-tail";
 import { referenceWordEvidence } from "./reference-word-evidence";
 import { rememberRoundSpeed } from "./round-speed-context";
 import type { CandidateSpeedMeasurements } from "./selection-speed";
@@ -1362,13 +1362,13 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
     blocks: missingAudioBlocks({ ...decodedJp, words: asrWords }) });
   if (preservedTail) {
     jpAsr = tailBodyAsr(jpAsr, preservedTail); asrWords = jpAsr.words;
-    decodedJp = decodeWavMono(tailBodyAudio(jpWav, preservedTail)); durationMs = preservedTail.startMs;
-    await log(runId,"preserved-tail","正文完整确认：尾部到文件结束作为一个原声整体保留，不分类、不计正文时长，最终按原位置拼回",{
+    decodedJp = decodeWavMono(tailBodyAudio(jpWav, preservedTail)); durationMs = preservedBodyDurationMs(preservedTail);
+    await log(runId,"preserved-tail","正文完整确认：头尾声音分别作为原声整体保留，不分类、不计正文时长，最终按原位置拼回",{
       ...preservedTail, bodyText:jpAsr.text, bodyWordCount:asrWords.length,
     },"result");
   }
   const fallback = (reason?: string) => runWholeLineFallback(runId,
-    preservedTail ? {...line,jp_dur_s:preservedTail.startMs/1000} : line, recovery,
+    preservedTail ? {...line,jp_dur_s:preservedBodyDurationMs(preservedTail)/1000} : line, recovery,
     preservedTail ? tailBodyAudio(jpWav,preservedTail) : jpWav, reason,
     preservedTail ? {tail:preservedTail,original:jpWav,asr:jpAsr} : undefined);
   // 切片对象使用ASR自己的字幕与字轴，避免官方字幕的汉字/假名写法差异阻断定位。
@@ -1498,10 +1498,11 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
     speech: plan.speech, onomatopoeia: plan.onomatopoeia, ambient: plan.ambient, cnTtsText: plan.cnTtsText,
   }, "think");
 
-  const pcm = parseWavPcm16(jpWav);
+  const bodyJpWav = preservedTail ? tailBodyAudio(jpWav,preservedTail) : jpWav;
+  const pcm = parseWavPcm16(bodyJpWav);
   // 每条场景句都准备参考：删拟声/环境音，裁首尾静音，内部静音逐字节保留。
   // 不凭正文片段重建参考，也不再额外补 0.3s 或插入估算的停顿。
-  const reference = buildSpeechReference(jpWav, pcm, plan);
+  const reference = buildSpeechReference(bodyJpWav, pcm, {...plan,preservedTail:undefined});
   // 拟声/环境音分类与后续硬分段使用同一证据：不把分类阶段漏掉的声音重新升级成正文。
   const referencePartsEvidence = speechChunks(reference.audio, TWO_PART_JP_GAP_S);
   const referenceEvidence = referenceWordEvidence({sampleRate:referencePartsEvidence.wave.sampleRate,

@@ -14,14 +14,18 @@ const REFERENCE_EDGE_PEAK_RATIO = 0.005;
 export function buildSpeechReference(wav: Buffer, pcm: PcmLayout, remove: {
   onomatopoeia: ReferenceSpan[];
   ambient: ReferenceSpan[];
-  preservedTail?: ReferenceSpan;
+  preservedTail?: ReferenceSpan & {bodyStartMs?:number};
   speech?: ReferenceSpan[];
 }) {
   const { sampleRate, blockAlign, dataOffset, dataBytes } = pcm;
   if (!(sampleRate > 0) || !(blockAlign > 0) || blockAlign % 2 !== 0 || dataOffset < 8 || dataBytes % blockAlign !== 0
     || dataOffset + dataBytes > wav.length) throw new Error("参考音频不是有效的 PCM WAV");
   const frames = dataBytes / blockAlign;
-  const cuts = [...remove.onomatopoeia, ...remove.ambient, ...(remove.preservedTail ? [remove.preservedTail] : [])].map((span) => {
+  const offset=remove.preservedTail?.bodyStartMs??0;
+  const toOriginal=(span:ReferenceSpan)=>({startMs:span.startMs+offset,endMs:span.endMs+offset});
+  const edges=remove.preservedTail;
+  const cuts = [...remove.onomatopoeia.map(toOriginal), ...remove.ambient.map(toOriginal),
+    ...(edges && edges.endMs>edges.startMs ? [edges] : []), ...(offset>0?[{startMs:0,endMs:offset}]:[])].map((span) => {
     if (!Number.isFinite(span.startMs) || !Number.isFinite(span.endMs) || span.endMs <= span.startMs) {
       throw new Error("参考音频删除区间无效");
     }
@@ -65,8 +69,8 @@ export function buildSpeechReference(wav: Buffer, pcm: PcmLayout, remove: {
   // 先限定到首段正文至末段正文的外包络，再保守细裁其中的首尾余静音。
   // 只用正文的首尾边界，绝不据此删掉正文之间的静音。
   const body = remove.speech?.length ? {
-    start: Math.round(Math.min(...remove.speech.map((span) => span.startMs)) * sampleRate / 1000),
-    end: Math.round(Math.max(...remove.speech.map((span) => span.endMs)) * sampleRate / 1000),
+    start: Math.round(Math.min(...remove.speech.map((span) => span.startMs+offset)) * sampleRate / 1000),
+    end: Math.round(Math.max(...remove.speech.map((span) => span.endMs+offset)) * sampleRate / 1000),
   } : { start: 0, end: frames };
   const bodyRanges = kept.flatMap((part) => {
     const start = Math.max(body.start, part.sourceStart);
