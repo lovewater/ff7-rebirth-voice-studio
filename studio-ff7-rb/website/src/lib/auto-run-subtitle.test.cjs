@@ -9,29 +9,29 @@ test('BEG2000 compresses rewritten subtitle to balanced two lines without changi
   assert.equal(autoRunSubtitle(draft).split('\n').length, 2);
 });
 test('subtitle removes audio control markers while preserving text and punctuation', () => {
-  assert.equal(autoRunSubtitle('  第一段[停顿=500]\\n第二段！  '), '第一段\n第二段！');
-  assert.equal(autoRunSubtitle('甲\r\n乙'), '甲\n乙');
+  assert.equal(autoRunSubtitle('  第一段[停顿=500]\\n第二段！  '), '第一段第二段！');
+  assert.equal(autoRunSubtitle('甲\r\n乙'), '甲乙');
 });
 test('an empty rewrite cannot erase the final subtitle', () => {
   assert.throws(() => autoRunSubtitle(' [停顿=500] '), /不能为空/);
 });
 
-test('one/two lines stay unchanged; explicit and escaped line breaks share the rule', () => {
+test('short subtitles merge; explicit and escaped line breaks share the rule', () => {
   assert.equal(twoLineSubtitle('一句话！'), '一句话！');
-  assert.equal(twoLineSubtitle('甲\n乙。'), '甲\n乙。');
-  assert.equal(twoLineSubtitle('甲甲甲\\n乙乙\\n丙丙\\n丁丁丁'), '甲甲甲，乙乙\n丙丙，丁丁丁');
+  assert.equal(twoLineSubtitle('甲\n乙。'), '甲乙。');
+  assert.equal(twoLineSubtitle('甲甲甲\\n乙乙\\n丙丙\\n丁丁丁'), '甲甲甲乙乙丙丙丁丁丁');
 });
 test('existing punctuation is preserved without an extra comma', () => {
-  assert.equal(twoLineSubtitle('甲甲甲甲\n乙，\n丙！'), '甲甲甲甲\n乙，丙！');
-  assert.equal(twoLineSubtitle('甲甲甲甲\n乙……\n丙！'), '甲甲甲甲\n乙……丙！');
+  assert.equal(twoLineSubtitle('甲甲甲甲\n乙，\n丙！'), '甲甲甲甲乙，丙！');
+  assert.equal(twoLineSubtitle('甲甲甲甲\n乙……\n丙！'), '甲甲甲甲乙……丙！');
 });
 test('the retained newline is selected by character balance, including merges in the first line', () => {
-  assert.equal(twoLineSubtitle('甲\n乙\n丙丙丙丙丙丙'), '甲，乙\n丙丙丙丙丙丙');
+  assert.equal(twoLineSubtitle('甲\n乙\n丙丙丙丙丙丙'), '甲乙丙丙丙丙丙丙');
 });
 test('formatting is idempotent and punctuation does not distort text length balance', () => {
   for (const input of ['甲甲！\n乙乙乙\n丙丙丙', '甲\n乙\n丙\n丁\n戊', '甲甲甲甲\r\n乙\r\n丙']) {
     const output = twoLineSubtitle(input);
-    assert.equal(output.split('\n').length, 2);
+    assert.equal(output.split('\n').length, [...input.replace(/\s/gu,'')].length < 14 ? 1 : 2);
     assert.equal(twoLineSubtitle(output), output);
     const letters = (s) => s.replace(/[\s\p{P}\p{S}]/gu, '');
     assert.equal(letters(output), letters(input));

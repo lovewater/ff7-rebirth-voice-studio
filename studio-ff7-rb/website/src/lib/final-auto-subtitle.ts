@@ -16,6 +16,8 @@ export function finalizeAutoSubtitle(draft: string, original: string): string | 
   // 先合并短行，再清理仍保留的换行：合并后的逗号仍承担停顿，不应删除。
   // 只删除换行紧邻的逗号和单个句点；问号、感叹号、引号、省略号等保持原样。
   result = result.replace(/[，,。．]+\n/gu, "\n").replace(/(?<!\.)\.(?!\.)\n/gu, "\n");
+  // 清理换行处标点后可能从14降至13字符，仍按最终显示字符数统一合行。
+  if (result.includes("\n") && [...result.replace(/\s/gu, "")].length < 14) result = result.replace(/\n/g, "");
   // 最后比较正文；排版或补引号不能绕过原字幕优先规则。
   // 不做同义词、读音、简繁或大小写归一；真正增删/替换正文的改稿必须保留。
   const body = (text: string) => text.replace(/\\r\\n|\\n/g, "\n").replace(/[\s\p{P}\p{S}]/gu, "");

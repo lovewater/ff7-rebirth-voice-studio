@@ -1,4 +1,4 @@
-import { subtitleCharacters } from "./auto-run-subtitle";
+import { subtitleCharacters, subtitleDisplayCharacters, SUBTITLE_SINGLE_LINE_LIMIT } from "./auto-run-subtitle";
 
 /** 旧换行只作为排版空白移除，不新增标点；已有标点原样保留。 */
 export function flattenSubtitleForReflow(draft: string) {
@@ -36,7 +36,7 @@ const wordSegmenter = new Intl.Segmenter("zh-CN", { granularity: "word" });
 export function reflowSubtitleLocally(draft: string, options: { preserveBreakPunctuation?: boolean } = {}): string {
   const source = flattenSubtitleForReflow(draft);
   const total = subtitleCharacters(source);
-  if (total <= 15) return source;
+  if (subtitleDisplayCharacters(source) < SUBTITLE_SINGLE_LINE_LIMIT) return source;
   const punctuation: { index: number; score: number }[] = [];
   const words: { index: number; score: number }[] = [];
   let quoteDepth = 0;
@@ -63,7 +63,9 @@ export function reflowSubtitleLocally(draft: string, options: { preserveBreakPun
   const candidates = [...punctuation, ...words];
   const best = candidates.reduce<(typeof candidates)[number] | undefined>((a, b) => !a || b.score < a.score ? b : a, undefined);
   // 单个不可拆的长数字/单词保留整体，不强行切开。
-  return best ? `${options.preserveBreakPunctuation ? source.slice(0, best.index).trimEnd() : cleanBreakEnd(source.slice(0, best.index))}\n${source.slice(best.index).trimStart()}` : source;
+  if (!best) return source;
+  const result = `${options.preserveBreakPunctuation ? source.slice(0, best.index).trimEnd() : cleanBreakEnd(source.slice(0, best.index))}\n${source.slice(best.index).trimStart()}`;
+  return subtitleDisplayCharacters(result) < SUBTITLE_SINGLE_LINE_LIMIT ? result.replace(/\n/g, "") : result;
 }
 
 /** 恢复前序临时断行丢掉的原稿逗句号，绝不凭空补标点。

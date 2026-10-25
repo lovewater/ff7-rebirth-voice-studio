@@ -1,10 +1,16 @@
-/** 超过十五个正文字符的单行字幕，优先在现有标点后断行。
+/** 字幕单行门槛：含标点和符号、不含空白，严格少于14字符才合行。 */
+export const SUBTITLE_SINGLE_LINE_LIMIT = 14;
+export function subtitleDisplayCharacters(text: string) {
+  return [...text.replace(/\\r\\n|\\n/g, "\n").replace(/\s/gu, "")].length;
+}
+
+/** 含标点达到14字符的单行字幕，优先在现有标点后断行。
  * 穷举能使两侧都有正文的标点边界，按两行正文字符数差最小择优；同分取较早位置。
  * 只删除所选换行处的逗号、句号（中英文），其他标点及未选中的标点原样保留。
  * 只有句末标点不算可用断点，交给独立模型分行任务处理。
  */
 function splitLongSubtitleAtPunctuation(text: string) {
-  if (subtitleCharacters(text) <= 15) return null;
+  if (subtitleDisplayCharacters(text) < SUBTITLE_SINGLE_LINE_LIMIT) return null;
   let best: { text: string; difference: number } | null = null;
   for (const match of text.matchAll(/\p{P}+/gu)) {
     const end = match.index! + match[0].length;
@@ -18,7 +24,8 @@ function splitLongSubtitleAtPunctuation(text: string) {
     const difference = Math.abs(a - b);
     if (!best || difference < best.difference) best = { text: `${left.trimEnd()}\n${right}`, difference };
   }
-  return best?.text ?? null;
+  return best && subtitleDisplayCharacters(best.text) < SUBTITLE_SINGLE_LINE_LIMIT
+    ? best.text.replace(/\n/g, "") : best?.text ?? null;
 }
 
 export function subtitleCharacters(text: string) {
@@ -27,7 +34,7 @@ export function subtitleCharacters(text: string) {
 
 /** 同步规则已执行后仍是长单行，才需要另调模型；句末标点不能制造空的第二行。 */
 export function needsSubtitleLineBreak(text: string) {
-  return !text.includes("\n") && subtitleCharacters(text) > 15;
+  return !text.includes("\n") && subtitleDisplayCharacters(text) >= SUBTITLE_SINGLE_LINE_LIMIT;
 }
 
 /** 模型只能在原字串中插入一个换行，不得增删字、改标点或改变词序。
@@ -55,6 +62,7 @@ export function validateSubtitleLineBreak(source: string, lines: unknown) {
 export function twoLineSubtitle(value: string) {
   const lines = value.replace(/\\r\\n|\\n/g, "\n").replace(/\r\n?/g, "\n")
     .split("\n").map((line) => line.trim()).filter(Boolean);
+  if (subtitleDisplayCharacters(lines.join("")) < SUBTITLE_SINGLE_LINE_LIMIT) return lines.join("");
   if (lines.length === 1) return splitLongSubtitleAtPunctuation(lines[0]) ?? lines[0];
   if (lines.length <= 2) return lines.join("\n");
   const counts = lines.map((line) => [...line.replace(/[\s\p{P}\p{S}]/gu, "")].length);

@@ -102,3 +102,32 @@ test('temporary line split keeps punctuation until final reflow; missing source 
  assert.equal(restore('第一句？\n第二句','第一句。第二句'),'第一句？\n第二句');
  assert.equal(restore('第一句\n第二句','第一句。第二句'),'第一句。\n第二句');
 });
+
+test('all subtitle entry points count punctuation at the strict 13/14 boundary',async()=>{
+ const {twoLineSubtitle,subtitleDisplayCharacters:count}=require('./auto-run-subtitle.ts');
+ const {finalizeAutoSubtitle:finalize}=require('./final-auto-subtitle.ts');
+ const {reflowSubtitleLocally:reflow}=loadReflow();
+ const short='一二三四五六，七八九十一！',long='一二三四五六？七八九十一二！';
+ assert.equal(count(short),13);assert.equal(count(long),14);
+ for(const draft of [short,short.replace('，','，\n')]){
+  assert.equal(twoLineSubtitle(draft),short);assert.equal(reflow(draft),short);
+  for(const options of [{},{reflow:true}])assert.equal(await formatter(()=>{},options).format(draft),short);
+ }
+ assert.equal(needsSubtitleLineBreak(short),false);assert.equal(needsSubtitleLineBreak(long),true);
+ assert.equal(twoLineSubtitle(long),'一二三四五六？\n七八九十一二！');
+ const result=reflow(long);assert.equal(result.split('\n').length,2);assert.equal(finalize(result,'别的原稿'),result);
+ assert.equal(count(' 一二三四五六，\n七八九十一！\t'),13);
+ assert.equal(count('一二三四五六，\\n七八九十一！'),13);
+ const edge='一二三四五六，七八九十一二！',merged='一二三四五六七八九十一二！';
+ assert.equal(count(edge),14);assert.equal(twoLineSubtitle(edge),merged);
+ assert.equal(reflow(edge),merged);assert.equal(finalize(edge.replace('，','，\n'),'原稿'),merged);
+ assert.equal(reflow(reflow(edge)),merged);
+});
+test('CARDG final subtitle and lock proposal keep two lines without changing body',async()=>{
+ const source='再这样下去，立刻把女王之血取回来——';
+ const mock=formatter(()=>{throw Error('no model');},{reflow:true});
+ const final=await mock.format('再这样下去，\n立刻把女王之血取回来——',source);
+ assert.equal(final,'再这样下去\n立刻把女王之血取回来——');assert.equal(mock.calls(),0);
+ const {finalizeAutoSubtitle:finalize}=require('./final-auto-subtitle.ts');
+ assert.equal(finalize(final,'再这样下去……\n立刻把女王之血——'),final);
+});
