@@ -16,6 +16,7 @@ import { ensurePromptTailSilence, limitWavEdgeSilence, gpuJsonAt, matchPeak10Lou
 import { layoutSpeechWav, pickSpeechStretch, wavAlignmentTiming } from "@/lib/wav-stretch";
 import { audioToMonoWav } from "@/lib/audio-splice";
 import { resolvePromptRef } from "@/lib/prompt-refs";
+import { reserveAutoTtsSlots, isAutoTtsBudgetError } from "@/lib/auto-run-tts-budget";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 1200;
@@ -189,6 +190,7 @@ export async function POST(
     );
   }
 
+  let budget: Awaited<ReturnType<typeof reserveAutoTtsSlots>> | null = null;
   try {
     const lexicon = await sql<Pronunciation[]>`SELECT id, src, dst, note FROM pronunciations WHERE usage = 'reference'`;
     const ttsForGpu = applyPronunciations(script.ttsText, lexicon);
@@ -211,8 +213,9 @@ export async function POST(
     // 只有已验证归属的降级工作流可单轮合成；普通手动及正常自动线路仍生成原有三候选。
     // 此处不拉伸、不补时间槽，实测反馈必须来自真实合成发声，最终选定后再整体编辑。
     const feedbackRound = autoRunId != null && body.feedbackRound === true;
+    budget = autoRunId == null ? null : await reserveAutoTtsSlots(autoRunId,stem,feedbackRound?1:3);
     const settled = await Promise.allSettled(
-      (feedbackRound ? [0] : [0, 1, 2]).map(() => withTts(liveUrls, async (url) => {
+      Array.from({length:budget?.count??(feedbackRound?1:3)},(_,i)=>i).map(() => withTts(liveUrls, async (url) => {
         const generated = await gpuJsonAt<{
           audio_wav_b64: string;
           conversion_meta: Record<string, unknown>;
@@ -390,9 +393,10 @@ export async function POST(
       }
       ids.push(record.id);
     }
-    return NextResponse.json({ ok: true, id: ids[0], ids });
+    return NextResponse.json({ ok: true, id: ids[0], ids, ...(budget?{ttsBudget:budget}:{}) });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return NextResponse.json({ error: message }, { status: 500 });
+    const exhausted = budget?.exhausted || isAutoTtsBudgetError(error);
+    return NextResponse.json({ error: message, ...(exhausted?{code:"AUTO_TTS_LIMIT"}:{}) }, { status: exhausted?409:500 });
   }
 }

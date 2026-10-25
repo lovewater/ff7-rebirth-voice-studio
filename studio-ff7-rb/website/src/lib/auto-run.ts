@@ -1,4 +1,5 @@
 import { pureInterjectionOriginal } from "./pure-interjection";
+import { AutoTtsBudgetError, isAutoTtsBudgetError, autoTtsBudgetFallback, AUTO_TTS_LIMIT_MESSAGE } from "./auto-run-tts-budget";
 import { runCasualDurationWorkflow, compactCasualText, type CasualDurationAttempt } from "./casual-duration-workflow";
 import { stripInlinePinyin } from "./inline-pinyin";
 import { locatePreservedTail, tailBodyAsr, tailBodyAudio, appendPreservedTail, preservedBodyDurationMs, type PreservedTail } from "./preserved-tail";
@@ -368,7 +369,9 @@ async function generateClone(runId: string, stem: string, ttsText: string, extra
       bodyScriptPolicy: extra?.bodyScriptPolicy,
     }),
   });
-  const data = await response.json() as { error?: string; ids?: unknown; id?: unknown };
+  const data = await response.json() as { error?: string; code?: string; ids?: unknown; id?: unknown; ttsBudget?: {exhausted:boolean} };
+  // 最后一批音频已落库后立即退出，禁止再核字/改稿、重试或切到第二模型重置次数。
+  if (data.code === "AUTO_TTS_LIMIT" || data.ttsBudget?.exhausted) throw new AutoTtsBudgetError();
   if (!response.ok) throw new Error(data.error || `TTS HTTP ${response.status}`);
   const ids = (Array.isArray(data.ids) ? data.ids : data.id != null ? [data.id] : []).map(String);
   if (!ids.length) throw new Error("TTS 没有返回音频");
@@ -853,10 +856,18 @@ async function executeAutoRunMeasured(runId: string, stem: string, options: { fo
     else if (kind === "performance") await runPerformance(runId, line, recovery);
     else await runCasual(runId, line, recovery);
   } catch (error) {
+    if (isAutoTtsBudgetError(error)) { await finishAtTtsBudget(runId); return; }
     const message = error instanceof Error ? error.message : String(error);
     await log(runId, "fail", message, {}, "error");
     await finishWithFallback(runId, recovery, message);
   }
+}
+
+/** 全任务额度耗尽后只提交一次失败和已有答案，不调用TTS/ASR/模型，不自动锁定。 */
+async function finishAtTtsBudget(runId: string) {
+  const chosen = await autoTtsBudgetFallback(runId);
+  await log(runId,"tts-limit",AUTO_TTS_LIMIT_MESSAGE,{limit:30,selectedId:chosen?.id??null,noModelRetry:true},"error");
+  await finish(runId,"failed",chosen?AUTO_TTS_LIMIT_MESSAGE:`${AUTO_TTS_LIMIT_MESSAGE}；没有成功生成的可播放音频`,chosen?.id??null,{noModelRetry:true,preserveSubtitle:true});
 }
 
 /** 斜体没有逐段/开口对时要求。只在TTS失败、核字失败或最终超长时再尝试；比单独失败待复核。 */
@@ -907,6 +918,7 @@ async function runItalicNatural(runId: string, line: LinePack, recovery: RunReco
     try{
       clips=await generateClone(runId,line.stem,script,{promptPath,preservePromptAudio:true,alignStartS:null,subtitleText:subtitle,finalSubtitleText:finalSubtitle});
     }catch(error){
+      if (isAutoTtsBudgetError(error)) throw error;
       await log(runId,"italic-tts-retry","斜体TTS失败，保留稿件重试",{round,error:String(error)},"error");
       if(round===AUTO_RUN_MAX_ROUNDS)throw error;
       continue;
@@ -2215,7 +2227,8 @@ export async function executeCasualDurationReview(runId: string, stem: string) {
     const line = await loadLine(stem);
     if (!line || !["field", "unknown"].includes(line.dialogue_mode || ""))
       throw new Error("普通时长流程只允许field/unknown台词");
-    return runCasualDuration(runId,line,true);
+    try { return await runCasualDuration(runId,line,true); }
+    catch(error) { if (!isAutoTtsBudgetError(error)) throw error; await finishAtTtsBudget(runId); }
   });
 }
 
@@ -2279,6 +2292,7 @@ async function runCasualDuration(runId: string, line: LinePack, markAbnormal: bo
       passed = result.passed; selected = result.selected;
       if (!passed) error = result.rewriteError || "三次反馈后仍未同时满足核字完整及音频不超长，交人工复核";
     } catch (cause) {
+      if (isAutoTtsBudgetError(cause)) throw cause;
       error = cause instanceof Error ? cause.message : String(cause);
       selected = attempts.filter(row=>row.textPassed).sort((a,b)=>a.duration-b.duration)[0] ?? attempts[attempts.length-1];
       await log(runId,"casual-duration-error",error,{},"error");

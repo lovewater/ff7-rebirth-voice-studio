@@ -9,7 +9,7 @@ export default function GameTermsPanel(){
   useEffect(()=>{let active=true;void fetch("/api/game-terms",{cache:"no-store"}).then(async r=>{const d=await r.json();if(!r.ok)throw Error(d.error??`HTTP ${r.status}`);return d.rows as Row[];}).then(data=>{if(active)setRows(data);}).catch(e=>{if(active)setError(String(e));});return()=>{active=false;};},[]);
   async function mutate(url:string,method:string,value?:unknown){setBusy(true);setError("");try{await request(url,{method,headers:{"content-type":"application/json"},...(value===undefined?{}:{body:JSON.stringify(value)})});await load();if(method==="POST"){setTerm("");setNote("");}}catch(e){setError(e instanceof Error?e.message:String(e));}finally{setBusy(false);}}
   return <>
-    <p className="mt-4 text-sm leading-6 text-zinc-400">中文原稿或当前稿去掉标点、符号及空白后仍包含词组，就提醒大模型保留该游戏固定表达。改稿、时长调整和润色都适用。</p>
+    <p className="mt-4 text-sm leading-6 text-zinc-400">固定表达按输入原样保存，保留词组内的空格和标点。匹配原稿时忽略标点、符号及空白，命中后提醒大模型保留该表达。改稿、时长调整和润色都适用。</p>
     <form className="mt-5 flex flex-wrap items-end gap-3" onSubmit={e=>{e.preventDefault();void mutate("/api/game-terms","POST",{term,note});}}>
       <label className="text-xs text-zinc-400">固定表达<input className={inputClass} value={term} onChange={e=>setTerm(e.target.value)} maxLength={80} required /></label>
       <label className="min-w-56 flex-1 text-xs text-zinc-400">备注<input className={inputClass} value={note} onChange={e=>setNote(e.target.value)} maxLength={500}/></label>
