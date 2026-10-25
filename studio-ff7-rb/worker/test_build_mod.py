@@ -2,8 +2,11 @@
 import array
 import struct
 import unittest
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
 
-from build_mod import place_channel, repair_audio_exports, validate_zen_exports, spoken_subtitle
+from build_mod import place_channel, repair_audio_exports, validate_zen_exports, spoken_subtitle, rebuild_added_bank, added_cache_path
 
 
 def asset(sizes):
@@ -104,6 +107,39 @@ class SubtitleInheritance(unittest.TestCase):
     def test_missing_original_resource_can_use_tts_caption(self):
         self.assertEqual(spoken_subtitle({"subtitle_text": None, "text_zh": None, "tts_text": "新增台词"}), "新增台词")
         self.assertEqual(spoken_subtitle({"subtitle_text": None, "text_zh": "", "tts_text": "只有声音"}), "")
+
+
+class PreservedJapaneseAddedBanks(unittest.TestCase):
+    def test_all_japanese_locks_copy_original_asset_without_audio_conversion(self):
+        original, _ = asset([64])
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder) / "original.uasset"
+            cache = Path(folder) / "cache.uasset"
+            source.write_bytes(original)
+            cache.write_bytes(b"old transcoded cache")
+            for slices in ([{"keep_japanese": True}], [{"keep_japanese": True}, {"keep_japanese": True}]):
+                with patch("build_mod.run_audiomog", side_effect=AssertionError("must preserve raw Japanese")):
+                    result = rebuild_added_bank(("bank", str(source), slices, str(cache)))
+                self.assertEqual(Path(result).read_bytes(), original)
+                validate_zen_exports(Path(result).read_bytes())
+
+    def test_preserved_slice_is_untouched_and_remains_a_boundary(self):
+        samples = frames(2, 10, fill=3)
+        place_channel(samples, 2, 10, [
+            {"stem":"first", "start":0, "end":.4, "channel":1, "mono":array.array("h", [7]*4)},
+            {"stem":"jp", "start":.4, "end":.7, "channel":1, "keep_japanese":True},
+            {"stem":"last", "start":.7, "end":1, "channel":1, "mono":array.array("h", [9]*3)},
+        ])
+        self.assertEqual(list(samples[1::2]), [7]*4+[3]*3+[9]*3)
+        self.assertEqual(list(samples[::2]), [3]*10)
+        with self.assertRaisesRegex(RuntimeError, "past the open slice"):
+            place_channel(frames(1,10), 1, 10, [
+                {"stem":"long", "start":0, "end":.4, "channel":0, "mono":array.array("h", [7]*7)},
+                {"stem":"jp", "start":.4, "end":1, "channel":0, "keep_japanese":True},
+            ])
+
+    def test_cache_distinguishes_original_japanese_from_replacement(self):
+        self.assertNotEqual(added_cache_path("bank", [{"keep_japanese": True}]), added_cache_path("bank", [{"keep_japanese": False}]))
 
 
 if __name__ == "__main__":

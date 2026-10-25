@@ -767,17 +767,20 @@ def place_channel(frames: array.array, channels: int, rate: int, pieces: list[di
         start = int(round(float(piece["start"]) * rate))
         end = int(round(float(piece["end"]) * rate))
         channel = int(piece["channel"])
-        mono: array.array = piece["mono"]
+        preserve = piece.get("keep_japanese") is True
+        mono: array.array = array.array("h") if preserve else piece["mono"]
         stem = piece["stem"]
         if channel < 0 or channel >= channels:
             raise RuntimeError(f"{stem}: voice channel {channel} but wav has {channels}")
         if start < 0 or end < start or start >= nframes:
             raise RuntimeError(f"{stem}: slice {piece['start']}–{piece['end']} is outside the bank")
-        placed.append((start, end, channel, mono, stem))
-    for index, (start, end, channel, mono, stem) in enumerate(placed):
+        placed.append((start, end, channel, mono, stem, preserve))
+    for index, (start, end, channel, mono, stem, preserve) in enumerate(placed):
         nxt = placed[index + 1][0] if index + 1 < len(placed) else nframes
         if end > nxt:
             raise RuntimeError(f"{stem}: slice overlaps the next line")
+        if preserve:
+            continue
         limit = min(nxt, nframes)
         for frame in range(start, min(end, nframes)):
             frames[frame * channels + channel] = 0
@@ -846,6 +849,13 @@ def rebuild_added_bank(task: tuple[str, str, list[dict], str]) -> str:
     bank_stem, orig_path, slices, cache_path = task
     cache = Path(cache_path)
     original = Path(orig_path).read_bytes()
+    # 新增资源的源文件本来就是游戏日文。全锁日文时直接保留原始块，
+    # 不把网站试听MP3再有损编码，也不能因产物与原声相同而报重建失败。
+    if slices and all(piece.get("keep_japanese") is True for piece in slices):
+        validate_zen_exports(original)
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_bytes(original)
+        return str(cache)
     sources = [DATA / piece["audio"] for piece in slices]
     if (
         cache.exists()
@@ -875,7 +885,8 @@ def rebuild_added_bank(task: tuple[str, str, list[dict], str]) -> str:
                     "start": piece["start"],
                     "end": piece["end"],
                     "channel": piece["channel"],
-                    "mono": load_mono_s16(DATA / piece["audio"], rate),
+                    "keep_japanese": piece.get("keep_japanese") is True,
+                    "mono": array.array("h") if piece.get("keep_japanese") is True else load_mono_s16(DATA / piece["audio"], rate),
                 })
             place_channel(frames, channels, rate, pieces)
             write_wav_s16(wav, frames, channels, rate)
@@ -1177,6 +1188,7 @@ def main() -> int:
                     "start": extra.get("slice_start_s") if sliced else None,
                     "end": extra.get("slice_end_s") if sliced else None,
                     "channel": int(extra.get("voice_channel", 4)) if sliced else 0,
+                    "keep_japanese": row.get("voice_gpu_key") == "jp-lock",
                 })
             planned[bank] = (cid, rel_in_container(path), slices)
             added_rels[bank] = rel_in_container(path)
