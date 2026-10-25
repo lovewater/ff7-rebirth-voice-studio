@@ -5,13 +5,41 @@ import { decodeWavMono, encodeWavMono } from "./wav-stretch";
 import type { SeedAsrResult } from "./seed-asr";
 
 export type PreservedTail = { version: 1; startMs: number; endMs: number; bodyWordCount: number;
-  bodyStartMs?: number; bodyWordStart?: number; headBoundary?: string;
+  bodyStartMs?: number; bodyWordStart?: number; headBoundary?: string; headSilence?: SegmentSpan; headMinSilenceMs?: number;
   bodyEndMs: number; firstTailEvidenceMs: number; boundary: string; unclassified: true };
 const normalize = (s: string) => s.normalize("NFKC").replace(/[\p{P}\p{S}\s]/gu, "")
   .replace(/[ぁ-ゖ]/g, c => String.fromCharCode(c.charCodeAt(0) + 0x60));
 
+/** 仅用于正文起点。按原分段相同的10ms帧/全局峰值5%标准找静音，
+ * 搜索只限最后一块前缀证据至正文首词；满足50ms的片段中取最长，等长取靠后者。
+ * 不改变正文分段、净语速或尾部切口的250ms规则。
+ */
+function longestBodyStartSilence(input: {samples:Float32Array;sampleRate:number}, fromMs:number, toMs:number): SegmentSpan | null {
+  const {samples,sampleRate}=input;
+  let peak=0;
+  for(const sample of samples)peak=Math.max(peak,Math.abs(sample));
+  if(peak<=1e-8||toMs<=fromMs)return null;
+  const frame=Math.max(1,Math.round(sampleRate*.01));
+  const from=Math.ceil(fromMs*sampleRate/1000/frame)*frame;
+  const to=Math.min(samples.length,Math.floor(toMs*sampleRate/1000/frame)*frame);
+  const minimum=Math.ceil(sampleRate*.05);
+  let start:number|null=null,best:{start:number;end:number}|null=null;
+  const finish=(end:number)=>{
+    if(start!==null&&end-start>=minimum&&(!best||end-start>=best.end-best.start))best={start,end};
+    start=null;
+  };
+  for(let offset=from;offset<to;offset+=frame){
+    const end=Math.min(offset+frame,to);let local=0;
+    for(let i=offset;i<end;i++)local=Math.max(local,Math.abs(samples[i]));
+    if(local<peak*.05){if(start===null)start=offset;}else finish(offset);
+  }
+  finish(to);
+  const found=best as {start:number;end:number}|null;
+  return found?{startMs:found.start/sampleRate*1000,endMs:found.end/sampleRate*1000}:null;
+}
+
 /** 原字幕必须唯一、完整对应一段连续ASR词；头尾未分类声音分别整体保留。
- * 两侧都须真实>=250ms静音确认切口。正文内部未知声音仍交原流程，不跨过它猜切口。
+ * 正文起点取范围内最长的>=50ms静音；尾部仍需>=250ms静音。正文内部未知声音仍交原流程。
  * 保留旧字段名兼容尾部历史记录：startMs是正文槽终点，bodyStartMs是其起点。
  */
 export function locatePreservedTail(input: { samples: Float32Array; sampleRate: number;
@@ -43,12 +71,12 @@ export function locatePreservedTail(input: { samples: Float32Array; sampleRate: 
       && r.cutMs>=left.endMs && r.cutMs<right.startMs
       && r.cutMs>r.silence.startMs && r.cutMs<r.silence.endMs ? r : null;
   };
-  let bodyStart=0,bodyEnd=duration,headBoundary:string|undefined,tailBoundary='file-end';
+  let bodyStart=0,bodyEnd=duration,headBoundary:string|undefined,headSilence:SegmentSpan|undefined,tailBoundary='file-end';
   if(headEvidence.length){
     const last=Math.max(...headEvidence);
-    const r=cut({startMs:0,endMs:last},{startMs:firstBody,endMs:lastBody});
-    if(!r)return null;
-    bodyStart=r.cutMs;headBoundary=r.reason;
+    const silence=longestBodyStartSilence(input,last,firstBody);
+    if(!silence)return null;
+    bodyStart=(silence.startMs+silence.endMs)/2;headBoundary='silence-interval';headSilence=silence;
   }
   if(tailEvidence.length){
     const first=Math.min(...tailEvidence);
@@ -57,7 +85,7 @@ export function locatePreservedTail(input: { samples: Float32Array; sampleRate: 
     bodyEnd=r.cutMs;tailBoundary=r.reason;
   }
   return {version:1,startMs:bodyEnd,endMs:duration,bodyWordCount:end-start,
-    ...(bodyStart ? {bodyStartMs:bodyStart,bodyWordStart:start,headBoundary} : {}),
+    ...(bodyStart ? {bodyStartMs:bodyStart,bodyWordStart:start,headBoundary,headSilence,headMinSilenceMs:50} : {}),
     bodyEndMs:lastBody,firstTailEvidenceMs:tailEvidence.length?Math.min(...tailEvidence):duration,
     boundary:tailBoundary,unclassified:true};
 }
