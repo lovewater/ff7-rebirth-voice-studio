@@ -1,3 +1,4 @@
+import { runCasualDurationWorkflow, compactCasualText, type CasualDurationAttempt } from "./casual-duration-workflow";
 import { stripInlinePinyin } from "./inline-pinyin";
 import { locatePreservedTail, tailBodyAsr, tailBodyAudio, appendPreservedTail, preservedBodyDurationMs, type PreservedTail } from "./preserved-tail";
 import { referenceWordEvidence } from "./reference-word-evidence";
@@ -2187,4 +2188,88 @@ async function runPerformance(runId: string, line: LinePack, recovery: RunRecove
   const failReason = durationBeatReference ? "三次都没过校字、候选时长或语速（实测偏短后拍数比仅参考）" : slowLine ? "三次都没过校字、候选时长或慢速句有效发声长度（已忽略拍数比）" : shortLine ? "三次都没过校字、候选时长、短句有效发声长度" : "三次都没过校字、候选时长、语速和拍数比";
   await log(runId, "fail", failReason, { failNotes }, "error");
   await finishWithFallback(runId, recovery, failReason);
+}
+
+/** 明确指定的新普通对话批次入口；独立于场景演出与默认双模型工作流。
+ * 原稿一次+最多三次反馈，最后统一交人工异常审核，绝不自动锁定。
+ */
+export async function executeCasualDurationReview(runId: string, stem: string) {
+  return withLlmMetrics(runId, stem, async () => {
+    const line = await loadLine(stem);
+    if (!line || !["field", "unknown"].includes(line.dialogue_mode || ""))
+      throw new Error("普通时长流程只允许field/unknown台词");
+    const guard = async () => {
+      const marked = await sql`SELECT id FROM line_tts_versions WHERE stem=${stem} AND review_state IN ('locked','abnormal') LIMIT 1`;
+      if (marked.length) throw new Error("已有人工选择，停止本条处理并保留人工状态");
+    };
+    const attempts: CasualDurationAttempt[] = [];
+    let passed = false, selected: CasualDurationAttempt | undefined, error: string | null = null;
+    try {
+      await guard();
+      const jp = decodeWavMono(await audioToMonoWav(await readFile(dataFile(`jp/${stem}.mp3`))));
+      const target = jp.samples.length / jp.sampleRate;
+      const rules = await lexicon();
+      await log(runId, "workflow", "普通对话：原话先读，完整且总长不超过原声则通过；最多三次反馈，最终统一人工异常", {workflow:"casual-duration-review-v1",target,maxFeedbackRounds:3,manualReview:"abnormal"}, "result");
+      const result = await runCasualDurationWorkflow({
+        original: line.text_zh || "", target, guard,
+        attempt: async (script, round) => {
+          // feedbackRound禁用补时间槽、分段重组和整体变速；只保留既有首尾多余静音清理。
+          const clips = await generateClone(runId,stem,script,{feedbackRound:true,alignStartS:null,subtitleText:round===0?null:script});
+          if (clips.length !== 1) throw new Error("普通对话每轮必须恰有一个自然语速候选");
+          const clip = clips[0];
+          if (!clip.audio_path) throw new Error("合成候选缺少音频");
+          const wave = decodeWavMono(await audioToMonoWav(await readFile(dataFile(clip.audio_path))));
+          const duration = wave.samples.length / wave.sampleRate;
+          const row: CasualDurationAttempt = {id:clip.id,script,duration,textPassed:false,reason:"核字未完成"};
+          attempts.push(row);
+          await sql`UPDATE line_tts_versions SET conversion_meta=COALESCE(conversion_meta,'{}'::jsonb)||${sql.json({workflow:"casual-duration-review-v1",duration_review:{round,target,duration,textPassed:false,reason:row.reason,original:round===0}})}::jsonb WHERE id=${clip.id} AND auto_run_id=${runId}`;
+          const asr = await asrQwen(clip);
+          // 完全相同的正文直接核过；有字面差异才由同通道模型核近音/漏字。
+          const exact = !!compactCasualText(clip.spoken_text) && compactCasualText(clip.spoken_text)===compactCasualText(asr.text || "");
+          const judged = exact ? {ok:true,reason:"ASR正文逐字一致"} : await judgeSpokenText({spoken:clip.spoken_text,asr:asr.text,lexicon:rules,pronunciationText:clip.tts_text});
+          Object.assign(row,{textPassed:judged.ok,reason:judged.reason});
+          await sql`UPDATE line_tts_versions SET conversion_meta=COALESCE(conversion_meta,'{}'::jsonb)||${sql.json({workflow:"casual-duration-review-v1",duration_review:{round,target,duration,textPassed:judged.ok,asr:asr.text,reason:judged.reason,original:round===0}})}::jsonb WHERE id=${clip.id} AND auto_run_id=${runId}`;
+          await log(runId,"casual-duration-attempt",`第${round+1}次：核字${judged.ok?"通过":"未过"}，${duration.toFixed(3)}s / 上限${target.toFixed(3)}s`,{...row,round,target,asr:asr.text},"result");
+          return row;
+        },
+        rewrite: async (previous,maxCharacters,round) => {
+          const context = await loadDialogueContext(stem);
+          const input = {originalChinese:line.text_zh,currentChinese:previous.script,japanese:line.text_jp,english:line.text_en,before:context.before,after:context.after,measuredSeconds:previous.duration,targetSeconds:target,maxCharacters,round};
+          const response = await rewriteChat([
+            {role:"system",content:"你在压缩游戏普通对话的中文字幕。原稿已完整朗读但实测超时。保留原意、人物关系、语气、专有名词和游戏固定表达，禁止增补信息或重翻译。根据实测时长比例减少中文字数，尽量控制在maxCharacters内，必须比currentChinese更短。只输出JSON：text为完整压缩中文稿，reason为理由。不要读音标记、括号说明或版本编号。"},
+            {role:"user",content:JSON.stringify(input)},
+          ],.2,"fallback-duration-rewrite",3,{stem});
+          const parsed = parseJsonObject(response.content);
+          if (typeof parsed.text!=="string") throw new Error("压缩模型未返回text");
+          await log(runId,"casual-duration-rewrite",`第${round}轮按实测时长压缩`,{...input,text:parsed.text,reason:parsed.reason,thinking:response.thinking},"think");
+          return parsed.text;
+        },
+      });
+      passed = result.passed; selected = result.selected;
+      if (!passed) error = result.rewriteError || "三次反馈后仍未同时满足核字完整及音频不超长，交人工复核";
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : String(cause);
+      selected = attempts.filter(row=>row.textPassed).sort((a,b)=>a.duration-b.duration)[0] ?? attempts[attempts.length-1];
+      await log(runId,"casual-duration-error",error,{},"error");
+    }
+    if (selected) {
+      const [v] = await sql<{subtitle_text:string|null}[]>`SELECT subtitle_text FROM line_tts_versions WHERE id=${selected.id}`;
+      if (v?.subtitle_text) {
+        const subtitle = finalizeAutoSubtitle(v.subtitle_text,line.text_zh || "");
+        await sql`UPDATE line_tts_versions SET subtitle_text=${subtitle} WHERE id=${selected.id} AND review_state='candidate'`;
+      }
+    }
+    // 先归组并保留完整日志，再标记审核；自动通过与人工状态是两个独立维度。
+    await finish(runId,passed?"passed":"failed",error,selected?.id ?? null,{preserveSubtitle:true,noModelRetry:true});
+    if (selected) await sql.begin(async tx => {
+      await tx`SELECT stem FROM lines WHERE stem=${stem} FOR UPDATE`;
+      const marked = await tx`SELECT id FROM line_tts_versions WHERE stem=${stem} AND review_state IN ('locked','abnormal') FOR UPDATE`;
+      if (marked.length) {
+        await tx`INSERT INTO line_auto_run_events(run_id,step,level,message,payload) VALUES(${runId},'manual-review','info','期间已有人工标记，保留人工选择，不覆盖','{}'::jsonb)`;
+        return;
+      }
+      await tx`UPDATE line_tts_versions SET review_state='abnormal',used_at=now() WHERE id=${selected.id} AND stem=${stem} AND auto_run_id=${runId} AND status='ready' AND review_state='candidate'`;
+      await tx`INSERT INTO line_auto_run_events(run_id,step,level,message,payload) VALUES(${runId},'manual-review','result','按用户要求统一标为人工异常，等待逐条审核',${tx.json({ttsId:selected.id,automaticPassed:passed,workflow:"casual-duration-review-v1"})})`;
+    });
+  });
 }
