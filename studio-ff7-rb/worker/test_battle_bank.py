@@ -3,6 +3,7 @@ import struct
 import unittest
 
 from battle_bank import material_entries, validate_replacements
+from build_mod import rebuild_battle_bank
 
 
 def bank(payloads):
@@ -41,6 +42,21 @@ class BankIsolation(unittest.TestCase):
     def test_rejects_truncated_payload(self):
         with self.assertRaises(RuntimeError):
             material_entries(bank([b"first"])[:-1])
+
+    def test_original_choices_keep_compressed_streams_without_encoding(self):
+        original = bank([b"first", b"second"])
+        row = {"voice_gpu_key": "jp-lock", "extra": {
+            "bank_material_index": 0,
+            "original_material_sha256": material_entries(original)[0]["digest"],
+        }}
+        self.assertEqual(rebuild_battle_bank("test", original, [row]), original)
+        row["voice_gpu_key"] = "cn-original"
+        self.assertEqual(rebuild_battle_bank("test", original, [row]), original)
+
+    def test_japanese_choice_requires_original_stream_evidence(self):
+        row = {"voice_gpu_key": "jp-lock", "extra": {"bank_material_index": 0}}
+        with self.assertRaisesRegex(RuntimeError, "verified original Japanese"):
+            rebuild_battle_bank("test", bank([b"Chinese replacement"]), [row])
 
 
 if __name__ == "__main__":
