@@ -1,3 +1,4 @@
+import { PartAssemblyError } from "./auto-run-part-alignment";
 import { createHash } from "node:crypto";
 import { refinePerformanceBoundaries, type SegmentSpan } from "./speech-segmentation";
 import { decodeWavMono, encodeWavMono } from "./wav-stretch";
@@ -91,7 +92,7 @@ export function appendPreservedTail(jp: Buffer, body: Buffer, tail: PreservedTai
     for (let i = Math.floor(slot * generated.sampleRate / sr); i < generated.samples.length; i++)
       excessPeak = Math.max(excessPeak, Math.abs(generated.samples[i]));
     if (frames - slot > Math.ceil(.05 * sr) || excessPeak > peak * .005)
-      throw new Error("正文成品超过原声头尾固定正文槽，不能剪正文或移动原声");
+      throw new PartAssemblyError("正文成品超过原声头尾固定正文槽，不能剪正文或移动原声");
     n = slot; // 仅移除50ms内的已验证低电平舍入/尾部留白，不截正文发声。
   }
   const samples = original.samples.slice(); samples.fill(0, start, cut);

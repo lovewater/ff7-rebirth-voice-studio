@@ -855,6 +855,7 @@ async function executeAutoRunMeasured(runId: string, stem: string, options: { fo
 async function runItalicNatural(runId: string, line: LinePack, recovery: RunRecovery,
   jpWav: Buffer, plan: OnoPlan, reference: Buffer) {
   const jp = decodeWavMono(jpWav), target = jp.samples.length / jp.sampleRate;
+  const bodyTarget=plan.preservedTail?preservedBodyDurationMs(plan.preservedTail)/1000:target;
   const promptPath = path.posix.join("tts", line.stem, `auto-run-${runId}-${currentChatModel() ?? "primary"}-italic-prompt.wav`);
   await mkdir(path.dirname(dataFile(promptPath)),{recursive:true});
   await writeFile(dataFile(promptPath),reference);
@@ -866,7 +867,7 @@ async function runItalicNatural(runId: string, line: LinePack, recovery: RunReco
   const ignoreBeat = Boolean(shortPerformancePolicy(plan.jpSpeechText)
     || slowPerformancePolicy(reading?.status==="ok" ? reading.mora : null,net?.speechSeconds??null));
   await log(runId,"workflow","斜体自然时长：不对开口、净发声和分段；最终不长于日文即通过时长；比单独失败不重试",{
-    workflow:"italic-natural",targetSeconds:target,ignoreBeat,retryReasons:["tts-error","text-error","final-too-long"],beatOnlyFailure:"manual-review",
+    workflow:"italic-natural",targetSeconds:bodyTarget,originalTargetSeconds:target,ignoreBeat,retryReasons:["tts-error","text-error","final-too-long"],beatOnlyFailure:"manual-review",
   },"result");
   recovery.assemble = async candidate => {
     if(candidate.assembledId)return candidate.assembledId;
@@ -903,7 +904,7 @@ async function runItalicNatural(runId: string, line: LinePack, recovery: RunReco
       continue;
     }
     const passed:RecoveryCandidate[]=[],review:RecoveryCandidate[]=[],tooLong:RecoveryCandidate[]=[];
-    for(const candidate of rememberCandidates(recovery,clips,target)){
+    for(const candidate of rememberCandidates(recovery,clips,bodyTarget)){
       const clip=candidate.clip;
       const audio=await audioToMonoWav(await readFile(dataFile(clip.audio_path!))),timing=wavTiming(audio);
       const local=await asrQwen(clip),asr=localTtsAsr(local.text,local.raw,timing);
@@ -936,7 +937,7 @@ async function runItalicNatural(runId: string, line: LinePack, recovery: RunReco
     if(tooLong.length){
       const context=await loadDialogueContext(line.stem);
       const messages=[{role:"system" as const,content:"",promptKey:"rewrite.italic-ceiling.system",promptValues:{}},
-        {role:"user" as const,content:"",promptKey:"rewrite.italic-ceiling.input",promptValues:{input_json:JSON.stringify({speaker:line.speaker,originalChinese:line.text_zh,japanese:line.text_jp,english:line.text_en,current:script,before:context.before,after:context.after,targetSeconds:target,failures:tooLong.map(x=>({id:x.clip.id,reason:x.reason}))})}}];
+        {role:"user" as const,content:"",promptKey:"rewrite.italic-ceiling.input",promptValues:{input_json:JSON.stringify({speaker:line.speaker,originalChinese:line.text_zh,japanese:line.text_jp,english:line.text_en,current:script,before:context.before,after:context.after,targetSeconds:bodyTarget,failures:tooLong.map(x=>({id:x.clip.id,reason:x.reason}))})}}];
       try{const result=await rewriteChat(messages,.3,"italic-duration-rewrite",3,{stem:line.stem});const parsed=parseJsonObject(result.content);
         if(typeof parsed.text!=="string"||!spokenCharacters(parsed.text))throw Error("斜体缩稿为空");
         script=parsed.text;
