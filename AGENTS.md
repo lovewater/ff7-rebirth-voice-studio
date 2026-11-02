@@ -113,12 +113,19 @@ cd studio-ff7-rb/website && git add -A --dry-run
 export PATH="$HOME/.dotnet:$PATH"
 export DOTNET_ROOT="$HOME/.dotnet"
 # 默认全部章节。做完会 rsync 到 /srv/backups/ff7-backup/mod/日期/版本
-python3 studio-ff7-rb/worker/build_mod.py
+python3 studio-ff7-rb/worker/build_mod.py --full
+python3 studio-ff7-rb/worker/build_mod_incremental.py # 仅用户明确要求增量时
 python3 studio-ff7-rb/worker/build_mod.py --chapters 1,2
 python3 studio-ff7-rb/worker/build_mod.py --chapters 1,2 --no-rsync
 ```
 
-版本号是当天上海时区的 `0` 到 `4`，取备份盘上还没有的最小号。包先在本机 `work/mod-build/` 写完并逐条回读校验，再 `rsync -avP`。同步成功后，本机只留刚打的那一天，更早的 `work/mod-build/日期/` 删掉；`cache`、`tmp`、`validation-input` 留下。旧版本到 `/srv/backups/ff7-backup/mod/日期/版本` 找，不要删共享盘上的历史包。`--no-rsync` 不删本地旧包。语音产物为同名 `zzz_cn_voice_*`；`aa_cn_voice_edit_P` 只装修改后的字幕。Win11 上先删除旧 `aa_` / `zzzz_`，再将本次 `End` 合并进游戏根目录（包括本次新字幕包），语音仍选日语。不要把旧包留在 `Paks` 的任何子目录里。
+**打包模式由用户每次指定全量或增量，不默认增量。** 全量用 `build_mod.py --full`，增量用独立入口 `build_mod_incremental.py`（等价 `build_mod.py --incremental`）；无模式参数仅为兼容旧命令，仍是全量。两个模式互斥。显式增量遇到基线缺失、损坏、范围或策略不一致时拒绝，不能擅自改跑全量。详细操作见 [worker/打包说明.md](studio-ff7-rb/worker/打包说明.md)。
+
+增量以上一次成功发布的**打包开始快照**为基准，同时比较实际锁定选择、字幕、音频SHA、源资产与切片/声道/战斗布局，不能只按版本创建时间过滤。切回旧版本、取消锁定、同路径文件覆盖也必须发现。开始后、冻结前被编辑的音频无法证明起点字节则拒绝本次构建；冻结后变化留给下一次。不变的 chunk 从已验证旧包复用，不变的容器三件套直接复制；成品仍是本次范围的完整独立安装集，安装时只需覆盖变更容器，并执行 `deleted_files` 清单，避免取消锁后旧字幕/新增语音残留。
+
+版本号是当天上海时区的 `0` 到 `4`，取备份盘上还没有的最小号。使用独立 `work/mod-build/日期/in-progress-ID/`，不预先删除旧包。先严格 Oodle 回读、字节和 Zen export 校验，再 rsync 到共享盘新版本并核对**完整文件清单与每个文件的SHA256**；成功后目录改为 `verified-ID`，原子写入 `work/mod-build/state/latest.json`，最后只删除上一个已确认本机包。`--no-rsync`、`--limit` 不推进基线、不删旧包。`cache`、`tmp`、`validation-input`、`state` 留下；失败现场不批量删除。共享盘 `/srv/backups/ff7-backup/mod/日期/版本` 历史包不删除。
+
+语音产物为同名 `zzz_cn_voice_*`；`aa_cn_voice_edit_P` 只装修改后的字幕。Win11 按本次安装说明覆盖变更三件套、删除明确列出的失效文件；不要无条件删除仍在使用的字幕包。删除早期 `zzzz_` 语音叠包，语音仍选日语。不要把旧包留在 `Paks` 的任何子目录里。
 
 语音容器沿用原作者的头、ID、目录、未修改压缩块；新字幕容器使用空 UE4.26 头。早期 aa_/zzzz_ 语音叠包方案已弃用。
 

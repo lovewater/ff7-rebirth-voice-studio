@@ -24,6 +24,9 @@ from __future__ import annotations
 import argparse
 import array
 import ctypes
+import contextlib
+import inspect
+import multiprocessing
 import hashlib
 import json
 import os
@@ -33,6 +36,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 import wave
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -41,6 +45,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import psycopg
+import mod_incremental as incremental
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from cn_iostore import extract_chunk_ids, parse_utoc  # noqa: E402
@@ -48,7 +53,7 @@ from battle_bank import material_entries, validate_replacements  # noqa: E402
 from extract_txtres import clean_text, find_lang, parse_txtres  # noqa: E402
 from fill_regions import SEED, STORY_ORDER  # noqa: E402
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(os.environ.get("FF7_PROJECT_ROOT", Path(__file__).resolve().parents[2])).resolve()
 CN_MODS = ROOT / "work" / "ref-cn-voice" / "End" / "Content" / "Paks" / "~mods"
 DATA = ROOT / "studio-ff7-rb" / "website" / "data"
 TXTRES_RAW = ROOT / "work" / "txtres-raw" / "CN"
@@ -162,21 +167,30 @@ def parse_dir_index(blob: bytes) -> tuple[str, list[tuple[str, int]]]:
     return mount, found
 
 
-def iter_pack_assets(utoc: Path) -> dict[str, tuple[bytes, str]]:
+def iter_pack_assets(utoc: Path, *, full_paths: bool = False) -> dict[str, tuple[bytes, str]]:
     toc = utoc.read_bytes()
     chunks, _blocks, directory = parse_utoc(toc)
     _mount, entries = parse_dir_index(directory)
     out: dict[str, tuple[bytes, str]] = {}
+    seen_cids = {}
     for rel, user in entries:
+        if full_paths:
+            rel = rel_in_container(_mount.rstrip("/") + "/" + rel)
         if user >= len(chunks):
             raise RuntimeError(f"{utoc.name} directory user {user} past chunk count")
         cid, _off, length = chunks[user]
         if cid[11] != 2 or length <= 0:
             continue
+        if cid in seen_cids and seen_cids[cid] != rel:
+            raise RuntimeError(f"{utoc.name}: chunk {cid.hex()} has conflicting paths")
+        seen_cids[cid] = rel
         stem = Path(rel).name
         if stem.endswith(".uasset"):
             stem = stem[: -len(".uasset")]
-        out[stem] = (cid, rel)
+        key = rel if full_paths else stem
+        if key in out and out[key] != (cid, rel):
+            raise RuntimeError(f"{utoc.name}: ambiguous asset {key}; use full_paths=True")
+        out[key] = (cid, rel)
     return out
 
 
@@ -375,6 +389,11 @@ def write_container(chunks: list[tuple[bytes, bytes, str | None]], utoc_path: Pa
     """chunks: (chunk_id, payload, relative_path or None for the header)."""
     if not chunks or chunks[0][0][11] != 10:
         raise RuntimeError("first chunk must be the container header")
+    if len({cid for cid, _, _ in chunks}) != len(chunks):
+        raise RuntimeError("duplicate chunk id in container")
+    paths = [rel for _, _, rel in chunks if rel]
+    if len(set(paths)) != len(paths):
+        raise RuntimeError("duplicate path in container")
     directory = DirWriter()
     for i, (_cid, _payload, rel) in enumerate(chunks):
         if rel:
@@ -580,6 +599,21 @@ def dotnet_env() -> dict[str, str]:
     return env
 
 
+_ENCODING_LOG = None
+_CACHE_POLICY = ""
+
+
+def audit_encode(kind, identity):
+    """One append per cache miss, shared safely by forked build workers."""
+    if _ENCODING_LOG is not None:
+        line = json.dumps(dict(kind=kind, identity=identity), ensure_ascii=False) + '\n'
+        fd = os.open(_ENCODING_LOG, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        try:
+            os.write(fd, line.encode())
+        finally:
+            os.close(fd)
+
+
 def run_audiomog(path: Path) -> None:
     proc = subprocess.run(
         ["dotnet", str(AUDIOMOG), str(path)],
@@ -596,15 +630,17 @@ def run_audiomog(path: Path) -> None:
 
 def rebuild_locked(task: tuple[str, int, str, str]) -> str:
     stem, tts_id, audio_rel, uasset_hex = task
-    cache = BUILD_ROOT / "cache" / f"{stem}-{tts_id}.uasset"
     src_audio = DATA / audio_rel
     original = bytes.fromhex(uasset_hex)
+    key = source_audio_key(original, [tts_id, audio_rel], [src_audio])
+    cache = BUILD_ROOT / "cache" / f"{stem}-{tts_id}-{key}.uasset"
     if cache.exists() and cache.stat().st_mtime >= src_audio.stat().st_mtime and cache.stat().st_size > 0:
         cached = cache.read_bytes()
         fixed = repair_audio_exports(original, cached)
         if fixed != cached:
             cache.write_bytes(fixed)
         return str(cache)
+    audit_encode("locked", dict(stem=stem, tts_id=tts_id, source_audio_key=key))
     with tempfile.TemporaryDirectory(prefix=f"ff7-{stem}-", dir=str(BUILD_ROOT / "tmp")) as tmp:
         folder = Path(tmp)
         (folder / f"{stem}.uasset").write_bytes(original)
@@ -652,6 +688,9 @@ def rebuild_locked(task: tuple[str, int, str, str]) -> str:
     return str(cache)
 
 
+_READ_CONN = None
+
+
 def load_lines(regions: list[str] | None) -> list[dict]:
     # Only chunks that already live in a zzz_cn_voice pack can be swapped.
     # Lines imported from movie banks (pack jp-only) are not in those packs.
@@ -672,7 +711,7 @@ def load_lines(regions: list[str] | None) -> list[dict]:
         {where}
         ORDER BY l.region, l.stem
     """
-    with psycopg.connect(DSN) as conn:
+    with (contextlib.nullcontext(_READ_CONN) if _READ_CONN is not None else psycopg.connect(DSN)) as conn:
         with conn.cursor() as cur:
             cur.execute(sql, args)
             cols = [d[0] for d in cur.description]
@@ -699,7 +738,7 @@ def load_added_lines(regions: list[str] | None) -> list[dict]:
         {where}
         ORDER BY l.stem
     """
-    with psycopg.connect(DSN) as conn:
+    with (contextlib.nullcontext(_READ_CONN) if _READ_CONN is not None else psycopg.connect(DSN)) as conn:
         with conn.cursor() as cur:
             cur.execute(sql, args)
             cols = [d[0] for d in cur.description]
@@ -716,7 +755,7 @@ def _extra(row: dict) -> dict:
 
 
 def load_battle_bank_lines(regions: list[str] | None) -> list[dict]:
-    with psycopg.connect(DSN) as conn:
+    with (contextlib.nullcontext(_READ_CONN) if _READ_CONN is not None else psycopg.connect(DSN)) as conn:
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT l.stem, l.pack, t.id, t.audio_path, t.voice_gpu_key, m.extra
@@ -748,6 +787,7 @@ def rebuild_battle_bank(bank: str, original: bytes, rows: list[dict]) -> bytes:
     if not changed:
         return original
     digest = hashlib.sha256(original)
+    digest.update(_CACHE_POLICY.encode())
     for index in sorted(changed):
         row = selected[index]
         digest.update(json.dumps([index, row["id"], row["audio_path"]]).encode())
@@ -757,6 +797,7 @@ def rebuild_battle_bank(bank: str, original: bytes, rows: list[dict]) -> bytes:
         result = repair_audio_exports(original, cache.read_bytes())
         validate_replacements(original, result, changed)
         return result
+    audit_encode("battle", dict(bank=bank, source_audio_key=digest.hexdigest()))
     with tempfile.TemporaryDirectory(prefix="ff7-battle-", dir=BUILD_ROOT / "tmp") as tmp:
         folder = Path(tmp)
         (folder / f"{bank}.uasset").write_bytes(original)
@@ -825,6 +866,7 @@ def place_channel(frames: array.array, channels: int, rate: int, pieces: list[di
 
     Audio may extend past the slice end until the next slice. An overrun past
     SLICE_OVERRUN_S is refused so two lines cannot stack on the same frames.
+    Exact-zero padding outside the available window can be discarded safely.
     """
     if channels < 1 or rate < 1:
         raise RuntimeError(f"bad wav layout channels={channels} rate={rate}")
@@ -856,7 +898,7 @@ def place_channel(frames: array.array, channels: int, rate: int, pieces: list[di
             frames[frame * channels + channel] = 0
         writable = min(len(mono), max(0, limit - start))
         dropped = len(mono) - writable
-        if dropped > int(SLICE_OVERRUN_S * rate):
+        if dropped > int(SLICE_OVERRUN_S * rate) and any(mono[writable:]):
             raise RuntimeError(
                 f"{stem}: audio runs {dropped / rate:.3f}s past the open slice"
             )
@@ -917,8 +959,11 @@ def load_mono_s16(path: Path, rate: int) -> array.array:
 def rebuild_added_bank(task: tuple[str, str, list[dict], str]) -> str:
     """Splice locked lines into one game bank, or replace a one-line asset."""
     bank_stem, orig_path, slices, cache_path = task
-    cache = Path(cache_path)
     original = Path(orig_path).read_bytes()
+    sources = [DATA / piece["audio"] for piece in slices if not piece.get("keep_japanese")]
+    # Never trust legacy stem/slice-only cache filenames, even from API callers.
+    key = source_audio_key(original, slices, sources)
+    cache = Path(cache_path).with_name(Path(cache_path).stem + "-" + key + ".uasset")
     # 新增资源的源文件本来就是游戏日文。全锁日文时直接保留原始块，
     # 不把网站试听MP3再有损编码，也不能因产物与原声相同而报重建失败。
     if slices and all(piece.get("keep_japanese") is True for piece in slices):
@@ -926,7 +971,6 @@ def rebuild_added_bank(task: tuple[str, str, list[dict], str]) -> str:
         cache.parent.mkdir(parents=True, exist_ok=True)
         cache.write_bytes(original)
         return str(cache)
-    sources = [DATA / piece["audio"] for piece in slices]
     if (
         cache.exists()
         and cache.stat().st_size > 0
@@ -937,6 +981,7 @@ def rebuild_added_bank(task: tuple[str, str, list[dict], str]) -> str:
         if fixed != cached:
             cache.write_bytes(fixed)
         return str(cache)
+    audit_encode("added", dict(bank=bank_stem, source_audio_key=key))
     with tempfile.TemporaryDirectory(prefix=f"ff7-add-{bank_stem}-", dir=str(BUILD_ROOT / "tmp")) as tmp:
         folder = Path(tmp)
         (folder / f"{bank_stem}.uasset").write_bytes(original)
@@ -1054,17 +1099,6 @@ def sh_date() -> str:
     return datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d")
 
 
-def prune_local_builds(keep_day: str) -> None:
-    """Keep only today's local drop. Older dated folders stay on the SMB share."""
-    for child in BUILD_ROOT.iterdir():
-        if not child.is_dir() or child.name == keep_day:
-            continue
-        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", child.name):
-            continue
-        shutil.rmtree(child)
-        print(f"删本地旧包 {child.name}，共享盘仍保留", flush=True)
-
-
 def next_version(day: str) -> int:
     folder = SMB_ROOT / day
     used = set()
@@ -1078,35 +1112,196 @@ def next_version(day: str) -> int:
     raise SystemExit(f"{folder} 今天的版本 0–4 都已经有了")
 
 
-def verify_container(utoc: Path, expect: dict[str, bytes]) -> None:
-    toc = utoc.read_bytes()
-    chunks, _blocks, directory = parse_utoc(toc)
-    _mount, entries = parse_dir_index(directory)
-    by_stem = {}
-    for rel, user in entries:
-        stem = Path(rel).stem
-        cid, off, length = chunks[user]
-        by_stem[stem] = (cid, off, length, rel)
-    missing = [stem for stem in expect if stem not in by_stem]
-    if missing:
-        raise RuntimeError(f"packed container is missing {missing[:5]}")
-    stems = list(expect)
-    for start in range(0, len(stems), 128):
-        wanted = {by_stem[stem][0]: stem for stem in stems[start:start + 128]}
-        got = extract_chunk_ids(utoc, wanted, strict=True)
-        if set(got) != set(wanted.values()):
+def verify_container(utoc: Path, expect: dict) -> None:
+    """Accept legacy unique stems or exact (chunk id, full relative path) keys."""
+    assets = iter_pack_assets(utoc, full_paths=True)
+    by_stem: dict[str, list[tuple[bytes, str]]] = defaultdict(list)
+    for cid, rel in assets.values():
+        by_stem[Path(rel).stem].append((cid, rel))
+    wanted = {}
+    for key, payload in expect.items():
+        if isinstance(key, tuple):
+            cid, rel = key
+            if assets.get(rel) != (cid, rel):
+                raise RuntimeError(f"packed container is missing exact asset {cid.hex()} {rel}")
+        else:
+            hits = by_stem.get(key, [])
+            if len(hits) != 1:
+                raise RuntimeError(f"packed container missing/ambiguous stem {key}")
+            cid, rel = hits[0]
+        if cid in wanted:
+            raise RuntimeError(f"duplicate expected chunk {cid.hex()}")
+        wanted[cid] = key
+    items = list(wanted.items())
+    for start in range(0, len(items), 128):
+        batch = dict(items[start:start + 128])
+        got = extract_chunk_ids(utoc, batch, strict=True)
+        if set(got) != set(batch.values()):
             raise RuntimeError("round-trip missing chunks")
-        for stem, data in got.items():
-            if data != expect[stem]:
-                raise RuntimeError(f"round-trip mismatch for {stem}")
+        for key, data in got.items():
+            if data != expect[key]:
+                raise RuntimeError(f"round-trip mismatch for {key}")
             validate_zen_exports(data)
 
 
+def source_audio_key(original: bytes, selection, sources: list[Path]) -> str:
+    digest = hashlib.sha256(original)
+    digest.update(_CACHE_POLICY.encode())
+    digest.update(json.dumps(selection, sort_keys=True, ensure_ascii=False).encode())
+    for source in sources:
+        digest.update(source.read_bytes())
+    return digest.hexdigest()[:32]
+
+
+def plan_same_stem_variants(rows: list[dict], index: list[dict],
+                            known: dict[bytes, tuple[str, str]],
+                            regions: list[str] | None = None) -> tuple[list[dict], list[dict]]:
+    """Discover only selected source-CN stems, retaining every genuine JP identity.
+
+    The index is a list, never a stem dictionary. Actual game directory identity
+    and size are checked separately before extraction.
+    """
+    selected = {}
+    for row in rows:
+        if regions is not None and row['region'] not in regions:
+            continue
+        if row['stem'] in selected and selected[row['stem']] != row:
+            raise RuntimeError(f"conflicting audio choices for {row['stem']}")
+        selected[row['stem']] = row
+    aliases, unlocked = [], []
+    cids, paths = {}, {}
+    for entry in sorted(index, key=lambda e: (e['stem'], e['chunk_id'], e['path'])):
+        stem, path = entry['stem'], entry['path']
+        if stem not in selected:
+            continue
+        if not path.startswith(MOUNT + 'End/Content/Sound/Voice/JP/'):
+            continue
+        if Path(path).name != stem + '.uasset' or '..' in rel_in_container(path).split('/'):
+            raise RuntimeError(f"invalid JP index path {path}")
+        cid = chunk_id_bytes(entry['chunk_id'])
+        identity = (stem, path, entry['container'], int(entry['size']))
+        if (cid in cids and cids[cid] != identity) or (path in paths and paths[path] != cid):
+            raise RuntimeError(f"conflicting JP index identity {path} {cid.hex()}")
+        if cid in cids:
+            continue
+        cids[cid], paths[path] = identity, cid
+        if cid in known:
+            if known[cid][1] != rel_in_container(path):
+                raise RuntimeError(f"CN/game chunk path conflict {cid.hex()}: {path}")
+            continue
+        row = selected[stem]
+        target = dict(entry, id=row['id'], audio_path=row['audio_path'],
+                      voice_gpu_key=row.get('voice_gpu_key'), source_pack=row['pack'])
+        (aliases if row['id'] is not None else unlocked).append(target)
+    return aliases, unlocked
+
+
+def preserved_alias_audio(row: dict, original: bytes) -> bytes | None:
+    """A Japanese lock selects this variant's exact chunk, never the preview MP3."""
+    validate_zen_exports(original)
+    if row.get('voice_gpu_key') == 'jp-lock':
+        return original
+    if row.get('voice_gpu_key') == 'cn-original':
+        raise RuntimeError(f"{row['stem']}: cn-original alias requires proven compressed-stream transfer; unsupported")
+    return None
+
+
+def validate_game_variants(aliases: list[dict]) -> None:
+    for container in sorted({r['container'] for r in aliases}):
+        if Path(container).name != container:
+            raise RuntimeError(f"invalid game container {container}")
+        utoc = GAME_PAKS / (container + '.utoc')
+        assets = iter_pack_assets(utoc, full_paths=True)
+        chunks, _, _ = parse_utoc(utoc.read_bytes())
+        sizes = {cid: size for cid, _, size in chunks}
+        for row in aliases:
+            if row['container'] != container:
+                continue
+            cid, rel = chunk_id_bytes(row['chunk_id']), rel_in_container(row['path'])
+            if assets.get(rel) != (cid, rel) or sizes.get(cid) != row['size']:
+                raise RuntimeError(f"JP index disagrees with game: {row}")
+
+
+class BuildSnapshot(tuple):
+    """Rows plus the wall clock paired with the acquired PostgreSQL snapshot."""
+    pass
+
+
+def load_build_snapshot(regions, limit):
+    """All selected rows and layout metadata from one read-only MVCC snapshot."""
+    global _READ_CONN
+    with psycopg.connect(DSN) as conn:
+        conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+        # This first SELECT acquires the repeatable-read snapshot. The DB clock
+        # belongs to that same statement, before any expensive disk verification.
+        started = float(conn.execute(
+            "SELECT extract(epoch FROM clock_timestamp()), pg_current_snapshot()"
+        ).fetchone()[0])
+        _READ_CONN = conn
+        try:
+            rows = load_lines(regions)
+            snapshot = BuildSnapshot((rows[:limit] if limit else rows,
+                    [] if limit else load_added_lines(regions),
+                    [] if limit else load_battle_bank_lines(regions)))
+            snapshot.started = started
+            return snapshot
+        finally:
+            _READ_CONN = None
+
+
+def build_policy():
+    # Stable across orchestration-only edits; encoder, layout and writer changes invalidate.
+    functions = (rebuild_locked, rebuild_added_bank, rebuild_battle_bank, place_channel,
+                 repair_audio_exports, bump_export_size, write_container, patch_voice_pack,
+                 plan_same_stem_variants, patch_txtres, style_subtitle, source_audio_key,
+                 group_added, preserved_alias_audio, spoken_subtitle, added_cache_path,
+                 load_mono_s16, _bank_wav, read_wav_s16, write_wav_s16, zen_header_size,
+                 validate_zen_exports, _compress_payload, _append_block, oodle_compress,
+                 run_audiomog, dotnet_env, rel_in_container, chunk_id_bytes, DirWriter,
+                 _extra, fstring, read_fstring, write_fstring, be5, le5, container_header,
+                 parse_dir_index, iter_pack_assets)
+    files = [Path(__file__).with_name(name) for name in
+             ('cn_iostore.py', 'battle_bank.py', 'extract_txtres.py')]
+    files += [AUDIOMOG, ROOT / 'programs/bin/liboo2corelinux64.so.9']
+    files += list(AUDIOMOG.parent.glob('*.dll'))
+    files += [Path(p) for p in (shutil.which('ffmpeg'), shutil.which('ffprobe')) if p]
+    return incremental.digest([incremental.AUDIO_POLICY,
+                               [inspect.getsource(f) for f in functions],
+                               [BLOCK, HEADER_BYTES, SLICE_OVERRUN_S, MOUNT, NONE],
+                               {p.name:incremental.sha(p) for p in files if p.is_file()}])
+
+
+def build_source_files(added, aliases):
+    paths = list(CN_MODS.glob('zzz_cn_voice_*_P.*'))
+    paths += list(TXTRES_RAW.glob('*.uasset')) + [TXTRES_INDEX, ROOT / 'work/jp-voice-index.jsonl']
+    paths += [p for p in GAME_PAKS.iterdir() if p.is_file() and p.suffix in ('.utoc', '.ucas', '.pak')]
+    containers = {r['jp_container'] for r in added} | {r['container'] for r in aliases}
+    for container in containers:
+        paths += list(GAME_PAKS.glob(container + '.*'))
+    return paths
+
+
 def main() -> int:
+    global DATA, _ENCODING_LOG, _CACHE_POLICY
+    original_data = DATA
+    with incremental.build_lock(BUILD_ROOT):
+        try:
+            return build_main()
+        finally:
+            DATA = original_data
+            _ENCODING_LOG = None
+            _CACHE_POLICY = ""
+
+
+def build_main() -> int:
+    global DATA, _ENCODING_LOG, _CACHE_POLICY
     ap = argparse.ArgumentParser(description="修订原中文语音包，并打独立字幕补丁")
     ap.add_argument("--chapters", default="all", help="all，或 1,2 这种章节号")
     ap.add_argument("--jobs", type=int, default=4)
     ap.add_argument("--no-rsync", action="store_true")
+    modes = ap.add_mutually_exclusive_group()
+    modes.add_argument("--full", action="store_true", help="全量（无模式参数也保持全量兼容行为）")
+    modes.add_argument("--incremental", action="store_true", help="显式增量；基线不可信时拒绝，不转全量")
     ap.add_argument("--limit", type=int, default=0, help="只处理前 N 条语音，用来试跑")
     args = ap.parse_args()
 
@@ -1127,9 +1322,15 @@ def main() -> int:
     if chapter_ids is None:
         print(f"  另含章节以外 {len(extra)} 个区域", flush=True)
 
-    rows = load_lines(regions)
-    if args.limit:
-        rows = rows[: args.limit]
+    day = sh_date()
+    boundary = time.time()
+    snapshot = load_build_snapshot(regions, args.limit)
+    rows, added, battle_rows = snapshot
+    inc = incremental.Session(BUILD_ROOT, day, [chapter_ids, regions], build_policy(),
+                              full=not args.incremental, publish=not (args.no_rsync or args.limit),
+                              started=getattr(snapshot, "started", boundary))
+    _ENCODING_LOG = inc.out / "encoding-events.jsonl"
+    _CACHE_POLICY = inc.policy
     locked = [r for r in rows if r["id"] is not None]
     sub_rows = []
     for r in locked:
@@ -1137,8 +1338,6 @@ def main() -> int:
         base = (r["text_zh"] or "").strip()
         if sub and sub != base:
             sub_rows.append(r)
-    added = [] if args.limit else load_added_lines(regions)
-    battle_rows = [] if args.limit else load_battle_bank_lines(regions)
     added_groups = group_added(added)
     print(
         f"语音 {len(rows)} 条，其中锁定 {len(locked)} 条，锁定且字幕不同 {len(sub_rows)} 条",
@@ -1159,14 +1358,24 @@ def main() -> int:
     for utoc in sorted(CN_MODS.glob("zzz_cn_voice_*_P.utoc")):
         catalogs[utoc.stem] = iter_pack_assets(utoc)
 
-    known_chunks: dict[bytes, str] = {}
+    known_chunks: dict[bytes, tuple[str, str]] = {}
     for pack, catalog in catalogs.items():
         for _stem, (cid, _rel) in catalog.items():
-            known_chunks.setdefault(cid, pack)
+            if cid in known_chunks and known_chunks[cid][1] != _rel:
+                raise RuntimeError(f"conflicting CN chunk path {cid.hex()}")
+            known_chunks.setdefault(cid, (pack, _rel))
     for (_container, chunk, path), _group in added_groups.items():
         cid = chunk_id_bytes(chunk)
         if cid in known_chunks:
             raise SystemExit(f"{path} 已经在 {known_chunks[cid]} 里，不能再补一份")
+
+    with (ROOT / "work" / "jp-voice-index.jsonl").open() as handle:
+        jp_index = [json.loads(line) for line in handle if line.strip()]
+    aliases, unlocked_variants = plan_same_stem_variants(rows, jp_index, known_chunks, regions)
+    validate_game_variants(aliases)
+    if any(row['voice_gpu_key'] == 'cn-original' for row in aliases):
+        raise RuntimeError("cn-original alias requires proven compressed-stream transfer; unsupported")
+    print(f"同 stem JP 补充变体 {len(aliases)}，未锁定缺口 {len(unlocked_variants)}", flush=True)
 
     missing_audio = []
     for r in locked + added + battle_rows:
@@ -1174,6 +1383,23 @@ def main() -> int:
             missing_audio.append(r["stem"])
     if missing_audio:
         raise SystemExit(f"锁定音频文件不在 data 里：{missing_audio[:8]}")
+
+    # Freeze exactly the selected input bytes. Candidates never enter the signature.
+    original_data = DATA
+    DATA = inc.freeze_audio(locked + added + battle_rows, original_data)
+    inc.snapshot([rows, added, battle_rows], build_source_files(added, aliases))
+    if inc.no_change():
+        shutil.rmtree(inc.out)
+        DATA = original_data
+        print("自上次成功打包开始快照起没有内容变化：不生成新 MOD，不升级基线、不删旧包", flush=True)
+        return 0
+
+    def fingerprint(original, selection, paths):
+        return incremental.audio_fingerprint(original, selection,
+                    [inc.audio_hashes[p] for p in paths])
+
+    def reuse(key, fp):
+        return inc.reuse_chunk(key, fp, extract_chunk_ids, validate_zen_exports)
 
     by_pack: dict[str, list[dict]] = defaultdict(list)
     for r in rows:
@@ -1197,25 +1423,34 @@ def main() -> int:
             rel_of[r["stem"]] = rel
             wanted[cid] = r["stem"]
         print(f"  抽出 {pack} {len(wanted)} 条", flush=True)
-        originals.update(extract_chunk_ids(utoc, wanted))
+        originals.update(extract_chunk_ids(utoc, wanted, strict=True))
     if len(originals) != len(rows):
         raise SystemExit(f"抽出 {len(originals)} 条，目录有 {len(rows)} 条")
 
     BUILD_ROOT.mkdir(parents=True, exist_ok=True)
     (BUILD_ROOT / "tmp").mkdir(parents=True, exist_ok=True)
     tasks = []
+    regular_fps = {}
+    rebuilt: dict[str, bytes] = {}
     for r in locked:
         # 原中文锁只表示人工确认，已有中文包中的原始chunk直接保留。
         # data里的MP3仅用于网站试听，不要把它重新编码回HCA而损失原包音质。
         # 字幕改写仍由上面的sub_rows独立收集，不因省略音频重建而漏掉。
         if r.get("voice_gpu_key") == "cn-original":
             continue
-        tasks.append((r["stem"], int(r["id"]), r["audio_path"], originals[r["stem"]].hex()))
-    rebuilt: dict[str, bytes] = {}
+        stem = r['stem']
+        key = 'cn:' + chunk_of[stem].hex()
+        fp = fingerprint(originals[stem], [r['id'], r['audio_path'], r['voice_gpu_key']], [r['audio_path']])
+        regular_fps[stem] = fp
+        previous = reuse(key, fp)
+        if previous is not None:
+            rebuilt[stem] = previous
+        else:
+            tasks.append((stem, int(r['id']), r['audio_path'], originals[stem].hex()))
     if tasks:
         print(f"重打包锁定语音 {len(tasks)} 条，并行 {args.jobs}", flush=True)
         workers = max(1, args.jobs)
-        with ProcessPoolExecutor(max_workers=workers) as pool:
+        with ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("fork")) as pool:
             futs = {pool.submit(rebuild_locked, task): task[0] for task in tasks}
             done = 0
             for fut in as_completed(futs):
@@ -1226,6 +1461,14 @@ def main() -> int:
                 if done % 25 == 0 or done == len(tasks):
                     print(f"  语音 {done}/{len(tasks)}", flush=True)
 
+    task_stems = {t[0] for t in tasks}
+    for r in locked:
+        stem = r['stem']
+        if stem in regular_fps:
+            inc.remember('cn:' + chunk_of[stem].hex(), regular_fps[stem], r['pack'],
+                         chunk_of[stem], rel_of[stem], rebuilt[stem],
+                         encoded=stem in task_stems, stems=[stem])
+
     battle_groups: dict[str, list[dict]] = defaultdict(list)
     for row in battle_rows:
         battle_groups[_extra(row)["bank_stem"]].append(row)
@@ -1234,7 +1477,15 @@ def main() -> int:
             raise RuntimeError(f"Battle bank {bank} is not in the selected source packs")
         if any(r["stem"] == bank for r in locked):
             raise RuntimeError(f"{bank}: whole-bank lock conflicts with individual material locks")
-        result = rebuild_battle_bank(bank, originals[bank], group)
+        key = 'cn:' + chunk_of[bank].hex()
+        selection = [{k:v for k,v in r.items() if k not in ('subtitle_text', 'text_zh', 'tts_text')} for r in group]
+        fp = fingerprint(originals[bank], selection, [r['audio_path'] for r in group])
+        result = reuse(key, fp)
+        did_rebuild = result is None
+        if did_rebuild:
+            result = rebuild_battle_bank(bank, originals[bank], group)
+        inc.remember(key, fp, next(r['pack'] for r in rows if r['stem'] == bank),
+                     chunk_of[bank], rel_of[bank], result, encoded=did_rebuild and result != originals[bank], stems=[r["stem"] for r in group])
         if result != originals[bank]:
             rebuilt[bank] = result
         print(f"  战斗语音库 {bank}，已选条目 {len(group)}", flush=True)
@@ -1248,7 +1499,7 @@ def main() -> int:
     added_cids: dict[str, bytes] = {}
     if added_groups:
         print(f"补原包没有的语音 {len(added_groups)} 块，{len(added)} 句", flush=True)
-        src_dir = BUILD_ROOT / "tmp" / "add-src"
+        src_dir = inc.out / "add-src"
         if src_dir.exists():
             shutil.rmtree(src_dir)
         src_dir.mkdir(parents=True)
@@ -1259,8 +1510,9 @@ def main() -> int:
             if bank.endswith(".uasset"):
                 bank = bank[: -len(".uasset")]
             cid = chunk_id_bytes(chunk)
+            bank = cid.hex()
             if bank in planned:
-                raise SystemExit(f"语音块 {bank} 出现了两次")
+                raise SystemExit(f"语音 chunk {bank} 出现了两次")
             by_container[container][cid] = bank
             sliced = group[0]["extra"].get("slice_start_s") is not None
             slices = []
@@ -1288,17 +1540,89 @@ def main() -> int:
         if missing_banks:
             raise SystemExit(f"游戏包里没有这些语音块：{missing_banks[:8]}")
         add_tasks = []
+        add_task_banks = []
+        add_fps = {}
         for bank, (_cid, _rel, slices) in planned.items():
             orig = src_dir / f"{bank}.uasset"
             orig.write_bytes(extracted[bank])
-            add_tasks.append((bank, str(orig), slices, str(added_cache_path(bank, slices))))
+            fp = fingerprint(extracted[bank], slices, [r['audio'] for r in slices])
+            add_fps[bank] = fp
+            previous = reuse('add:' + bank, fp)
+            if previous is not None:
+                added_bytes[bank] = previous
+            else:
+                add_task_banks.append(bank)
+                add_tasks.append((Path(_rel).stem, str(orig), slices, str(added_cache_path(bank, slices))))
         workers = max(1, args.jobs)
-        with ProcessPoolExecutor(max_workers=workers) as pool:
-            futs = {pool.submit(rebuild_added_bank, task): task[0] for task in add_tasks}
+        with ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("fork")) as pool:
+            futs = {pool.submit(rebuild_added_bank, task): bank for bank, task in zip(add_task_banks, add_tasks)}
             for fut in as_completed(futs):
                 bank = futs[fut]
                 added_bytes[bank] = Path(fut.result()).read_bytes()
                 print(f"  补上 {bank}", flush=True)
+
+        for bank in planned:
+            inc.remember('add:' + bank, add_fps[bank], ADD_PACK, added_cids[bank],
+                         added_rels[bank], added_bytes[bank], encoded=bank in add_task_banks and
+                         not all(r['keep_japanese'] for r in planned[bank][2]),
+                         stems=[r['stem'] for r in planned[bank][2]])
+
+    alias_proof = []
+    # Independent from sliced banks: one locked source-CN line, many game assets.
+    # These never enter `added` / added_spoken, so subtitles remain one per line.
+    alias_sources: dict[str, dict[bytes, str]] = defaultdict(dict)
+    for row in aliases:
+        cid = chunk_id_bytes(row['chunk_id'])
+        if cid.hex() in added_bytes:
+            raise RuntimeError(f"two audio choices for added chunk {cid.hex()}")
+        alias_sources[row['container']][cid] = cid.hex()
+    extracted_aliases = {}
+    for container, wanted in alias_sources.items():
+        extracted_aliases.update(extract_chunk_ids(GAME_PAKS / (container + '.utoc'), wanted, strict=True))
+    alias_tasks = []
+    alias_generate = []
+    alias_fps = {}
+    for row in aliases:
+        key = row['chunk_id'].lower()
+        original = extracted_aliases[key]
+        fp = fingerprint(original, [row['id'], row['audio_path'], row['voice_gpu_key']],
+                         [row['audio_path']])
+        alias_fps[key] = fp
+        preserved = reuse('add:' + key, fp)
+        if preserved is None:
+            preserved = preserved_alias_audio(row, original)
+        if preserved is not None:
+            added_bytes[key] = preserved
+        else:
+            alias_generate.append(row)
+            alias_tasks.append((row['stem'], int(row['id']), row['audio_path'], original.hex()))
+        added_cids[key] = chunk_id_bytes(key)
+        added_rels[key] = rel_in_container(row['path'])
+    with ProcessPoolExecutor(max_workers=max(1, args.jobs), mp_context=multiprocessing.get_context("fork")) as pool:
+        generated = alias_generate
+        futures = {pool.submit(rebuild_locked, task): row for row, task in zip(generated, alias_tasks)}
+        for future in as_completed(futures):
+            row = futures[future]
+            key = row['chunk_id'].lower()
+            result = Path(future.result()).read_bytes()
+            before = material_entries(extracted_aliases[key])
+            after = material_entries(result)
+            changed = {i for i, (a, b) in enumerate(zip(before, after)) if a['digest'] != b['digest']}
+            if not changed:
+                raise RuntimeError(f"{key}: selected alias audio was not replaced")
+            validate_replacements(extracted_aliases[key], result, changed)
+            added_bytes[key] = result
+    for row in aliases:
+        key = row['chunk_id'].lower()
+        payload = added_bytes[key]
+        inc.remember('add:' + key, alias_fps[key], ADD_PACK, added_cids[key], added_rels[key],
+                     payload, encoded=row in alias_generate, stems=[row["stem"]])
+        alias_proof.append(dict(row, tts_id=int(row['id']),
+                               selected_audio_sha256=None if row['voice_gpu_key'] == 'jp-lock' else hashlib.sha256((DATA / row['audio_path']).read_bytes()).hexdigest(),
+                               source_sha256=hashlib.sha256(extracted_aliases[key]).hexdigest(),
+                               rebuilt_sha256=hashlib.sha256(payload).hexdigest(),
+                               source_materials=material_entries(extracted_aliases[key]),
+                               materials=material_entries(payload)))
 
     text_chunks: list[tuple[bytes, bytes, str]] = []
     subtitle_line_count = 0
@@ -1365,31 +1689,31 @@ def main() -> int:
     for stem, payload in rebuilt.items():
         by_pack[pack_of[stem]][chunk_of[stem]] = payload
 
-    day = sh_date()
-    out_dir = BUILD_ROOT / day / "staging"
-    if out_dir.exists():
-        shutil.rmtree(out_dir)
+    out_dir = inc.out
     mod_dir = out_dir / "End" / "Content" / "Paks" / "~mods"
     mod_dir.mkdir(parents=True)
     written = []
-    for pack, repl in sorted(by_pack.items()):
+    # Even a cancelled last lock must emit the restored original pack in this scope.
+    selected_packs = set(pack_of.values())
+    if chapter_ids is None:
+        selected_packs.update(catalogs)
+    for pack in sorted(selected_packs):
+        repl = by_pack.get(pack, {})
         src = CN_MODS / f"{pack}.utoc"
         dest = mod_dir / f"{pack}.utoc"
-        n = patch_voice_pack(src, repl, dest)
+        signature = incremental.digest([{str(p):inc.sources[str(p)] for p in CN_MODS.glob(pack + '.*') if str(p) in inc.sources},
+                                        {cid.hex():hashlib.sha256(data).hexdigest() for cid,data in repl.items()}])
+        if inc.container(pack, signature, mod_dir):
+            n = len(repl)
+        elif repl:
+            n = patch_voice_pack(src, repl, dest)
+        else:
+            for ext in ('.utoc', '.ucas', '.pak'):
+                shutil.copy2(src.with_suffix(ext), dest.with_suffix(ext))
+            n = 0
         print(f"写 {pack} ，替换 {n} 句", flush=True)
         verify_container(dest, {stem: voice_bytes[stem] for stem, p in pack_of.items() if p == pack})
         written.append(pack)
-    if chapter_ids is None:
-        for src_utoc in sorted(CN_MODS.glob("zzz_cn_voice_*_P.utoc")):
-            pack = src_utoc.stem
-            if pack in written:
-                continue
-            for ext in (".utoc", ".ucas", ".pak"):
-                src = CN_MODS / f"{pack}{ext}"
-                if src.is_file():
-                    shutil.copy2(src, mod_dir / src.name)
-            written.append(pack)
-            print(f"原样拷 {pack}", flush=True)
 
     if added_bytes:
         cid0 = os.urandom(8)
@@ -1400,8 +1724,11 @@ def main() -> int:
             add_chunks.append((added_cids[bank], payload, added_rels[bank]))
         add_utoc = mod_dir / f"{ADD_PACK}.utoc"
         print(f"写 {ADD_PACK} ，{len(added_bytes)} 块", flush=True)
-        write_container(add_chunks, add_utoc)
-        verify_container(add_utoc, added_bytes)
+        signature = incremental.digest(sorted((cid.hex(), hashlib.sha256(data).hexdigest(), rel)
+                                         for cid,data,rel in add_chunks[1:]))
+        if not inc.container(ADD_PACK, signature, mod_dir):
+            write_container(add_chunks, add_utoc)
+        verify_container(add_utoc, {(added_cids[k], added_rels[k]): v for k, v in added_bytes.items()})
         written.append(ADD_PACK)
 
     subtitle_utoc = None
@@ -1414,11 +1741,56 @@ def main() -> int:
             chunks.append((cid, payload, rel))
         subtitle_utoc = mod_dir / f"{MOD_STEM}.utoc"
         print(f"写字幕 {subtitle_utoc.name} （{len(text_chunks)} 份）", flush=True)
-        write_container(chunks, subtitle_utoc)
+        signature = incremental.digest(sorted((cid.hex(), hashlib.sha256(data).hexdigest(), rel)
+                                         for cid,data,rel in text_chunks))
+        if not inc.container(MOD_STEM, signature, mod_dir):
+            write_container(chunks, subtitle_utoc)
         verify_container(subtitle_utoc, {Path(rel).stem: payload for _cid, payload, rel in text_chunks})
         subprocess.run([str(ROOT / "programs/bin/retoc"), "info", str(subtitle_utoc)], check=True)
 
+    # Check every selected locked same-stem JP identity, including those already
+    # served by CN packs. Exact CID/path and expected bytes must both match.
+    coverage: dict[str, dict] = defaultdict(dict)
+    selected_locked = {r['stem']: r for r in locked}
+    alias_stems = {r['stem'] for r in aliases}
+    variant_coverage_proof = []
+    for entry in jp_index:
+        stem = entry['stem']
+        if stem not in selected_locked or not entry['path'].startswith(MOUNT + 'End/Content/Sound/Voice/JP/'):
+            continue
+        cid = chunk_id_bytes(entry['chunk_id'])
+        rel = rel_in_container(entry['path'])
+        if cid in known_chunks:
+            pack, _ = known_chunks[cid]
+            # A selected variant in a second CN pack must carry the same choice;
+            # fail rather than claiming coverage from stale source audio.
+            if cid != chunk_of[stem]:
+                raise RuntimeError(f"{stem}: additional existing CN variant {cid.hex()} needs its own replacement; refusing EV-byte verification")
+            expected = voice_bytes[stem]
+        else:
+            pack = ADD_PACK
+            expected = added_bytes[entry['chunk_id'].lower()]
+        coverage[pack][(cid, rel)] = expected
+        if stem in alias_stems:
+            variant_coverage_proof.append(dict(stem=stem, chunk_id=cid.hex(), path=entry['path'],
+                                               pack=pack, tts_id=int(selected_locked[stem]['id']),
+                                               sha256=hashlib.sha256(expected).hexdigest()))
+    for pack, expected in coverage.items():
+        target = mod_dir / (pack + '.utoc')
+        if not target.exists():
+            raise RuntimeError(f"selected JP variant pack was not emitted: {pack}")
+        verify_container(target, expected)
+
+    # Frozen audio is no longer needed. It is never distributed or retained in state.
+    shutil.rmtree(DATA)
+    if added_groups:
+        shutil.rmtree(src_dir)
+    DATA = original_data
+    change_report = inc.report()
     manifest = {
+        "incremental": change_report,
+        "trial_limit": args.limit,
+        "publication_eligible": inc.publish,
         "mod": written,
         "subtitle_mod": MOD_STEM if subtitle_utoc else None,
         "date": day,
@@ -1429,7 +1801,11 @@ def main() -> int:
         "locked_replaced": len(rebuilt),
         "source_cn_copied": len(rows) - len(rebuilt),
         "added_pack": ADD_PACK if added_bytes else None,
-        "added_banks": len(added_bytes),
+        "added_banks": len(added_groups),
+        "same_stem_additional_assets": len(aliases),
+        "same_stem_aliases": alias_proof,
+        "same_stem_coverage": variant_coverage_proof,
+        "same_stem_unlocked_missing": unlocked_variants,
         "added_lines": len(added),
         "battle_bank_lines": len(battle_rows),
         "battle_banks": len(battle_groups),
@@ -1439,25 +1815,31 @@ def main() -> int:
             "rebuilt_zen_exports": len(rebuilt) + len(added_bytes),
             "subtitle_zen_exports": len(text_chunks),
             "strict_oodle_roundtrip": True,
+            "same_stem_exact_cid_path_coverage": sum(map(len, coverage.values())),
             "game_launch_tested": False,
         },
         "packs": {
             name: (mod_dir / f"{name}.ucas").stat().st_size for name in written
         },
     }
-    if not args.no_rsync:
+    if not (args.no_rsync or args.limit):
         version = next_version(day)
         manifest["version"] = version
     (out_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     install_lines = [
         "FF7 Rebirth 中文语音修订包",
+        (f"试跑产物：limit={args.limit}，不是正式完整锁定安装集，禁止作为发布基线。" if args.limit else
+         f"模式：{change_report['mode']}；这是本次章节范围的完整独立安装集，不依赖以前本机包。"),
+        "增量覆盖时只需复制变更容器的 .pak/.utoc/.ucas 三件套：" + ', '.join(change_report['changed_containers']),
+        "必须删除的旧文件（相对本目录；取消最后一条字幕/补充语音时尤其重要）：",
+        *change_report['deleted_files'],
         "这是要覆盖的 zzz_cn_voice 包，不是再叠一个新名字。",
         "",
-        "先退出游戏，删掉 ~mods 里的 aa_cn_voice_edit_P 和 zzzz_cn_voice_edit_P。",
+        "先退出游戏，删除旧 zzzz_cn_voice_edit_P；按上面的 DELETE 清单删除失效文件。",
         "再用本目录里的同名文件覆盖：",
         "  FINAL FANTASY VII REBIRTH\\End\\Content\\Paks\\~mods\\",
         "复制本目录的 End 到游戏根目录，覆盖同名文件；本目录没有的 zzz 包保留。语音仍选日语。",
-        "aa_cn_voice_edit_P 是本次新字幕包：先删除旧版，再复制本次版本，不能漏装。",
+        "aa_cn_voice_edit_P 只装字幕；若在变更清单中则覆盖三件套，若在删除清单中则删除。",
     ]
     if added_bytes:
         install_lines.append(
@@ -1468,24 +1850,35 @@ def main() -> int:
         "",
         "不要把旧包留在 Paks 的子目录里，游戏会把子目录也扫进去，老声音又会回来。",
         "",
-        json.dumps(manifest, ensure_ascii=False),
+        "详细构建证据、SHA256 和变更记录见同目录 manifest.json。",
         "",
     ])
     (out_dir / "安装说明.txt").write_text("\n".join(install_lines), encoding="utf-8")
     print(json.dumps(manifest, ensure_ascii=False), flush=True)
-    if args.no_rsync:
-        print(f"未同步。本地目录 {out_dir}", flush=True)
+    if args.no_rsync or args.limit:
+        print(f"未发布（no-rsync/limit）。本地目录 {out_dir}；不升级基线、不删旧包", flush=True)
         return 0
     dest = SMB_ROOT / day / str(version)
-    dest.mkdir(parents=True, exist_ok=True)
+    dest.mkdir(parents=True, exist_ok=False)
     print(f"rsync -> {dest}", flush=True)
     proc = subprocess.run(
-        ["rsync", "-avP", f"{out_dir}/", f"{dest}/"],
+        ["rsync", "-avP", "--partial", "--inplace", "--fsync", "--bwlimit=8192", f"{out_dir}/", f"{dest}/"],
         check=False,
     )
     if proc.returncode != 0:
         raise SystemExit(f"rsync 失败，本地包还在 {out_dir}")
-    prune_local_builds(day)
+    if inc.commit(dest):
+        # Only remove successful old drops after share hashes and atomic baseline commit.
+        # Failed in-progress directories remain available for inspection, including same-day.
+        previous = inc.prior_release
+        if previous and Path(previous['output']) != inc.out:
+            old = Path(previous['output'])
+            old = old.resolve()
+            if (old.parent.parent == BUILD_ROOT.resolve()
+                    and re.fullmatch(r'\d{4}-\d{2}-\d{2}', old.parent.name)
+                    and (old.name == 'staging' or old.name.startswith('verified-'))):
+                shutil.rmtree(old)
+        print("新包本地严格回读和共享盘 SHA 均通过，基线已原子升级", flush=True)
     print(f"完成 {dest}", flush=True)
     return 0
 
