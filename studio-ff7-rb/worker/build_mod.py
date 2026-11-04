@@ -60,8 +60,8 @@ TXTRES_RAW = ROOT / "work" / "txtres-raw" / "CN"
 TXTRES_INDEX = ROOT / "work" / "txtres-index.jsonl"
 AUDIOMOG = ROOT / "programs" / "bin" / "audiomog" / "AudioMog.dll"
 BUILD_ROOT = ROOT / "work" / "mod-build"
-SMB_ROOT = Path(os.environ.get("MOD_BACKUP_DIR", str(ROOT / "out" / "mod-backups")))
-DSN = os.environ.get("DATABASE_URL", "")
+SMB_ROOT = Path("/srv/backups/ff7-backup/rebirth/mod")
+DSN = os.environ.get("DATABASE_URL", "postgres://ff7rb@127.0.0.1:25432/studio")
 MOD_STEM = "aa_cn_voice_edit_P"
 ADD_PACK = "zzz_cn_voice_add_P"
 GAME_PAKS = ROOT / "game" / "FINAL FANTASY VII REBIRTH" / "End" / "Content" / "Paks"
@@ -695,7 +695,7 @@ def load_lines(regions: list[str] | None) -> list[dict]:
     # Only chunks that already live in a zzz_cn_voice pack can be swapped.
     # Lines imported from movie banks (pack jp-only) are not in those packs.
     # psycopg treats % as a placeholder, so the LIKE wildcard is doubled.
-    clauses = ["l.pack LIKE 'zzz_cn_voice_%%'",
+    clauses = ["l.processing_state = 'active'", "l.pack LIKE 'zzz_cn_voice_%%'",
                "NOT EXISTS (SELECT 1 FROM line_meta bm WHERE bm.stem=l.stem AND bm.extra ? 'bank_material_index')"]
     args: list = []
     if regions is not None:
@@ -720,7 +720,7 @@ def load_lines(regions: list[str] | None) -> list[dict]:
 
 def load_added_lines(regions: list[str] | None) -> list[dict]:
     """Locked lines whose asset is not in any zzz_cn_voice pack."""
-    clauses = ["l.pack NOT LIKE 'zzz_cn_voice_%%'"]
+    clauses = ["l.processing_state = 'active'", "l.pack NOT LIKE 'zzz_cn_voice_%%'"]
     args: list = []
     if regions is not None:
         clauses.append("l.region = ANY(%s)")
@@ -762,6 +762,7 @@ def load_battle_bank_lines(regions: list[str] | None) -> list[dict]:
                 FROM lines l JOIN line_meta m USING(stem)
                 JOIN line_tts_versions t ON t.stem=l.stem
                 WHERE m.extra ? 'bank_material_index'
+                  AND l.processing_state='active'
                   AND t.status='ready' AND t.review_state='locked'
                   AND (%s::text[] IS NULL OR l.region=ANY(%s::text[]))
                 ORDER BY l.stem

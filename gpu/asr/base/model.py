@@ -1,6 +1,6 @@
 import base64
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -11,6 +11,24 @@ class AsrRequest(BaseModel):
     task_id: str = Field(default="xxx", description="任务ID，未传时默认 xxx。")
     sample_audio: str = Field(..., description="音频输入，支持 URL / data URL base64 / 纯 base64 / 本地文件路径。")
     language: Optional[str] = Field(default=None, description="提示语种，如 Chinese / Japanese，默认自动。")
+    use_forced_aligner: bool = Field(default=False, description="识别后运行 ForcedAligner，结果附带 alignment 字词时间轴；默认不运行。")
+
+
+class AsrAlignmentItem(BaseModel):
+    """模型输出的字词时间；不另做插值或过滤零时长词。"""
+
+    text: str
+    start_time: float = Field(description="相对输入音频的开始时间，单位秒。")
+    end_time: float = Field(description="相对输入音频的结束时间，单位秒。")
+
+
+class AsrAlignment(BaseModel):
+    model: str
+    status: Literal["ok", "empty", "unsupported_language", "error"]
+    time_unit: Literal["seconds"]
+    calc_time: float = Field(description="对齐耗时，秒；首次包含懒加载，不含锁等待和ASR。")
+    items: List[AsrAlignmentItem]
+    error: Optional[str] = None
 
 
 class AsrResult(BaseModel):
@@ -18,6 +36,7 @@ class AsrResult(BaseModel):
 
     text: str = Field(default="", description="识别出的文本内容。")
     language: Optional[str] = Field(default=None, description="识别出的语言（模型输出）。")
+    alignment: Optional[AsrAlignment] = Field(default=None, description="仅 use_forced_aligner=true 时返回。")
 
 
 class AsrResponse(BaseModel):

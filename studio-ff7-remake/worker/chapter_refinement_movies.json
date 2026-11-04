@@ -1,0 +1,46 @@
+[
+  {
+    "event": "MV_SLUM7_4670",
+    "area": "030-SLUM7",
+    "chapter": 12,
+    "source_movie": "game/FINAL FANTASY VII REMAKE/End/Content/GameContents/Movie/030-SLUM7/MV_SLUM7_4670/MV_SLUM7_4670.emov",
+    "source_bytes": 136185630,
+    "source_sha256": "01e5042cc426e2931a0bb09f16ddc883a85bdc39b83b38d105fb33959bfebc7c",
+    "reviewed_frames": [
+      {
+        "path": "work/chapter-refinement/movie-frames/MV_SLUM7_4670_4s.jpg",
+        "seconds": 4,
+        "sha256": "1fb408d793edcee753ecb9d0674d147056e802b432c1cd495dc3e1508e86574d"
+      },
+      {
+        "path": "work/chapter-refinement/movie-frames/MV_SLUM7_4670_20s.jpg",
+        "seconds": 20,
+        "sha256": "662619d98cc0b9f4ad2755eaf7ca9206cd42dcb5fb6b2f0e5e472b9a8a2a7882"
+      },
+      {
+        "path": "work/chapter-refinement/movie-frames/MV_SLUM7_4670_40s.jpg",
+        "seconds": 40,
+        "sha256": "57e750ded63a1108df7a3a8a9ec4681c7333e85f183caedb6822766b4c844a64"
+      }
+    ],
+    "scene_context": "实际查看原始游戏电影：4秒支柱爆炸崩塌，20秒落下的燃烧碎片，40秒Wedge与猫在崩塌的七号街屋顶；本篇第12章板块崩塌过场。",
+    "url": "https://www.powerpyx.com/final-fantasy-7-vii-remake-chapter-12-fight-for-survival-walkthrough/"
+  },
+  {
+    "event": "MV_SBIL0_7710",
+    "area": "140-SBIL0",
+    "chapter": 18,
+    "source_movie": "game/FINAL FANTASY VII REMAKE/End/Content/GameContents/Movie/140-SBIL0/MV_SBIL0_7710/MV_SBIL0_7710.emov",
+    "source_bytes": 243589157,
+    "source_sha256": "59b81353cbeae8bf79c42551f7669293bcdc3054b5a392b68796855615c07410",
+    "reviewed_frames": [
+      {
+        "path": "work/chapter-refinement/movie-frames/MV_SBIL0_7710_10s.jpg",
+        "seconds": 10,
+        "sha256": "526e054694a4173a1001af78369db8fa38687e6e416224dc229c35b662e61431"
+      }
+    ],
+    "scene_context": "实际查看原始电影10秒帧：Cloud/Barret处于白色Whisper异空间；同IDSephiroth原句I am waiting Cloud亦独特匹配网页第18章，归Turning Point。",
+    "url": "https://www.powerpyx.com/final-fantasy-7-vii-remake-chapter-18-destinys-crossroads-walkthrough/"
+  }
+]

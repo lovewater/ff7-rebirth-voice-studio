@@ -1,0 +1,97 @@
+name: studio-ff7-remake
+
+services:
+  remake-website:
+    image: ff7-studio-shared-website:local
+    build:
+      context: ../studio-common/website
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8767:8765"
+    environment:
+      FF7_GAME_ID: remake
+      DATABASE_URL: ${DATABASE_URL:?Run scripts/bootstrap.py first}
+      AUDIO_DATA_ROOT: /app/data
+      MORA_URL: http://remake-mora:8000
+      TTS_URL: ${TTS_URL:-http://tts-proxy:8810}
+      TTS_URLS: ${TTS_URLS:-http://tts-proxy:8810}
+      TTS_MAX_INFLIGHT: ${TTS_MAX_INFLIGHT:-8}
+      REWRITE_LLM_URL: ${REWRITE_LLM_URL:-https://open.bigmodel.cn/api/coding/paas/v4}
+      REWRITE_LLM_MODEL: ${REWRITE_LLM_MODEL:-glm-5.3}
+      REWRITE_LLM_KEY: ${REWRITE_LLM_KEY:-}
+      GROK_LLM_URL: ${GROK_LLM_URL:-}
+      GROK_LLM_MODEL: ${GROK_LLM_MODEL:-grok-4.7}
+      GROK_LLM_KEY: ${GROK_LLM_KEY:-}
+      VOLCENGINE_LLM_URL: ${VOLCENGINE_LLM_URL:-}
+      VOLCENGINE_LLM_MODEL: ${VOLCENGINE_LLM_MODEL:-deepseek-v4.1-flash}
+      VOLCENGINE_LLM_KEY: ${VOLCENGINE_LLM_KEY:-}
+      SELF_HOSTED_LLM_URL: ${SELF_HOSTED_LLM_URL:-}
+      SELF_HOSTED_LLM_MODEL: ${SELF_HOSTED_LLM_MODEL:-}
+      SELF_HOSTED_LLM_KEY: ${SELF_HOSTED_LLM_KEY:-}
+      QWEN_ASR_URL: ${QWEN_ASR_URL:-}
+      SEEDASR_API_KEY: ${SEEDASR_API_KEY:-}
+      SEEDASR_RESOURCE_ID: ${SEEDASR_RESOURCE_ID:-volc.seedasr.auc}
+      # Loopback belongs to this container; never send Remake clone jobs to Rebirth.
+      AUTO_RUN_ORIGIN: http://127.0.0.1:8765
+    volumes:
+      - type: bind
+        source: ./website/data
+        target: /app/data
+        bind:
+          create_host_path: false
+    depends_on:
+      remake-mora:
+        condition: service_healthy
+    networks: [shared-services]
+
+  remake-mora:
+    image: ff7-studio-shared-mora:local
+    build:
+      context: ../studio-common/worker
+      dockerfile: Dockerfile.mora
+    restart: unless-stopped
+    environment:
+      FF7_GAME_ID: remake
+      DATABASE_URL: ${DATABASE_URL:?Run scripts/bootstrap.py first}
+      AUDIO_DATA_ROOT: /app/data
+    volumes:
+      - type: bind
+        source: ./website/data
+        target: /app/data
+        read_only: true
+        bind:
+          create_host_path: false
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    networks: [shared-services]
+
+  remake-speech-metrics:
+    image: ff7-studio-shared-mora:local
+    command: ["python", "-u", "speech_metrics_batch.py", "--watch"]
+    restart: unless-stopped
+    cpus: 1.0
+    environment:
+      FF7_GAME_ID: remake
+      DATABASE_URL: ${DATABASE_URL:?Run scripts/bootstrap.py first}
+      AUDIO_DATA_ROOT: /app/data
+    volumes:
+      - type: bind
+        source: ./website/data
+        target: /app/data
+        read_only: true
+        bind:
+          create_host_path: false
+    depends_on:
+      remake-mora:
+        condition: service_healthy
+    networks: [shared-services]
+
+# Reuse the existing PostgreSQL and TTS proxy, with no db/website/mora DNS alias collision.
+networks:
+  shared-services:
+    external: true
+    name: studio-ff7-rb_default

@@ -18,6 +18,10 @@ import psycopg
 from fugashi import Tagger
 
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "studio-common/worker"))
+
 from mora_core import (
     chinese_syllables, clean_text, japanese_characters, japanese_reading,
     mora_count, punctuation_estimate,

@@ -16,7 +16,9 @@
 |---|---|---|
 | `programs/` | 解包/组包 CLI（AudioMog、retoc、vgmstream、VGAudio） | 跟仓库走，`bin/` `vendor/` 已 gitignore |
 | `studio-ff7-rb/` | 修订台 compose + db + worker | 统一仓库中的目录 |
-| `studio-ff7-rb/website/` | Next.js `:8765` | 统一仓库中的目录 |
+| `studio-common/website/` | 两站共用 Next.js | 统一仓库中的目录 |
+| `studio-common/worker/` | 公共CPU程序 | 统一仓库中的目录 |
+| `studio-ff7-remake/` | Remake 独立配置、资源适配 | 统一仓库中的目录 |
 | `studio-ff7-rb/db/` | `init/` 建表；`data/` gitignore | |
 | `studio-ff7-rb/worker/` | 抽取、字幕、时长 | |
 | `game/` | 只读游戏 + 中文包 | 不进 git |
@@ -90,7 +92,7 @@ programs/ff7sound status
 `website/data/` 是本机缓存，已经 gitignore。提交前执行：
 
 ```
-cd studio-ff7-rb/website && git add -A --dry-run
+cd studio-common/website && git add -A --dry-run
 ```
 
 若出现 `.wav` `.uasset` 立刻停。`work/` `game/` 同样不进 git。
@@ -130,3 +132,7 @@ python3 studio-ff7-rb/worker/build_mod.py --chapters 1,2 --no-rsync
 语音容器沿用原作者的头、ID、目录、未修改压缩块；新字幕容器使用空 UE4.26 头。早期 aa_/zzzz_ 语音叠包方案已弃用。
 
 2026-09-25 修复：AudioMog 改 SAB 长度时不一定更新 Zen ExportMap 的 CookedSerialSize；旧版 2591 条锁定缓存中有 257 条大小不一致。`repair_audio_exports` 从源资产头重算，缓存命中也修复。禁止仅凭音频能解码判断游戏资产可用；导出需严格 Oodle 回读、字节比对和完整 Zen export 大小检查。Linux 校验不代表已通过 Win11 游戏启动测试。
+
+## 双站与最新工作流
+
+网站源码已统一至studio-common/website，原游戏website目录只放本地数据；按游戏核验数据库与音频根。Remake独立数据库及备份，不复用Rebirth游戏资源/锁定。自动演出支持两/三/四段，普通音频独立总长流程。跳过条目不进列表/统计/自动生成/MOD；保留原音和人工选择，详情可恢复。ASR专名纠错独立于TTS读音表。所有推理/生成仅按用户具体授权执行，代码变更本身不授权开始批次。详见studio-common/docs/。

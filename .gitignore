@@ -81,5 +81,11 @@ gpu/tts/tts_base/
 .DS_Store
 
 # Generated DSP runtime assets; reproducible sources live under third_party.
-studio-ff7-rb/website/public/vendor/
+studio-common/website/public/vendor/
 *.tar.bz2
+
+**/.private/
+**/work/
+**/game/
+**/obj/
+**/bin/

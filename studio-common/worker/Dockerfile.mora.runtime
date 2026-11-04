@@ -1,0 +1,7 @@
+# Reuse an explicitly selected, locally verified CPU dependency image.
+# No default: the operator must identify the installed environment to reuse.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+WORKDIR /app
+COPY game_runtime.py mora_core.py mora_server.py mora_weights.py speech_activity.py speech_metrics_batch.py ./
+CMD ["python", "-u", "mora_server.py"]

@@ -1,36 +1,9 @@
-# 从 SMB 备份还原修订台
+# Rebirth 备份与恢复
 
-备份位置：`/srv/backups/ff7-backup`
+当前公共实现、每游戏 NAS 命名空间、不可变音频对象、保留策略与安全恢复检查，见 [公共恢复说明](../../studio-common/scripts/RESTORE.md)。
 
-- `db/年-月-日/studio.dump`：Postgres 自定义格式（可还原）
-- `db/年-月-日/studio.sql.gz`：纯 SQL，备用
-- `data/tts/`：我们生成/编辑的配音（wav / 锁日文的 mp3 / json），rsync 增量，不含游戏日文和前人中文包
+本目录的 `backup-studio.sh` 始终只备份 Rebirth 数据库 `studio` 和本目录所属的生成资产，不会备份 Remake。每日聚合入口改用 `studio-common/scripts/backup-all.sh`。
 
-日文 `website/data/jp`、中文包 `website/data/cn` **不在备份里**。还原后若本机没有这两棵树，需要重新抽取才能播原声；改/锁/字幕/忽略对时都在库和 `data/tts` 里。
+旧备份已统一迁入 `/srv/backups/ff7-backup/rebirth/`：原日期目录位于 `db/原日期名/`，旧滚动音频镜像位于 `data/tts/`，历史 MOD 位于 `mod/`；原根日志和恢复说明保存在 `legacy/`，不覆盖新日志。这些仍是 Rebirth 旧格式历史，不由新 v2 保留策略删除。旧格式没有逐日不可变音频映射，新版恢复检查不会误接受它；恢复旧历史须按公共说明的新路径对应，先在独立临时库和工作目录核对。
 
-模型访问日志 `llm_access_logs` 的**数据不进入每日备份**；两种格式均保留其表结构，恢复后该表为空，后续调用正常写入。主音频上的 token/速度汇总仍随业务数据备份。
-
-## 还原数据库
-
-在 `studio-ff7-rb` 目录：
-
-```bash
-docker compose up -d db
-# 等 healthy
-docker cp /srv/backups/ff7-backup/db/2026-9-23/studio.dump studio-ff7-rb-db-1:/tmp/studio.dump
-docker exec -i studio-ff7-rb-db-1 psql -U ff7rb -d postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'studio' AND pid <> pg_backend_pid();"
-docker exec -i studio-ff7-rb-db-1 psql -U ff7rb -d postgres -c "DROP DATABASE IF EXISTS studio;"
-docker exec -i studio-ff7-rb-db-1 psql -U ff7rb -d postgres -c "CREATE DATABASE studio OWNER ff7rb;"
-docker exec -i studio-ff7-rb-db-1 pg_restore -U ff7rb -d studio --no-owner --exit-on-error /tmp/studio.dump
-```
-
-或解压 SQL：`gunzip -c studio.sql.gz | docker exec -i studio-ff7-rb-db-1 psql -U ff7rb -d studio`
-
-## 还原我们生成的音频
-
-```bash
-mkdir -p website/data/tts
-rsync -a /srv/backups/ff7-backup/data/tts/ website/data/tts/
-```
-
-然后 `docker compose --profile full up -d`。
+恢复默认只使用独立临时数据库和本游戏 `work/` 下的空目录，不自动覆盖正式库或正式音频目录。不要在 Remake 项目中照抄旧的 DROP studio 命令。

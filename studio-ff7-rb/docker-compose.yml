@@ -37,7 +37,7 @@ services:
 
   website:
     build:
-      context: ./website
+      context: ../studio-common/website
       dockerfile: Dockerfile
     ports:
       - "8765:8765"
@@ -50,11 +50,14 @@ services:
       REWRITE_LLM_URL: ${REWRITE_LLM_URL:-}
       REWRITE_LLM_MODEL: ${REWRITE_LLM_MODEL:-glm-5.3}
       REWRITE_LLM_KEY: ${REWRITE_LLM_KEY:-}
-      # 台词改写专用火山套餐连接，与原模型和ASR凭据独立。
+      GROK_LLM_URL: ${GROK_LLM_URL:-}
+      GROK_LLM_MODEL: ${GROK_LLM_MODEL:-grok-4.7}
+      GROK_LLM_KEY: ${GROK_LLM_KEY:-}
+      # 火山保留为独立可选连接。
       VOLCENGINE_LLM_URL: ${VOLCENGINE_LLM_URL:-}
       VOLCENGINE_LLM_MODEL: ${VOLCENGINE_LLM_MODEL:-deepseek-v4.1-flash}
       VOLCENGINE_LLM_KEY: ${VOLCENGINE_LLM_KEY:-}
-      # 自部署模型独立注册，仅显式选择时使用；台词改写走火山，判断类走原模型。
+      # 自部署模型独立注册，仅显式选择时使用。
       SELF_HOSTED_LLM_URL: ${SELF_HOSTED_LLM_URL:-}
       SELF_HOSTED_LLM_MODEL: ${SELF_HOSTED_LLM_MODEL:-Qwen/Qwen3.8-27B-FP8}
       SELF_HOSTED_LLM_KEY: ${SELF_HOSTED_LLM_KEY:-}
@@ -87,7 +90,7 @@ services:
 
   mora:
     build:
-      context: ./worker
+      context: ../studio-common/worker
       dockerfile: Dockerfile.mora
     volumes:
       - ./website/data:/app/data:ro
@@ -106,6 +109,9 @@ services:
 
   speech-metrics:
     image: studio-ff7-rb-mora
+    build:
+      context: ../studio-common/worker
+      dockerfile: Dockerfile.mora
     command: ["python", "-u", "speech_metrics_batch.py", "--watch"]
     environment:
       DATABASE_URL: ${DATABASE_URL:?请配置容器可用的数据库连接串}

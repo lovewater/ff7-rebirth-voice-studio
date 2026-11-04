@@ -1,0 +1,12 @@
+.env
+.private/
+website/data/
+game/
+work/
+__pycache__/
+*.pyc
+
+worker/AudioBatch/bin/
+worker/AudioBatch/obj/
+worker/SoundProbe/bin/
+worker/SoundProbe/obj/

@@ -1,6 +1,6 @@
-# FF7 Rebirth Voice Studio
+# FF7 Rebirth / Remake Voice Studio
 
-FF7 Rebirth 中文配音修订工作台：管理逐句音频、生成与审核 TTS、整理字幕，并制作游戏补丁。
+FF7 Rebirth 与 FF7 Remake 共用中文配音修订工作台：管理逐句音频、生成与审核 TTS、整理字幕，并制作游戏补丁。
 
 本仓库只保存代码、数据库结构、提示词模板、测试和文档。游戏文件、音频、模型权重、数据库数据、调用日志及实际部署配置均不上传。
 
@@ -8,14 +8,16 @@ FF7 Rebirth 中文配音修订工作台：管理逐句音频、生成与审核 T
 |---|---|
 | `programs/` | 音频容器、字幕与 IoStore 工具的 Python 封装 |
 | `studio-ff7-rb/` | Compose、数据库迁移、worker、备份脚本 |
-| `studio-ff7-rb/website/` | Next.js 网站、TTS 自动流程、提示词管理与模型调用 |
+| `studio-common/website/` | 两站共用 Next.js、TTS 自动流程、提示词管理与模型调用 |
+| `studio-common/worker/`、`studio-common/scripts/` | 公共 CPU 分析、按游戏隔离的备份与恢复 |
+| `studio-ff7-remake/` | Remake 配置、资源提取适配与章节/人物归类 |
 | `gpu/` | ASR、TTS、音色转换等推理服务包装与部署模板 |
 
 ## 本地配置
 
 ```bash
 cp studio-ff7-rb/.env.example studio-ff7-rb/.env
-cp studio-ff7-rb/website/.env.example studio-ff7-rb/website/.env.local
+cp studio-common/website/.env.example studio-common/website/.env.local
 cp gpu/.env.example gpu/.env
 ```
 
@@ -27,7 +29,7 @@ cd studio-ff7-rb
 # 历史迁移包含数据回填，新空库应先完成目录导入，再按各迁移说明检查回填结果。
 docker compose up -d db pgadmin
 
-cd website
+cd ../studio-common/website
 npm ci
 npm run dev
 ```
@@ -40,7 +42,7 @@ npm run dev
 
 ```bash
 python3 scripts/check-source-safety.py
-cd studio-ff7-rb/website
+cd studio-common/website
 node --experimental-strip-types --test src/lib/*.test.cjs
 ```
 
@@ -51,3 +53,5 @@ node --experimental-strip-types --test src/lib/*.test.cjs
 这是经过脱敏的统一代码仓库，首次提交采用当前工作树的代码快照，没有导入旧仓库历史。已有网站与推理服务继续使用各自原部署目录；创建此仓库不会修改、重启或替换它们。以后从这里部署时，应先审阅代码差异，保留目标机器的 `.env`、数据、模型、缓存和密钥，再按正常流程构建发布。
 
 游戏资源只在用户自己的本地环境处理。安装和打包约束见 [AGENTS.md](AGENTS.md)。
+
+Remake 启用说明见 [SETUP.md](studio-ff7-remake/SETUP.md)，两站业务数据独立、共用 PostgreSQL 服务与推理入口。Remake 没有原始中文配音，资源写回与封包尚未开放。网站支持 ASR 专名纠错、跳过条目及场景四段对齐，说明见 [公共文档](studio-common/docs/)。重建 DSP 运行资产按 [RubberBand 说明](studio-common/website/docs/rubberband-r3.md)，第三方压缩包和 WASM 不提交。

@@ -1,0 +1,851 @@
+[
+  {
+    "event_suffix": "/Cut/080-SLU5B/EV_SLU5B_4570",
+    "chapter": 14,
+    "anchor_voice_id": "ev_slu5b_4570_0280_art_0",
+    "contains_en": "you can't fall in love with me",
+    "url": "https://www.youtube.com/watch?v=87bzi4MY8m8",
+    "source_context": "视频作者明确标记Chapter14/Aerith resolution，0:00起；官方Revisited第14章亦确认三角色分支决意场景",
+    "content_scope": "story"
+  },
+  {
+    "event_suffix": "/Cut/080-SLU5B/EV_SLU5B_4560",
+    "chapter": 14,
+    "anchor_voice_id": "ev_slu5b_4560_0010_blt_0",
+    "contains_en": "rest",
+    "url": "https://www.square-enix-games.com/de_DE/news/final-fantasy-vii-remake-revisited-chapter-14",
+    "source_context": "开发者明确：第14章开头有Barret/Tifa/Aerith三种resolution，本事件为Barret夜间谈话分支",
+    "content_scope": "story"
+  },
+  {
+    "event_suffix": "/Cut/140-SBIL0/EV_SBIL0_0830",
+    "chapter": 16,
+    "anchor_voice_id": "ev_sbil0_0830_0200_tif_0",
+    "contains_en": "normal people with families",
+    "url": "https://www.powerpyx.com/final-fantasy-7-vii-remake-chapter-16-the-belly-of-the-beast-walkthrough/",
+    "source_context": "第16章Use the Elevator分支：前往59F的电梯旅程，普通神罗职员进出；Tifa与Barret争论职员家庭",
+    "content_scope": "story"
+  },
+  {
+    "event_suffix": "/Cut/140-SBIL0/EV_SBIL0_0810",
+    "chapter": 16,
+    "anchor_voice_id": "ev_sbil0_0810_0010_ea01_0",
+    "contains_en": "Going up",
+    "url": "https://www.powerpyx.com/final-fantasy-7-vii-remake-chapter-16-the-belly-of-the-beast-walkthrough/",
+    "source_context": "第16章Use the Elevator分支；起始电梯上行与自动播报",
+    "content_scope": "story"
+  },
+  {
+    "event_suffix": "/Cut/140-SBIL0/EV_SBIL0_0820",
+    "chapter": 16,
+    "anchor_voice_id": "ev_sbil0_0820_0010_blt_0",
+    "contains_en": "Wasn't expectin'",
+    "url": "https://www.powerpyx.com/final-fantasy-7-vii-remake-chapter-16-the-belly-of-the-beast-walkthrough/",
+    "source_context": "第16章Use the Elevator分支：上楼电梯途中两次警卫战；战后讨论是否已通报上层",
+    "content_scope": "story"
+  },
+  {
+    "event_suffix": "/Cut/080-SLU5B/EV_SLU5B_3200",
+    "chapter": 9,
+    "anchor_voice_id": "ev_slu5b_3200_0010_mom_1",
+    "contains_en": "what you pay for",
+    "url": "https://www.powerpyx.com/final-fantasy-7-vii-remake-chapter-9-the-town-that-never-sleeps-walkthrough/",
+    "source_context": "第9章Madam M’s Desire，普通价位手部按摩分支",
+    "content_scope": "story"
+  },
+  {
+    "event_suffix": "/Cut/080-SLU5B/EV_SLU5B_3210",
+    "chapter": 9,
+    "anchor_voice_id": "ev_slu5b_3210_0010_mom_0",
+    "contains_en": "certain risks",
+    "url": "https://www.powerpyx.com/final-fantasy-7-vii-remake-chapter-9-the-town-that-never-sleeps-walkthrough/",
+    "source_context": "第9章Madam M’s Desire，低价/有风险的手部按摩分支",
+    "content_scope": "story"
+  },
+  {
+    "event_suffix": "/Cut/140-SBIL0/MV_SBIL0_9000",
+    "chapter": 17,
+    "anchor_voice_id": "mv_sbil0_9000_0020_chd_0",
+    "contains_en": "Weiss",
+    "url": "https://www.powerpyx.com/final-fantasy-7-vii-remake-weiss-boss-guide/",
+    "source_context": "攻略明确：完成INTERmission后，魏斯介绍电影发生在本篇第17章战斗模拟器；额外挑战，与主线及DLC两章分开标证据",
+    "content_scope": "optional-combat-simulator-introduction"
+  },
+  {
+    "event_suffix": "/Cut/090-UNDG6/EV_UNDG6_0010",
+    "chapter": 10,
+    "anchor_voice_id": "ev_undg6_0010_0030_riv_0",
+    "contains_en": "Please, Mr. President",
+    "url": "https://finalfantasy.fandom.com/wiki/Final_Fantasy_VII_Remake_script",
+    "source_context": "Fandom剧本Chapter10/Escape to the Surface明确以President Shinra办公室对话开场。独立实际游玩记录 https://note.com/lone1011/n/n7d4aa0432dcf 亦明确第10章先有海德格尔与里夫会议。主博客将同镜头置于Chapter10标题前，属于边界冲突，采用本作09-UNDG6候选与两个独立10章来源。",
+    "content_scope": "story",
+    "source_boundary_conflict": {
+      "blog_chapter": 9,
+      "reviewed_chapter": 10
+    }
+  },
+  {
+    "event_suffix": "/Cut/030-SLUM7/EV_SLUM7_1270",
+    "chapter": 3,
+    "anchor_voice_id": "ev_slum7_1270_0030_jny_2",
+    "contains_en": "Aw, hell yeah! You guys really came to save me!",
+    "url": "https://game-scripts-wiki.blogspot.com/2020/04/final-fantasy-vii-remake-transcript.html",
+    "source_context": "Johnny被警备兵拘捕后营救；同场警备兵的The cavalry、Johnny感谢营救、Cloud阻止审讯，官方第3章Johnny营救事件互证。",
+    "chapter_source_url": "https://www.powerpyx.com/final-fantasy-7-vii-remake-chapter-3-home-sweet-slum-walkthrough/",
+    "corroborating_quotes": [
+      {
+        "voice_id": "ev_slum7_1270_0030_jny_2",
+        "contains_en": "Aw, hell yeah! You guys really came to save me!",
+        "source_turns": [
+          654
+        ]
+      },
+      {
+        "voice_id": "ev_slum7_1270_0060_ks02_0",
+        "contains_en": "Hey! The hell you think you're doing!?",
+        "source_turns": [
+          386,
+          655
+        ]
+      },
+      {
+        "voice_id": "ev_slum7_1270_0020_ks01_1",
+        "contains_en": "Who're you? The cavalry?",
+        "source_turns": [
+          653
+        ]
+      },
+      {
+        "voice_id": "ev_slum7_1270_0070_tif_0",
+        "contains_en": "Here we go...",
+        "source_turns": [
+          656
+        ]
+      },
+      {
+        "voice_id": "ev_slum7_1270_0010_cld_0",
+        "contains_en": "Let him go.",
+        "source_turns": [
+          652
+        ]
+      }
+    ],
+    "content_scope": "story",
+    "review_type": "specific-cutscene-dialogue-and-narrative-cross-check"
+  },
+  {
+    "event_suffix": "/Cut/030-SLUM7/EV_SLUM7_2070",
+    "chapter": 4,
+    "anchor_voice_id": "ev_slum7_2070_0030_jec_0",
+    "contains_en": "They just keep coming! We've gotta do something!",
+    "url": "https://game-scripts-wiki.blogspot.com/2020/04/final-fantasy-vii-remake-transcript.html",
+    "source_context": "七号街酒吧受Whispers围困，Cloud/Tifa救Jessie/Barret；SquareEnix Revisited Chapter4明确此袭击导致Jessie脚踝受伤。",
+    "chapter_source_url": "https://www.square-enix-games.com/en_GB/news/final-fantasy-vii-remake-revisited-chapter-4",
+    "corroborating_quotes": [
+      {
+        "voice_id": "ev_slum7_2070_0030_jec_0",
+        "contains_en": "They just keep coming! We've gotta do something!",
+        "source_turns": [
+          1263
+        ]
+      },
+      {
+        "voice_id": "ev_slum7_2070_0020_blt_0",
+        "contains_en": "Where you been!?",
+        "source_turns": [
+          1262
+        ]
+      },
+      {
+        "voice_id": "ev_slum7_2070_0010_tif_0",
+        "contains_en": "Jessie! Barret!",
+        "source_turns": [
+          1261
+        ]
+      },
+      {
+        "voice_id": "ev_slum7_2070_0005_blt_0",
+        "contains_en": "Gimme a break!",
+        "source_turns": [
+          1260
+        ]
+      },
+      {
+        "voice_id": "ev_slum7_2070_0080_cld_0",
+        "contains_en": "I'm coming!",
+        "source_turns": [
+          1265
+        ]
+      }
+    ],
+    "content_scope": "story",
+    "review_type": "specific-cutscene-dialogue-and-narrative-cross-check"
+  },
+  {
+    "event_suffix": "/Cut/080-SLU5B/EV_SLU5B_0320",
+    "chapter": 8,
+    "anchor_voice_id": "ev_slu5b_0320_0050_cld_0",
+    "contains_en": "Never a dull moment with you.",
+    "url": "https://game-scripts-wiki.blogspot.com/2020/04/final-fantasy-vii-remake-transcript.html",
+    "source_context": "教堂屋顶逃离追兵，Aerith跌下由Cloud接住后的My hero/Never a dull moment/That a compliment三方连续对话。",
+    "chapter_source_url": "https://www.powerpyx.com/final-fantasy-7-vii-remake-chapter-8-budding-bodyguard-walkthrough/",
+    "corroborating_quotes": [
+      {
+        "voice_id": "ev_slu5b_0320_0050_cld_0",
+        "contains_en": "Never a dull moment with you.",
+        "source_turns": [
+          2216
+        ]
+      },
+      {
+        "voice_id": "ev_slu5b_0320_0060_art_0",
+        "contains_en": "That a compliment?",
+        "source_turns": [
+          2217
+        ]
+      },
+      {
+        "voice_id": "ev_slu5b_0320_0080_art_0",
+        "contains_en": "Thanks anyway!",
+        "source_turns": [
+          2219
+        ]
+      },
+      {
+        "voice_id": "ev_slu5b_0320_0070_cld_0",
+        "contains_en": "Not really.",
+        "source_turns": [
+          2218,
+          2751
+        ]
+      },
+      {
+        "voice_id": "ev_slu5b_0320_0020_art_0",
+        "contains_en": "Of course!",
+        "source_turns": [
+          2214,
+          2496,
+          2524
+        ]
+      }
+    ],
+    "content_scope": "story",
+    "review_type": "specific-cutscene-dialogue-and-narrative-cross-check"
+  },
+  {
+    "event_suffix": "/Cut/080-SLU5B/EV_SLU5B_1110",
+    "chapter": 8,
+    "anchor_voice_id": "ev_slu5b_1110_0010_art_1",
+    "contains_en": "You take this one.",
+    "url": "https://game-scripts-wiki.blogspot.com/2020/04/final-fantasy-vii-remake-transcript.html",
+    "source_context": "第5贫民区救回两个走失孩子，同场Aerith/Cloud各带一个；主脚本You take this one与Right. Off we go连续匹配。",
+    "chapter_source_url": "https://www.powerpyx.com/final-fantasy-7-vii-remake-chapter-8-budding-bodyguard-walkthrough/",
+    "corroborating_quotes": [
+      {
+        "voice_id": "ev_slu5b_1110_0010_art_1",
+        "contains_en": "You take this one.",
+        "source_turns": [
+          2376
+        ]
+      },
+      {
+        "voice_id": "ev_slu5b_1110_0030_art_0",
+        "contains_en": "Right. Off we go!",
+        "source_turns": [
+          2377
+        ]
+      }
+    ],
+    "content_scope": "story",
+    "review_type": "specific-cutscene-dialogue-and-narrative-cross-check"
+  },
+  {
+    "event_suffix": "/Cut/080-SLU5B/EV_SLU5B_1130",
+    "chapter": 8,
+    "anchor_voice_id": "ev_slu5b_1130_0020_art_1",
+    "contains_en": "But I might be a while. Why not check out the town?",
+    "url": "https://game-scripts-wiki.blogspot.com/2020/04/final-fantasy-vii-remake-transcript.html",
+    "source_context": "叶子之家外等待Aerith，Aerith提示Cloud可在镇上逛；官方长句与Cloud等候句共同定位第8章。",
+    "chapter_source_url": "https://www.powerpyx.com/final-fantasy-7-vii-remake-chapter-8-budding-bodyguard-walkthrough/",
+    "corroborating_quotes": [
+      {
+        "voice_id": "ev_slu5b_1130_0020_art_1",
+        "contains_en": "But I might be a while. Why not check out the town?",
+        "source_turns": [
+          2390
+        ]
+      },
+      {
+        "voice_id": "ev_slu5b_1130_0010_cld_0",
+        "contains_en": "I'll wait out here.",
+        "source_turns": [
+          2389
+        ]
+      }
+    ],
+    "content_scope": "story",
+    "review_type": "specific-cutscene-dialogue-and-narrative-cross-check"
+  },
+  {
+    "event_suffix": "/Cut/080-SLU5B/EV_SLU5B_2140",
+    "chapter": 9,
+    "anchor_voice_id": "ev_slu5b_2140_0030_art_1",
+    "contains_en": "Let's keep on truckin'!",
+    "url": "https://game-scripts-wiki.blogspot.com/2020/04/final-fantasy-vii-remake-transcript.html",
+    "source_context": "塌陷高速公路机械臂通路，Aerith尝试击掌；You did it/Alright good enough/keep on truckin在同一网页speech turn。",
+    "chapter_source_url": "https://www.powerpyx.com/final-fantasy-7-vii-remake-chapter-9-the-town-that-never-sleeps-walkthrough/",
+    "corroborating_quotes": [
+      {
+        "voice_id": "ev_slu5b_2140_0030_art_1",
+        "contains_en": "Let's keep on truckin'!",
+        "source_turns": [
+          2797
+        ]
+      },
+      {
+        "voice_id": "ev_slu5b_2140_0030_art_0",
+        "contains_en": "Alright, good enough.",
+        "source_turns": [
+          2797
+        ]
+      },
+      {
+        "voice_id": "ev_slu5b_2140_0010_art_0",
+        "contains_en": "You did it!",
+        "source_turns": [
+          2797,
+          3292
+        ]
+      }
+    ],
+    "content_scope": "story",
+    "review_type": "specific-cutscene-dialogue-and-narrative-cross-check"
+  },
+  {
+    "event_suffix": "/Cut/080-SLU5B/EV_SLU5B_2480",
+    "chapter": 9,
+    "anchor_voice_id": "ev_slu5b_2480_0020_art_0",
+    "contains_en": "Hm? Wait a minute, did you just...?",
+    "url": "https://game-scripts-wiki.blogspot.com/2020/04/final-fantasy-vii-remake-transcript.html",
+    "source_context": "第9章Cloud/Aerith胜战与击掌尝试，That went pretty well与Wait a minute did you just在相邻对白。",
+    "chapter_source_url": "https://www.powerpyx.com/final-fantasy-7-vii-remake-chapter-9-the-town-that-never-sleeps-walkthrough/",
+    "corroborating_quotes": [
+      {
+        "voice_id": "ev_slu5b_2480_0020_art_0",
+        "contains_en": "Hm? Wait a minute, did you just...?",
+        "source_turns": [
+          2838
+        ]
+      },
+      {
+        "voice_id": "ev_slu5b_2480_0010_art_0",
+        "contains_en": "That went pretty well.",
+        "source_turns": [
+          2836
+        ]
+      }
+    ],
+    "content_scope": "story",
+    "review_type": "specific-cutscene-dialogue-and-narrative-cross-check"
+  },
+  {
+    "event_suffix": "/Cut/080-SLU5B/EV_SLU5B_8020",
+    "chapter": 8,
+    "anchor_voice_id": "ev_slu5b_8020_0010_ren_0",
+    "contains_en": "Hate doing cleanup, but...",
+    "url": "https://game-scripts-wiki.blogspot.com/2020/04/final-fantasy-vii-remake-transcript.html",
+    "source_context": "教堂Reno战开战过场，Hate doing cleanup与damn good at it是同一Reno专属句；Fandom剧本第8章亦逐字标注。",
+    "chapter_source_url": "https://www.powerpyx.com/final-fantasy-7-vii-remake-chapter-8-budding-bodyguard-walkthrough/",
+    "corroborating_quotes": [
+      {
+        "voice_id": "ev_slu5b_8020_0010_ren_0",
+        "contains_en": "Hate doing cleanup, but...",
+        "source_turns": [
+          2105
+        ]
+      },
+      {
+        "voice_id": "ev_slu5b_8020_0020_ren_0",
+        "contains_en": "I'm damn good at it!",
+        "source_turns": [
+          2105
+        ]
+      }
+    ],
+    "content_scope": "story",
+    "review_type": "specific-cutscene-dialogue-and-narrative-cross-check"
+  },
+  {
+    "event_suffix": "/Cut/080-SLU5B/EV_SLU5B_8120",
+    "chapter": 8,
+    "anchor_voice_id": "ev_slu5b_8120_0040_lud_0",
+    "contains_en": "No, I don't believe that I have.",
+    "url": "https://game-scripts-wiki.blogspot.com/2020/04/final-fantasy-vii-remake-transcript.html",
+    "source_context": "第5区Rude战中段，Aerith/Cloud/Rude的had enough与I do not believe that I have交锋；第8章boss攻略互证。",
+    "chapter_source_url": "https://www.powerpyx.com/final-fantasy-7-vii-remake-chapter-8-budding-bodyguard-walkthrough/",
+    "corroborating_quotes": [
+      {
+        "voice_id": "ev_slu5b_8120_0040_lud_0",
+        "contains_en": "No, I don't believe that I have.",
+        "source_turns": [
+          2703
+        ]
+      },
+      {
+        "voice_id": "ev_slu5b_8120_0030_art_0",
+        "contains_en": "So, you had enough yet?",
+        "source_turns": [
+          2702
+        ]
+      },
+      {
+        "voice_id": "ev_slu5b_8120_0010_lud_0",
+        "contains_en": "Okay then.",
+        "source_turns": [
+          2341,
+          2664,
+          2701
+        ]
+      }
+    ],
+    "content_scope": "story",
+    "review_type": "specific-cutscene-dialogue-and-narrative-cross-check"
+  },
+  {
+    "event_suffix": "/Cut/120-UNDG7/EV_UNDG7_1090",
+    "chapter": 13,
+    "anchor_voice_id": "ev_undg7_1090_0070_cld_0",
+    "contains_en": "That's Wedge's cat.",
+    "url": "https://game-scripts-wiki.blogspot.com/2020/04/final-fantasy-vii-remake-transcript.html",
+    "source_context": "第13章返七号街见到Wedge猫，That is Wedge cat/Let us follow it；PowerPyx Home is Where the Heart Is明确追猫。",
+    "chapter_source_url": "https://www.powerpyx.com/final-fantasy-7-vii-remake-chapter-13-a-broken-world-walkthrough/",
+    "corroborating_quotes": [
+      {
+        "voice_id": "ev_undg7_1090_0070_cld_0",
+        "contains_en": "That's Wedge's cat.",
+        "source_turns": [
+          4346
+        ]
+      },
+      {
+        "voice_id": "ev_undg7_1090_0100_tif_0",
+        "contains_en": "Let's follow it.",
+        "source_turns": [
+          4348
+        ]
+      },
+      {
+        "voice_id": "ev_undg7_1090_0060_tif_0",
+        "contains_en": "Hear that?",
+        "source_turns": [
+          4345
+        ]
+      }
+    ],
+    "content_scope": "story",
+    "review_type": "specific-cutscene-dialogue-and-narrative-cross-check"
+  },
+  {
+    "event_suffix": "/Cut/120-UNDG7/EV_UNDG7_2030",
+    "chapter": 13,
+    "anchor_voice_id": "ev_undg7_2030_0020_blt_1",
+    "contains_en": "Shout if you can hear me!",
+    "url": "https://game-scripts-wiki.blogspot.com/2020/04/final-fantasy-vii-remake-transcript.html",
+    "source_context": "Barret落入地下实验场与Cloud/Tifa失散，Tifa Cloud/Shout if you can hear me同一网页对白；第13章In Solitude互证。",
+    "chapter_source_url": "https://www.powerpyx.com/final-fantasy-7-vii-remake-chapter-13-a-broken-world-walkthrough/",
+    "corroborating_quotes": [
+      {
+        "voice_id": "ev_undg7_2030_0020_blt_1",
+        "contains_en": "Shout if you can hear me!",
+        "source_turns": [
+          4356
+        ]
+      },
+      {
+        "voice_id": "ev_undg7_2030_0020_blt_0",
+        "contains_en": "Tifa! Cloud!",
+        "source_turns": [
+          4356
+        ]
+      }
+    ],
+    "content_scope": "story",
+    "review_type": "specific-cutscene-dialogue-and-narrative-cross-check"
+  },
+  {
+    "event_suffix": "/Cut/140-SBIL0/EV_SBIL0_2920",
+    "chapter": 17,
+    "anchor_voice_id": "ev_sbil0_2920_0020_blt_0",
+    "contains_en": "So go give 'em one already!",
+    "url": "https://game-scripts-wiki.blogspot.com/2020/04/final-fantasy-vii-remake-transcript.html",
+    "source_context": "Aerith童年房间离开后遭Unknown Entities，Someone picking a fight/So go give em one/Way ahead of you连续匹配；第17章A Way Out。",
+    "chapter_source_url": "https://www.powerpyx.com/final-fantasy-7-vii-remake-chapter-17-deliverance-from-chaos-walkthrough/",
+    "corroborating_quotes": [
+      {
+        "voice_id": "ev_sbil0_2920_0020_blt_0",
+        "contains_en": "So go give 'em one already!",
+        "source_turns": [
+          5447
+        ]
+      },
+      {
+        "voice_id": "ev_sbil0_2920_0010_cld_0",
+        "contains_en": "Someone's picking a fight.",
+        "source_turns": [
+          5446
+        ]
+      },
+      {
+        "voice_id": "ev_sbil0_2920_0030_cld_0",
+        "contains_en": "Way ahead of you!",
+        "source_turns": [
+          5448
+        ]
+      }
+    ],
+    "content_scope": "story",
+    "review_type": "specific-cutscene-dialogue-and-narrative-cross-check"
+  },
+  {
+    "event_suffix": "/Cut/140-SBIL0/EV_SBIL0_4020",
+    "chapter": 17,
+    "anchor_voice_id": "ev_sbil0_4020_0010_cld_0",
+    "contains_en": "Tell me. Is it really you?",
+    "url": "https://game-scripts-wiki.blogspot.com/2020/04/final-fantasy-vii-remake-transcript.html",
+    "source_context": "Jenova容器旁Cloud/Sephiroth对峙，Tell me is it really you/Don not deny me/Embrace me/A touching reunion同场；非仅见Sephiroth就归章。",
+    "chapter_source_url": "https://www.powerpyx.com/final-fantasy-7-vii-remake-chapter-17-deliverance-from-chaos-walkthrough/",
+    "corroborating_quotes": [
+      {
+        "voice_id": "ev_sbil0_4020_0010_cld_0",
+        "contains_en": "Tell me. Is it really you?",
+        "source_turns": [
+          5462
+        ]
+      },
+      {
+        "voice_id": "ev_sbil0_4020_0090_sep_0",
+        "contains_en": "A touching reunion.",
+        "source_turns": [
+          5465
+        ]
+      },
+      {
+        "voice_id": "ev_sbil0_4020_0020_sep_0",
+        "contains_en": "Don't deny me.",
+        "source_turns": [
+          5463
+        ]
+      },
+      {
+        "voice_id": "ev_sbil0_4020_0030_sep_0",
+        "contains_en": "Embrace me.",
+        "source_turns": [
+          5463
+        ]
+      }
+    ],
+    "content_scope": "story",
+    "review_type": "specific-cutscene-dialogue-and-narrative-cross-check"
+  },
+  {
+    "event_suffix": "/Cut/140-SBIL0/EV_SBIL0_4260",
+    "chapter": 17,
+    "anchor_voice_id": "ev_sbil0_4260_0050_tif_0",
+    "contains_en": "Yeah, looks like it.",
+    "url": "https://game-scripts-wiki.blogspot.com/2020/04/final-fantasy-vii-remake-transcript.html",
+    "source_context": "Drum实验场，Tifa/Aerith跌入与怪物苏醒，That hurt/Did we wake em up/Yeah looks like it连续匹配第17章。",
+    "chapter_source_url": "https://www.powerpyx.com/final-fantasy-7-vii-remake-chapter-17-deliverance-from-chaos-walkthrough/",
+    "corroborating_quotes": [
+      {
+        "voice_id": "ev_sbil0_4260_0050_tif_0",
+        "contains_en": "Yeah, looks like it.",
+        "source_turns": [
+          5548
+        ]
+      },
+      {
+        "voice_id": "ev_sbil0_4260_0040_art_0",
+        "contains_en": "Did we wake 'em up?",
+        "source_turns": [
+          5547
+        ]
+      },
+      {
+        "voice_id": "ev_sbil0_4260_0030_art_0",
+        "contains_en": "That hurt.",
+        "source_turns": [
+          5547
+        ]
+      }
+    ],
+    "content_scope": "story",
+    "review_type": "specific-cutscene-dialogue-and-narrative-cross-check"
+  },
+  {
+    "event_suffix": "/Cut/140-SBIL0/EV_SBIL0_4350",
+    "chapter": 17,
+    "anchor_voice_id": "ev_sbil0_4350_0040_red_0",
+    "contains_en": "And he remembers us, I think.",
+    "url": "https://game-scripts-wiki.blogspot.com/2020/04/final-fantasy-vii-remake-transcript.html",
+    "source_context": "Drum Brain Pod实验室门关闭，Hey let us out与And he remembers us I think；PowerPyx第17章明确Brain Pod回归并锁住房间。",
+    "chapter_source_url": "https://www.powerpyx.com/final-fantasy-7-vii-remake-chapter-17-deliverance-from-chaos-walkthrough/",
+    "corroborating_quotes": [
+      {
+        "voice_id": "ev_sbil0_4350_0040_red_0",
+        "contains_en": "And he remembers us, I think.",
+        "source_turns": [
+          5586
+        ]
+      },
+      {
+        "voice_id": "ev_sbil0_4350_0020_blt_0",
+        "contains_en": "Hey, let us out!",
+        "source_turns": [
+          5584
+        ]
+      },
+      {
+        "voice_id": "ev_sbil0_4350_0030_blt_0",
+        "contains_en": "I remember you!",
+        "source_turns": [
+          5585
+        ]
+      }
+    ],
+    "content_scope": "story",
+    "review_type": "specific-cutscene-dialogue-and-narrative-cross-check"
+  },
+  {
+    "event_suffix": "/Cut/140-SBIL0/EV_SBIL0_4460",
+    "chapter": 17,
+    "anchor_voice_id": "ev_sbil0_4460_0050_blt_0",
+    "contains_en": "Flyin' fishbot here's trying to turn us into mincemeat!",
+    "url": "https://game-scripts-wiki.blogspot.com/2020/04/final-fantasy-vii-remake-transcript.html",
+    "source_context": "Drum Swordipede出现，Red/Barret的Huh you hear that/Flyin fishbot trying to turn us into mincemeat，网页第17章同场。",
+    "chapter_source_url": "https://www.powerpyx.com/final-fantasy-7-vii-remake-chapter-17-deliverance-from-chaos-walkthrough/",
+    "corroborating_quotes": [
+      {
+        "voice_id": "ev_sbil0_4460_0050_blt_0",
+        "contains_en": "Flyin' fishbot here's trying to turn us into mincemeat!",
+        "source_turns": [
+          5639
+        ]
+      },
+      {
+        "voice_id": "ev_sbil0_4460_0010_blt_0",
+        "contains_en": "Huh. You hear that?",
+        "source_turns": [
+          5637
+        ]
+      }
+    ],
+    "content_scope": "story",
+    "review_type": "specific-cutscene-dialogue-and-narrative-cross-check"
+  },
+  {
+    "event_suffix": "/Cut/140-SBIL0/EV_SBIL0_4465",
+    "chapter": 17,
+    "anchor_voice_id": "ev_sbil0_4465_0060_art_0",
+    "contains_en": "I think it's coming this way!",
+    "url": "https://game-scripts-wiki.blogspot.com/2020/04/final-fantasy-vii-remake-transcript.html",
+    "source_context": "Drum Swordipede穿过实验场的过场，It is outta control与I think it is coming this way网页第17章邻接匹配；不以事件编号相邻扩展。",
+    "chapter_source_url": "https://www.powerpyx.com/final-fantasy-7-vii-remake-chapter-17-deliverance-from-chaos-walkthrough/",
+    "corroborating_quotes": [
+      {
+        "voice_id": "ev_sbil0_4465_0060_art_0",
+        "contains_en": "I think it's coming this way!",
+        "source_turns": [
+          5643
+        ]
+      },
+      {
+        "voice_id": "ev_sbil0_4465_0030_blt_0",
+        "contains_en": "It's outta control!",
+        "source_turns": [
+          5640
+        ]
+      }
+    ],
+    "content_scope": "story",
+    "review_type": "specific-cutscene-dialogue-and-narrative-cross-check"
+  },
+  {
+    "event_suffix": "/Cut/140-SBIL0/EV_SBIL0_7170",
+    "chapter": 18,
+    "anchor_voice_id": "ev_sbil0_7170_0020_blt_0",
+    "contains_en": "And let that be a lesson to you!",
+    "url": "https://game-scripts-wiki.blogspot.com/2020/04/final-fantasy-vii-remake-transcript.html",
+    "source_context": "高速公路摩托追逐，Stubborn bastards与And let that be a lesson to you网页第18章同场；Motor Ball前的追逐。",
+    "chapter_source_url": "https://www.powerpyx.com/final-fantasy-7-vii-remake-chapter-18-destinys-crossroads-walkthrough/",
+    "corroborating_quotes": [
+      {
+        "voice_id": "ev_sbil0_7170_0020_blt_0",
+        "contains_en": "And let that be a lesson to you!",
+        "source_turns": [
+          5834
+        ]
+      },
+      {
+        "voice_id": "ev_sbil0_7170_0005_blt_0",
+        "contains_en": "Stubborn bastards!",
+        "source_turns": [
+          5831
+        ]
+      }
+    ],
+    "content_scope": "story",
+    "review_type": "specific-cutscene-dialogue-and-narrative-cross-check"
+  },
+  {
+    "event_suffix": "/Cut/140-SBIL0/LV_SBIL0_0620",
+    "chapter": 16,
+    "anchor_voice_id": "lv_sbil0_0620_0030_tif_0",
+    "contains_en": "I thought I was dead for sure!",
+    "url": "https://game-scripts-wiki.blogspot.com/2020/04/final-fantasy-vii-remake-transcript.html",
+    "source_context": "Tifa在神罗大厦大厅灯架上失足；Oh shit Tifa/I thought I was dead for sure网页第16章同场，大厅取门卡任务互证。",
+    "chapter_source_url": "https://www.powerpyx.com/final-fantasy-7-vii-remake-chapter-16-the-belly-of-the-beast-walkthrough/",
+    "corroborating_quotes": [
+      {
+        "voice_id": "lv_sbil0_0620_0030_tif_0",
+        "contains_en": "I thought I was dead for sure!",
+        "source_turns": [
+          4992
+        ]
+      },
+      {
+        "voice_id": "lv_sbil0_0620_0013_blt_0",
+        "contains_en": "Oh shit! Tifa!",
+        "source_turns": [
+          4990
+        ]
+      },
+      {
+        "voice_id": "lv_sbil0_0620_0020_cld_0",
+        "contains_en": "Are you okay!?",
+        "source_turns": [
+          4991
+        ]
+      }
+    ],
+    "content_scope": "story",
+    "review_type": "specific-cutscene-dialogue-and-narrative-cross-check"
+  },
+  {
+    "event_suffix": "/Cut/080-SLU5B/EV_SLU5B_5020",
+    "chapter": 14,
+    "anchor_voice_id": "ev_slu5b_5020_0050_tif_0",
+    "contains_en": "Aerith's up there─waiting for us.",
+    "url": "https://game-scripts-wiki.blogspot.com/2020/04/final-fantasy-vii-remake-transcript.html",
+    "source_context": "第14章末使用攀登枪前，Tifa明确Aerith is up there waiting for us，Barret回应Then we best get a move on，Cloud Ready。博客better与游戏best有差异，保留精确游戏原句并据第14章末Leslie任务/攀墙准备互证，不能只按标题位置猜15章。",
+    "chapter_source_url": "https://www.powerpyx.com/final-fantasy-7-vii-remake-chapter-14-in-search-of-hope-walkthrough/",
+    "corroborating_quotes": [
+      {
+        "voice_id": "ev_slu5b_5020_0050_tif_0",
+        "contains_en": "Aerith's up there─waiting for us.",
+        "source_turns": [
+          4840
+        ]
+      }
+    ],
+    "content_scope": "story",
+    "review_type": "specific-cutscene-dialogue-and-narrative-cross-check"
+  },
+  {
+    "event_suffix": "/Cut/140-SBIL0/EV_SBIL0_8510",
+    "chapter": 18,
+    "anchor_voice_id": "ev_sbil0_8510_0020_cld_0",
+    "contains_en": "Don't know about need...",
+    "url": "https://game-scripts-wiki.blogspot.com/2020/04/final-fantasy-vii-remake-transcript.html",
+    "chapter_source_url": "https://www.powerpyx.com/final-fantasy-7-vii-remake-chapter-18-destinys-crossroads-walkthrough/",
+    "source_context": "Sephiroth最终boss战队友加入分支；Tifa Need some help/Cloud Don not know about need/Good to go/Tifa You know it连续四句命中第18章，另有实际SephirothStart LevelSet+StateBattle_EB0021_00及角色动画引用互证。不是只靠Sephiroth名字。",
+    "corroborating_quotes": [
+      {
+        "voice_id": "ev_sbil0_8510_0010_tif_0",
+        "contains_en": "Need some help?"
+      },
+      {
+        "voice_id": "ev_sbil0_8510_0020_cld_0",
+        "contains_en": "Don't know about need..."
+      },
+      {
+        "voice_id": "ev_sbil0_8510_0040_cld_0",
+        "contains_en": "Good to go?"
+      },
+      {
+        "voice_id": "ev_sbil0_8510_0050_tif_0",
+        "contains_en": "You know it!"
+      }
+    ],
+    "content_scope": "story"
+  },
+  {
+    "event_suffix": "/Cut/030-SLUM7/EV_SLUM7_1425",
+    "chapter": 3,
+    "anchor_voice_id": "ev_slum7_1425_0010_cld_0",
+    "contains_en": "It's...just another job...",
+    "url": "https://game-scripts-wiki.blogspot.com/2020/04/final-fantasy-vii-remake-transcript.html",
+    "source_context": "Cloud独自回想Jessie/委托的It is just another job，网页第3章turn825唯一匹配；实物场景角色为Cloud与Jessie，保留为具体对白场景推断。",
+    "chapter_source_url": "https://www.powerpyx.com/final-fantasy-7-vii-remake-chapter-3-home-sweet-slum-walkthrough/",
+    "content_scope": "story"
+  },
+  {
+    "event_suffix": "/Cut/030-SLUM7/EV_SLUM7_2030",
+    "chapter": 4,
+    "anchor_voice_id": "ev_slum7_2030_0010_tif_0",
+    "contains_en": "More of them!?",
+    "url": "https://game-scripts-wiki.blogspot.com/2020/04/final-fantasy-vii-remake-transcript.html",
+    "source_context": "Whispers包围七号街酒吧前，Tifa More of them、We are running out of time、Yeah over here连续匹配网页第4章；独立SquareEnix4确认该Whisper袭击。网页把中间一句演员误写Cloud，不据此覆盖本地Tifa原ACTOR。",
+    "chapter_source_url": "https://www.powerpyx.com/final-fantasy-7-vii-remake-chapter-4-mad-dash-walkthrough/",
+    "content_scope": "story"
+  },
+  {
+    "event_suffix": "/Cut/030-SLUM7/EV_SLUM7_4660",
+    "chapter": 12,
+    "anchor_voice_id": "ev_slum7_4660_0040_blt_0",
+    "contains_en": "Found us a way out!",
+    "url": "https://game-scripts-wiki.blogspot.com/2020/04/final-fantasy-vii-remake-transcript.html",
+    "source_context": "支柱崩塌倒计时末，Barret找到逃生钢索：Found us a way out/Cmon cmon/Now，网页第12章turn4196-4199与攻略逃出支柱互证。",
+    "chapter_source_url": "https://www.powerpyx.com/final-fantasy-7-vii-remake-chapter-12-fight-for-survival-walkthrough/",
+    "content_scope": "story"
+  },
+  {
+    "event_suffix": "/Cut/120-UNDG7/EV_UNDG7_0010",
+    "chapter": 13,
+    "anchor_voice_id": "ev_undg7_0010_0010_blt_0",
+    "contains_en": "Okay. Let's see what's on the other side.",
+    "url": "https://game-scripts-wiki.blogspot.com/2020/04/final-fantasy-vii-remake-transcript.html",
+    "source_context": "Barret/Cloud/Tifa返回七号街遗址检查另一侧的入口，Okay lets see what is on the other side精确匹配网页第13章turn4321；该8词原句因字符数较短未进32字符自动长句规则。",
+    "chapter_source_url": "https://www.powerpyx.com/final-fantasy-7-vii-remake-chapter-13-a-broken-world-walkthrough/",
+    "content_scope": "story"
+  },
+  {
+    "event_suffix": "/Cut/140-SBIL0/EV_SBIL0_2930",
+    "chapter": 17,
+    "anchor_voice_id": "ev_sbil0_2930_0040_blt_0",
+    "contains_en": "Shit─what the hell Red!?",
+    "url": "https://game-scripts-wiki.blogspot.com/2020/04/final-fantasy-vii-remake-transcript.html",
+    "source_context": "Drum前半Red XIII解围后动作令Barret惊呼Shit what the hell Red，网页第17章turn5451唯一匹配；第17章攻略明确Red协助队伍穿过实验室的段落。",
+    "chapter_source_url": "https://www.powerpyx.com/final-fantasy-7-vii-remake-chapter-17-deliverance-from-chaos-walkthrough/",
+    "content_scope": "story"
+  },
+  {
+    "event_suffix": "/Cut/140-SBIL0/EV_SBIL0_4380",
+    "chapter": 17,
+    "anchor_voice_id": "ev_sbil0_4380_0030_blt_0",
+    "contains_en": "Shit! He can't hold them off forever!",
+    "url": "https://game-scripts-wiki.blogspot.com/2020/04/final-fantasy-vii-remake-transcript.html",
+    "source_context": "Drum中Red XIII挡住实验体/门，Barret提醒He cannot hold them off forever，网页第17章turn5598及救Red任务互证。",
+    "chapter_source_url": "https://www.powerpyx.com/final-fantasy-7-vii-remake-chapter-17-deliverance-from-chaos-walkthrough/",
+    "content_scope": "story"
+  },
+  {
+    "event_suffix": "/Cut/140-SBIL0/MV_SBIL0_7710",
+    "chapter": 18,
+    "anchor_voice_id": "mv_sbil0_7710_0030_sep_0",
+    "contains_en": "I'm waiting, Cloud.",
+    "url": "https://game-scripts-wiki.blogspot.com/2020/04/final-fantasy-vii-remake-transcript.html",
+    "source_context": "Sephiroth电影句I am waiting Cloud在网页turn5885及5947均位于18章；已实际查看同ID原始emov 10秒帧，Cloud/Barret处于白色Whisper异空间，配合第18章Turning Point而非按Sephiroth出场泛推。",
+    "chapter_source_url": "https://www.powerpyx.com/final-fantasy-7-vii-remake-chapter-18-destinys-crossroads-walkthrough/",
+    "content_scope": "story"
+  }
+]

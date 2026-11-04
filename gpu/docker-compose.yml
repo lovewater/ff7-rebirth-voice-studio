@@ -26,6 +26,7 @@ services:
       PYTHONUNBUFFERED: "1"
       HF_ENDPOINT: https://hf-mirror.com
       QWEN3_ASR_MODEL_PATH: /root/autodl-tmp/models/Qwen/Qwen3-ASR-1.7B
+      QWEN3_FORCED_ALIGNER_MODEL_PATH: /root/autodl-tmp/models/Qwen/Qwen3-ForcedAligner-0.6B
     volumes:
       - ${MODELS_DIR:?配置模型目录}:/root/autodl-tmp/models:ro
       - ./asr/main_asr.py:/root/autodl-tmp/code/main_asr.py:ro

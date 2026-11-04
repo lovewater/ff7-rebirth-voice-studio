@@ -11,12 +11,12 @@ import time
 import urllib.error
 import urllib.request
 
-ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+ROOT = "/srv/ff7-sound/studio-ff7-rb"
 DATA = os.path.join(ROOT, "website", "data")
-WORK = os.path.join(os.path.dirname(ROOT), "work")
+WORK = "/srv/ff7-sound/work"
 DONE = os.path.join(WORK, "regen-linebreak.done")
 LOG = os.path.join(WORK, "regen-linebreak.log")
-API = os.environ.get("STUDIO_ORIGIN", "http://127.0.0.1:8765")
+API = "http://127.0.0.1:8765"
 
 STEMS_SQL = r"""
 SELECT DISTINCT l.stem, replace(replace(l.text_zh, chr(13), ''), chr(10), '<NL>')
