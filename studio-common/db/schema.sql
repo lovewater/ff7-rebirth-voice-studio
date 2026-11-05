@@ -314,7 +314,7 @@ CREATE TABLE public.line_translation_jobs (
 CREATE TABLE public.line_tts_versions (
     id bigint NOT NULL,
     stem text NOT NULL,
-    speaker text NOT NULL,
+    speaker text,
     voice_version_id integer,
     voice_gpu_key text NOT NULL,
     tts_text text NOT NULL,
@@ -1678,3 +1678,7 @@ CREATE TABLE IF NOT EXISTS line_processing_events (
   source TEXT NOT NULL DEFAULT 'manual',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- 096: 保留原声允许人物未知；合成仍需合法人物。
+ALTER TABLE ONLY public.line_tts_versions
+    ADD CONSTRAINT line_tts_versions_anonymous_original_only CHECK ((speaker IS NOT NULL) OR (voice_gpu_key = 'jp-lock'::text));

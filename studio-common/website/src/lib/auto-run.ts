@@ -1138,6 +1138,7 @@ async function pickPassedClip(
 
 /** 共用原声保存：仅在已选定原声线路后调用；完整复制MP3并附原中文字幕。
  * 不切分、不转码、不拉伸、不调用TTS/中文ASR。唱歌及用户确认的整句纯语气分支可直接锁定。
+ * 群体/环境原声允许speaker=NULL（096迁移仅放开jp-lock）；不猜人物，不因此跳过或调用TTS。
  * 进入条件由调用者明确记录：有官方字幕但Seed空，或无官方字幕且中文经模型判为全拟声。
  */
 async function runOriginalJapanese(runId: string, line: LinePack, original: Buffer, route: { workflow: string; reason: string; lock?: boolean; keepOriginalSubtitle?: boolean }) {

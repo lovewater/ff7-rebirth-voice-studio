@@ -42,7 +42,7 @@ export async function POST(
   )[0];
   if (!line) return NextResponse.json({ error: "台词不存在" }, { status: 404 });
   if (line.extra) { const issue = audioReferenceIssue(line.extra); if (issue) return NextResponse.json({error:issue,code:"REFERENCE_PREVIEW_ONLY"},{status:409}); }
-  if (!line.speaker) return NextResponse.json({ error: "台词没有说话人" }, { status: 400 });
+  // 保留原声无需已知人物；096迁移只为jp-lock允许NULL，不影响TTS的说话人要求。
   const jpFile = path.join(process.cwd(), "data", "jp", `${stem}.mp3`);
   if (!existsSync(jpFile)) {
     return NextResponse.json({ error: "没有日文配音" }, { status: 400 });

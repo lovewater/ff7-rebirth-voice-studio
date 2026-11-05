@@ -213,3 +213,12 @@ test('COMMIT communication failure preserves exclusively created audio even if a
  // No compensating read/delete: a nonvisible row still cannot establish rollback.
  assert.equal(absentSelects,0);
 });
+
+test('anonymous confirmed nonverbal original may lock without inventing speaker; empty or lexical evidence still refuses',()=>{
+ const base={line:{...source,speaker:null},asr:{text:'あはは',state:'recognized'},acoustic,decision};
+ assert.equal(lockDecision(base).allow,true);
+ assert.equal(base.line.speaker,null);
+ assert.equal(lockDecision({...base,decision:{...decision,kind:'speech',directly_reusable:false}}).allow,false);
+ assert.equal(lockDecision({...base,asr:{text:'',state:'empty'}}).allow,false);
+ assert.equal(lockDecision({...base,asr:{text:'どう',state:'recognized'}}).allow,false);
+});

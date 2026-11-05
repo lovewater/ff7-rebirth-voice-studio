@@ -65,7 +65,8 @@ function parseDecisions(content,items){const parsed=strictObject(content,['decis
  });}
 function lockDecision({line,asr,acoustic,decision}){
  if(previewIssue(line.extra))return {allow:false,reason:'preview-or-missing-jp'};
- if(!line.speaker)return {allow:false,reason:'speaker-missing'};
+ // 096: verified original audio may keep an unknown speaker; never invent a person.
+ // All nonverbal/acoustic/source guards below still apply; this does not authorize anonymous TTS.
  if(!acoustic?.decoded||!acoustic.frames||acoustic.channels>2)return {allow:false,reason:'unverified-acoustic'};
  if(acoustic.exact_zero===true)return {allow:true,reason:'source-pcm-exact-zero',workflow:'remake-preprocess-silent-original'};
  if(asr?.state!=='recognized'||!nonempty(asr.text))return {allow:false,reason:'empty-or-failed-asr'};
