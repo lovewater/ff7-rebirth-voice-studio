@@ -100,6 +100,7 @@ type Payload = {
     has_jp: boolean;
     has_cn: boolean;
   }[];
+  splitClone?: {runId:string;bodyText:string;removedSeconds:number} | null;
   hasEn?: boolean;
   hasJp?: boolean;
 };
@@ -259,7 +260,7 @@ export function TtsPanel({ stem }: { stem: string }) {
 
   // async function generateEmbed() { ... embedding + Seed-VC, kept for rollback }
 
-  async function generateClone() {
+  async function generateClone(split = false) {
     const liveText = textareaRef.current?.value ?? ttsText;
     setTtsText(liveText);
     setBusy(true);
@@ -273,14 +274,16 @@ export function TtsPanel({ stem }: { stem: string }) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           ttsText: liveText,
+          ...(split ? {splitAfterAi:true,splitRunId:data?.splitClone?.runId} : {}),
           durationFactor: Number(durationFactor),
           promptStem: promptStem || undefined,
           promptLang: promptLang === "cn" ? "cn" : "jp",
         }),
       });
-      const result = (await response.json()) as { error?: string; ids?: string[] };
+      const result = (await response.json()) as { error?: string; ids?: string[]; failedIds?: string[] };
+      if (!response.ok && result.failedIds?.length) { notifyTtsChanged(); await load(); router.refresh(); }
       if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
-      setSavedNote(`已生成 ${result.ids?.length ?? 1} 条待选`);
+      setSavedNote(`已生成 ${result.ids?.length ?? 1} 条待选${result.failedIds?.length ? `，另 ${result.failedIds.length} 条回拼失败` : ""}`);
       notifyTtsChanged();
       await load();
       router.refresh();
@@ -538,9 +541,14 @@ export function TtsPanel({ stem }: { stem: string }) {
                   disabled={busy || !ttsText.trim() || (promptKey === "current" && !data.hasJp)}
                   className="inline-flex min-h-11 items-center rounded bg-sky-700 px-4 text-sm font-medium text-white hover:bg-sky-600 disabled:cursor-not-allowed disabled:opacity-40"
                 >
-                  {busy ? "生成中…" : "Zero-shot 生成"}
+                  {busy ? "生成中…" : "直接克隆"}
                 </button>
-
+                {data.splitClone ? <button type="button" onClick={() => void generateClone(true)}
+                  disabled={busy || !ttsText.trim() || !data.hasJp}
+                  title="沿用已确认的AI切分：仅克隆中文正文，完成后自动拼回保留原声"
+                  className="inline-flex min-h-11 items-center rounded bg-sky-700 px-4 text-sm font-medium text-white hover:bg-sky-600 disabled:cursor-not-allowed disabled:opacity-40">
+                  {busy ? "生成中…" : "切分后克隆"}
+                </button> : null}
               </div>
             </section>
             {LEGACY_EMBEDDING_TTS ? (

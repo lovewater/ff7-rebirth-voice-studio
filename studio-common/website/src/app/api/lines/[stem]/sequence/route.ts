@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { gameProfile } from "@/lib/game-profile";
 import { sql } from "@/lib/db";
 import { ttsSubtitleDisplay } from "@/lib/tts-subtitle-display";
 
@@ -18,6 +19,7 @@ export type SequenceItem = {
   subtitle_italic: boolean;
   current: boolean;
   lockedTtsId: string | null;
+  playbackTtsId: string | null;
   modifiedSubtitle: string | null;
 };
 
@@ -26,6 +28,7 @@ export async function GET(
   ctx: { params: Promise<{ stem: string }> },
 ) {
   const { stem } = await ctx.params;
+  const hasOriginalChineseAudio = gameProfile().sourceOriginalChineseAudio;
   if (!stemOk(stem)) return NextResponse.json({ error: "bad stem" }, { status: 400 });
   const cur = (
     await sql<{ id: number; region: string | null; kind: string | null }[]>`
@@ -75,17 +78,20 @@ export async function GET(
       subtitle_italic: boolean;
       locked_tts_id: string | null;
       selected_subtitle: string | null;
+      chinese_tts_id: string | null;
+      chinese_subtitle: string | null;
     }[]
   >`
     SELECT l.id, l.stem, l.speaker,
            COALESCE(s.name_zh, l.speaker) AS name_zh,
            l.text_jp, l.text_zh, l.subtitle_italic,
            tv.id::text AS locked_tts_id,
-           selected.subtitle_text AS selected_subtitle
+           selected.subtitle_text AS selected_subtitle,
+           chinese.id::text AS chinese_tts_id, CASE WHEN tv.id IS NOT NULL THEN tv.subtitle_text ELSE chinese.subtitle_text END AS chinese_subtitle
     FROM lines l
     LEFT JOIN speakers s ON s.code = l.speaker
     LEFT JOIN LATERAL (
-      SELECT id FROM line_tts_versions
+      SELECT id, subtitle_text FROM line_tts_versions
       WHERE stem = l.stem AND status = 'ready' AND review_state = 'locked'
       LIMIT 1
     ) tv ON true
@@ -95,6 +101,18 @@ export async function GET(
       ORDER BY (review_state <> 'candidate') DESC, (parent_tts_id IS NULL) DESC, id DESC
       LIMIT 1
     ) selected ON true
+    LEFT JOIN LATERAL (
+      -- With no source Chinese, prefer a saved modified subtitle, then the newest Chinese audio.
+      SELECT id, subtitle_text FROM line_tts_versions
+      WHERE NOT ${hasOriginalChineseAudio} AND stem = l.stem AND status = 'ready'
+        AND NULLIF(btrim(audio_path), '') IS NOT NULL
+        AND COALESCE(voice_gpu_key, '') <> 'jp-lock'
+        AND COALESCE(conversion_meta->>'pipeline', '') <> 'jp-lock'
+      ORDER BY (NULLIF(btrim(subtitle_text), '') IS NOT NULL
+                AND btrim(subtitle_text) IS DISTINCT FROM btrim(COALESCE(l.text_zh, ''))) DESC,
+               id DESC
+      LIMIT 1
+    ) chinese ON true
     WHERE l.id = ANY(${ids})
     ORDER BY l.stem
   `;
@@ -108,7 +126,11 @@ export async function GET(
     subtitle_italic: row.subtitle_italic,
     current: row.stem === stem,
     lockedTtsId: row.locked_tts_id,
-    modifiedSubtitle: ttsSubtitleDisplay({ subtitle: row.selected_subtitle, original: row.text_zh }),
+    playbackTtsId: row.locked_tts_id ?? (hasOriginalChineseAudio ? null : row.chinese_tts_id),
+    modifiedSubtitle: ttsSubtitleDisplay({
+      subtitle: hasOriginalChineseAudio ? row.selected_subtitle : row.chinese_subtitle,
+      original: row.text_zh,
+    }),
   }));
   return NextResponse.json({ items });
 }

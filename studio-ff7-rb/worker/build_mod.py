@@ -47,6 +47,7 @@ from zoneinfo import ZoneInfo
 import psycopg
 import mod_incremental as incremental
 import movie_surround
+import subtitle_pack_policy
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from cn_iostore import extract_chunk_ids, parse_utoc  # noqa: E402
@@ -1176,7 +1177,8 @@ def companion_subtitle_parent(row: dict) -> str | None:
 
 
 def packed_subtitle(row: dict) -> str:
-    return "" if companion_subtitle_parent(row) else spoken_subtitle(row)
+    """Publication gate: absent original CN or independent companion never creates subtitles."""
+    return "" if companion_subtitle_parent(row) or not subtitle_pack_policy.has_original_chinese_subtitle(row) else spoken_subtitle(row)
 
 
 def index_txtres() -> tuple[dict[str, str], dict[str, dict]]:
@@ -1406,7 +1408,8 @@ def build_policy():
     value = incremental.digest([legacy,
         incremental.sha(Path(movie_surround.__file__)),
         inspect.getsource(movie_surround_profiles),inspect.getsource(rebuild_added_bank_surround),
-        inspect.getsource(companion_subtitle_parent),inspect.getsource(packed_subtitle)])
+        inspect.getsource(companion_subtitle_parent),inspect.getsource(packed_subtitle),
+        incremental.sha(subtitle_pack_policy.POLICY_SOURCE)])
     return PolicyIdentity(value,legacy)
 
 
@@ -1478,7 +1481,7 @@ def build_main() -> int:
     for r in locked:
         sub = (r["subtitle_text"] or "").strip()
         base = (r["text_zh"] or "").strip()
-        if sub and sub != base and not companion_subtitle_parent(r):
+        if sub and sub != base and packed_subtitle(r):
             sub_rows.append(r)
     added_groups = group_added(added)
     print(
@@ -1774,6 +1777,7 @@ def build_main() -> int:
                                materials=material_entries(payload)))
 
     text_chunks: list[tuple[bytes, bytes, str]] = []
+    empty_source_subtitles = []
     subtitle_line_count = 0
     added_spoken = {}
     if not args.limit:
@@ -1808,10 +1812,13 @@ def build_main() -> int:
             unknown = [stem for stem in repl if stem not in current]
             if unknown:
                 raise SystemExit(f"{name} 里找不到字幕：{unknown[:8]}")
+            empty_source_subtitles.extend(stem for stem in repl
+                if not subtitle_pack_policy.has_original_chinese_subtitle({'text_zh': current[stem]}))
             repl = {
                 stem: text
                 for stem, text in repl.items()
-                if clean_text(current[stem]) != clean_text(text)
+                if subtitle_pack_policy.has_original_chinese_subtitle({"text_zh": current[stem]})
+                and clean_text(current[stem]) != clean_text(text)
             }
             if not repl:
                 continue
@@ -1955,6 +1962,10 @@ def build_main() -> int:
         "same_stem_aliases": alias_proof,
         "same_stem_coverage": variant_coverage_proof,
         "multichannel_dialogue": surround_proof,
+        "subtitle_policy": subtitle_pack_policy.POLICY,
+        "missing_original_subtitles_suppressed": [r["stem"] for r in locked+added
+            if not subtitle_pack_policy.has_original_chinese_subtitle(r)],
+        "empty_source_subtitles_suppressed": empty_source_subtitles,
         "companion_subtitles_suppressed": [dict(stem=r["stem"],tts_id=r["id"],
             parent=companion_subtitle_parent(r),had_override=bool((r.get("subtitle_text") or "").strip()))
             for r in locked+added if companion_subtitle_parent(r)],

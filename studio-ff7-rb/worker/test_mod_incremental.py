@@ -231,6 +231,33 @@ class Lifecycle(unittest.TestCase):
             self.assertTrue(result['companion_subtitles_suppressed'][0]['had_override'])
             self.assertEqual(self.rows[0]['subtitle_text'],'误存的伴随轨字幕')
 
+    def test_missing_original_subtitle_removes_overlay_without_encoding(self):
+        original_validate=b.validate_zen_exports
+        def validate(data):
+            if data.startswith(b'TEXT'):return
+            original_validate(data)
+        with patch.object(b,'validate_zen_exports',side_effect=validate):
+            self.rows[0]['subtitle_text']='误存字幕'
+            first=self.run_build()
+            self.assertEqual(self.manifest(first)['subtitle_mod'],b.MOD_STEM)
+            encoded=len(self.calls)
+            self.rows[0]['text_zh']=None
+            result=self.manifest(self.run_build())
+            self.assertIsNone(result['subtitle_mod'])
+            self.assertEqual(result['missing_original_subtitles_suppressed'],['a'])
+            self.assertEqual(result['incremental']['audio_encodes'],0)
+            self.assertEqual(len(self.calls),encoded)
+            self.assertEqual(len(result['incremental']['deleted_files']),3)
+            self.assertEqual(self.rows[0]['subtitle_text'],'误存字幕')
+
+    def test_empty_original_resource_cannot_be_populated_by_db_text(self):
+        self.rows[0]['subtitle_text']='误存字幕'
+        (self.txt/'captions.uasset').write_bytes(self.caption(''))
+        result=self.manifest(self.run_build())
+        self.assertIsNone(result['subtitle_mod'])
+        self.assertEqual(result['empty_source_subtitles_suppressed'],['a'])
+        self.assertEqual(self.rows[0]['subtitle_text'],'误存字幕')
+
     def test_subtitle_only_and_last_subtitle_delete(self):
         # A real Zen fixture text parser/writer is not needed to test orchestration.
         original_validate = b.validate_zen_exports

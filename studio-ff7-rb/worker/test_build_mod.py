@@ -296,3 +296,14 @@ class CompanionSubtitles(unittest.TestCase):
             self.assertEqual(row['subtitle_text'],'误存的中文字幕')
         self.assertEqual(packed_subtitle(dict(stem='main',subtitle_text='人工改稿',text_zh='原字幕')),'人工改稿')
         self.assertEqual(packed_subtitle(dict(stem='main',subtitle_parent_stem='main',text_zh='原字幕')),'原字幕')
+
+
+class OriginalSubtitlePolicy(unittest.TestCase):
+    def test_original_cn_required_for_all_tracks_even_with_saved_subtitle_or_draft(self):
+        from build_mod import packed_subtitle
+        for original in [None, '', '  \n\t', '<i></i><br/>', r'\n']:
+            row = dict(stem='ordinary',text_zh=original,subtitle_text='误存字幕',tts_text='制作稿')
+            self.assertEqual(packed_subtitle(row),'')
+            self.assertEqual(row['subtitle_text'],'误存字幕')
+        self.assertEqual(packed_subtitle(dict(stem='ordinary',text_zh='游戏字幕',subtitle_text='修订字幕')),'修订字幕')
+        self.assertEqual(packed_subtitle(dict(stem='ordinary',text_zh='游戏字幕',subtitle_text=None)),'游戏字幕')

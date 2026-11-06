@@ -1,3 +1,4 @@
+import { loadSplitClone, splitCloneSummary } from "@/lib/manual-split-clone";
 import { isLineSkipped, SKIPPED_LINE_MESSAGE } from "@/lib/line-processing-state";
 import { sourceAudioFile } from "@/lib/source-audio-files";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
@@ -156,6 +157,7 @@ export async function GET(
     nearbyRefs,
     hasEn,
     hasJp,
+    splitClone: hasJp && !isLineSkipped(line) ? await loadSplitClone(line).then(value=>value?splitCloneSummary(value):null).catch(()=>null) : null,
   });
 }
 

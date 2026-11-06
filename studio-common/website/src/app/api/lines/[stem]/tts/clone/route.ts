@@ -1,3 +1,4 @@
+import { loadSplitClone, splitCloneBodyText, assembleSplitClone, type SplitCloneContext } from "@/lib/manual-split-clone";
 import { isLineSkipped, SKIPPED_LINE_MESSAGE } from "@/lib/line-processing-state";
 import { anonymousTtsReference, type AnonymousTtsReference } from "@/lib/anonymous-tts-reference";
 import { AUTO_RUN_MODEL } from "@/lib/auto-run-stage-context";
@@ -79,6 +80,8 @@ export async function POST(
 
   const body = (await req.json().catch(() => ({}))) as {
     ttsText?: string;
+    splitAfterAi?: boolean;
+    splitRunId?: string;
     bodyScriptPolicy?: BodyScriptPolicy;
     durationFactor?: number;
     promptStem?: string;
@@ -96,6 +99,15 @@ export async function POST(
     subtitleText?: string | null;
     finalSubtitleText?: string | null;
   };
+  let manualSplit: SplitCloneContext | null = null;
+  if (body.splitAfterAi === true) {
+    if (body.autoRunId != null || typeof body.splitRunId !== "string" || !/^[1-9]\d*$/.test(body.splitRunId))
+      return NextResponse.json({error:"切分后克隆需要本句已完成的AI切分记录"},{status:400});
+    try {
+      manualSplit=await loadSplitClone(line,body.splitRunId);
+      if (!manualSplit) throw new Error("AI切分结果已失效或没有需要保留的声音，请刷新页面");
+    } catch (error) { return NextResponse.json({error:String(error)},{status:409}); }
+  }
   // 在音频落库时登记归属，不等 HTTP 成功返回后再补写，避免异常时丢失工作流关系。
   const autoRunId = body.autoRunId == null ? null : String(body.autoRunId);
   if (body.autoRunModel !== undefined && !["grok", "primary", "volcengine"].includes(body.autoRunModel)) return NextResponse.json({ error: "无效的自动运行模型" }, { status: 400 });
@@ -132,7 +144,7 @@ export async function POST(
   }
   let script: { ttsText: string; spokenText: string };
   try {
-    script = normalizeScript(body.ttsText, line.text_zh ?? undefined);
+    script = normalizeScript(manualSplit ? splitCloneBodyText(manualSplit,body.ttsText ?? manualSplit.sourceScript) : body.ttsText, line.text_zh ?? undefined);
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : String(error) },
@@ -143,8 +155,8 @@ export async function POST(
   if (!Number.isFinite(durationFactor) || durationFactor < 0.5 || durationFactor > 2) {
     return NextResponse.json({ error: "时长倍率必须在 0.5 到 2.0 之间" }, { status: 400 });
   }
-  const promptLang = body.promptLang === "cn" ? "cn" : "jp";
-  const promptStem = typeof body.promptStem === "string" && /^[\w.\-]+$/.test(body.promptStem)
+  const promptLang = !manualSplit && body.promptLang === "cn" ? "cn" : "jp";
+  const promptStem = !manualSplit && typeof body.promptStem === "string" && /^[\w.\-]+$/.test(body.promptStem)
     ? body.promptStem
     : stem;
   const allowed = await resolvePromptRef(line.speaker, stem, promptStem, promptLang);
@@ -164,11 +176,18 @@ export async function POST(
       preservePromptAudio = body.preservePromptAudio === true && custom.endsWith(".wav");
     }
   }
-  const layoutSlot = body.layoutSlot && typeof body.layoutSlot === "object" ? body.layoutSlot : null;
+  if (manualSplit) {
+    promptRelative=manualSplit.promptPath;
+    promptFile=path.join(dataRoot,promptRelative);
+    preservePromptAudio=true;
+    registeredReference=manualSplit.promptPath;
+  }
+  const splitTiming=manualSplit ? wavAlignmentTiming(manualSplit.reference) : null;
+  const layoutSlot = splitTiming ? {start:splitTiming.start??0,dur:splitTiming.duration,speech:splitTiming.speech??0} : body.layoutSlot && typeof body.layoutSlot === "object" ? body.layoutSlot : null;
   const slotStart = layoutSlot && Number.isFinite(Number(layoutSlot.start)) ? Number(layoutSlot.start) : line.jp_start_s;
   const slotDur = layoutSlot && Number.isFinite(Number(layoutSlot.dur)) ? Number(layoutSlot.dur) : line.jp_dur_s;
   const slotSpeech = layoutSlot && Number.isFinite(Number(layoutSlot.speech)) ? Number(layoutSlot.speech) : line.jp_speech_s;
-  const alignStartS = ordinaryNatural || body.alignStartS === null
+  const alignStartS = manualSplit || ordinaryNatural || body.alignStartS === null
     ? null
     : (Number.isFinite(Number(body.alignStartS)) ? Number(body.alignStartS) : (syncToJp ? slotStart : null));
 
@@ -178,7 +197,7 @@ export async function POST(
   let manualGapReference: Buffer | null = null;
   let healthByUrl: Map<string, TtsHealth>;
   try {
-    const input = await readFile(promptFile);
+    const input = manualSplit?.reference ?? await readFile(promptFile);
     if (!line.speaker) {
       const source = await readFile(path.join(dataRoot, "jp", `${stem}.mp3`));
       const extra = line.extra as {audio_sources?: {jp?: {clip?: {mp3_sha256?: string}}}} | null;
@@ -193,7 +212,8 @@ export async function POST(
     }
     // 真人 Zero-shot：时序目标始终是当前句完整日文，而非所选的邻句/中文音色参考。
     // 完整原声的首尾和内部停顿都参与对齐；自动线路仍用已去情绪的正文参考。
-    if (autoRunId == null && syncToJp) {
+    if (manualSplit?.kind === "scene") manualGapReference=manualSplit.reference;
+    if (!manualSplit && autoRunId == null && syncToJp) {
       const fullJapanese = await readFile(path.join(dataRoot, "jp", `${stem}.mp3`)).catch((error: NodeJS.ErrnoException) => {
         if (error.code === "ENOENT") return null;
         throw error;
@@ -334,10 +354,28 @@ export async function POST(
     // 人工模板分支三条都要保留，时长检测仅记录，不能筛到最后只剩一条。
     // 仅限已验证归属的自动工作流，普通合成保持原有筛选规则。
     const manualTemplates = autoRunId != null && body.manualTemplates === true;
-    const keep = gapReference && processed.some(row => row.gapAlignment) || manualTemplates ? processed : passed.length ? passed : [processed.reduce((a,b)=>a.score<=b.score?a:b)];
+    const keep = manualSplit ? processed : gapReference && processed.some(row => row.gapAlignment) || manualTemplates ? processed : passed.length ? passed : [processed.reduce((a,b)=>a.score<=b.score?a:b)];
 
-    const ids: string[] = [];
-    for (const row of keep) {
+    const ids: string[] = [], failedIds: string[] = [];
+    // Revalidate source bytes and the latest AI record after inference as well.
+    if (manualSplit) {
+      const current=await loadSplitClone(line,manualSplit.runId);
+      if (!current || current.originalSha256!==manualSplit.originalSha256 || current.referenceSha256!==manualSplit.referenceSha256)
+        throw new Error("生成期间原声或AI切分记录变化，停止回拼");
+    }
+    for (const candidate of keep) {
+      let row=candidate;
+      const bodyAudio=row.audio;
+      let assembly: Awaited<ReturnType<typeof assembleSplitClone>> | null = null;
+      let assemblyError: string | null = null;
+      if (manualSplit) {
+        try {
+          assembly=await assembleSplitClone(manualSplit,bodyAudio,script.spokenText);
+          row={...row,audio:assembly.audio,timing:wavTiming(assembly.audio)};
+        } catch (error) { assemblyError=error instanceof Error?error.message:String(error); }
+      }
+      const restoredText=assembly?.restoredText ?? script.spokenText;
+      const savedSubtitle=manualSplit && assembly ? (restoredText.trim()===(line.text_zh??"").trim()?null:restoredText) : subtitleText;
       const record = (
         await sql<{ id: string }[]>`
           INSERT INTO line_tts_versions (
@@ -349,7 +387,7 @@ export async function POST(
             engine_package_version, engine_precision, engine_device, engine_url
           ) VALUES (
             ${stem}, ${autoRunId}, ${line.speaker}, NULL, ${`zeroshot-${promptLang}`},
-            ${script.ttsText}, ${script.spokenText}, ${subtitleText},
+            ${script.ttsText}, ${restoredText}, ${savedSubtitle},
             ${line.text_jp}, ${line.text_zh},
             ${syncToJp ? row.stretch : durationFactor}, ${0}, ${sql.json(anonymousReference ? {anonymous_single_line:anonymousReference} : {})},
             ${row.health.model_version ?? null}, ${row.health.model_revision ?? null},
@@ -363,6 +401,11 @@ export async function POST(
       const manifestPath = path.posix.join("tts", stem, `${record.id}.json`);
       const rawPath = path.posix.join("tts", stem, `${record.id}-before-stretch.wav`);
       const conversion = {
+        ...(manualSplit ? {manual_split_clone:{version:1,run_id:manualSplit.runId,
+          source_audio_sha256:manualSplit.originalSha256,reference_sha256:manualSplit.referenceSha256,
+          prompt_path:manualSplit.promptPath,body_text:script.spokenText,
+          body_audio_path:path.posix.join("tts",stem,`${record.id}-split-body.wav`),
+          assembled:assembly!==null,error:assemblyError,assembly:assembly?.metadata??null}} : {}),
         stretch_algorithm: STRETCH_ALGORITHM,
         stretch_source: { path: rawPath, stage: "loudness-matched-gpu-output-before-cpu-regroup-and-stretch" },
         tts_text_sent: ttsForGpu,
@@ -380,7 +423,7 @@ export async function POST(
         prompt_stem: promptStem,
         prompt_lang: promptLang,
         prompt_note: promptNote,
-        prompt_path: typeof body.promptPath === "string" ? body.promptPath : `${promptLang}/${promptStem}.mp3`,
+        prompt_path: manualSplit?.promptPath ?? (typeof body.promptPath === "string" ? body.promptPath : `${promptLang}/${promptStem}.mp3`),
         preserve_prompt_audio: preservePromptAudio,
         layout_slot: layoutSlot,
         seed_vc: "skipped",
@@ -406,16 +449,17 @@ export async function POST(
         writeFile(path.join(process.cwd(), "data", rawPath), row.beforeStretch),
         writeFile(path.join(process.cwd(), "data", manifestPath), JSON.stringify(conversion, null, 2)),
       ]);
+      if(manualSplit)await writeFile(path.join(process.cwd(),"data","tts",stem,`${record.id}-split-body.wav`),bodyAudio);
       if(row.beforeRegroup)await writeFile(path.join(process.cwd(),"data","tts",stem,`${record.id}-before-regroup.wav`),row.beforeRegroup);
       await sql`
         UPDATE line_tts_versions SET
-          status = 'ready', audio_path = ${relativePath}, audio_bytes = ${row.audio.length},
+          status = ${assemblyError ? 'failed' : 'ready'}, audio_path = ${relativePath}, audio_bytes = ${row.audio.length},
           raw_audio_path = ${rawPath}, manifest_path = ${manifestPath},
           conversion_meta = ${sql.json(JSON.parse(JSON.stringify(conversion)))},
           duration_factor = ${syncToJp ? row.stretch : durationFactor},
           start_s = ${row.timing.start}, end_s = ${row.timing.end},
           dur_s = ${row.timing.duration}, speech_s = ${row.timing.speech},
-          completed_at = now(), error = NULL
+          completed_at = now(), error = ${assemblyError}
         WHERE id = ${record.id}
       `;
       if(autoRunId != null && row.regroup)await sql`INSERT INTO line_auto_run_events(run_id,step,level,message,payload) VALUES(${autoRunId},'two-parts-regroup','result',${row.regroup.consistent ? row.regroup.gapRescue?.used ? `第三轮短缝补切为${row.regroup.requiredParts??2}段，逐段严格核字通过，后续仍须对齐验收` : `逐段Qwen核字一致，按模型建议连续合并为${row.regroup.requiredParts??2}段` : "逐段Qwen核字或分组失败，需原稿重新TTS"},${sql.json(JSON.parse(JSON.stringify({ttsId:String(record.id),auto_run_stage:autoRunStage,allow_gap_split:allowGapSplit,...row.regroup})))})`;
@@ -425,9 +469,10 @@ export async function POST(
             ${`#${record.id} 先逐段85%～115%缩放并调整间距，再检查逐段余差`},
             ${sql.json({ ttsId: String(record.id), referencePath: typeof body.promptPath === "string" ? body.promptPath : `${promptLang}/${promptStem}.mp3`, ...row.gapAlignment })})`;
       }
-      ids.push(record.id);
+      if (assemblyError) failedIds.push(record.id); else ids.push(record.id);
     }
-    return NextResponse.json({ ok: true, id: ids[0], ids, ...(budget?{ttsBudget:budget}:{}) });
+    if (manualSplit && !ids.length) return NextResponse.json({error:"正文已生成，但原声回拼未通过；原始候选已保留，请在历史中查看失败原因",failedIds},{status:422});
+    return NextResponse.json({ ok: true, id: ids[0], ids, ...(failedIds.length?{failedIds}:{}), ...(budget?{ttsBudget:budget}:{}) });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const exhausted = budget?.exhausted || isAutoTtsBudgetError(error);

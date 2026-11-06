@@ -16,6 +16,7 @@ type Item = {
   subtitle_italic: boolean;
   current: boolean;
   lockedTtsId: string | null;
+  playbackTtsId: string | null;
   modifiedSubtitle: string | null;
 };
 
@@ -136,13 +137,13 @@ export function SequencePlay({ stem }: { stem: string }) {
       for (let i = 0; i < list.length; i += 1) {
         if (controller.signal.aborted) return;
         setIndex(i);
-        const url = sourceAudioUrl(list[i].stem, nextLang, list[i].lockedTtsId, hasOriginalChineseAudio);
+        const url = sourceAudioUrl(list[i].stem, nextLang, list[i].playbackTtsId, hasOriginalChineseAudio);
         if (!url) continue;
         await playOne(url, controller.signal);
         played++;
         if (i < list.length - 1) await wait(1000, controller.signal);
       }
-      if (nextLang === "cn" && !hasOriginalChineseAudio && played === 0) throw new Error("这些条目尚无已锁定的音频版本，请先试听日文原声");
+      if (nextLang === "cn" && !hasOriginalChineseAudio && played === 0) throw new Error("这些条目尚未生成中文音频，请先试听日文原声");
     } catch (reason) {
       if (reason instanceof DOMException && reason.name === "AbortError") return;
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -168,7 +169,7 @@ export function SequencePlay({ stem }: { stem: string }) {
         setItems(list);
         latest = list.find((row) => row.stem === item.stem) ?? item;
       }
-      const url = sourceAudioUrl(latest.stem, nextLang, latest.lockedTtsId, hasOriginalChineseAudio);
+      const url = sourceAudioUrl(latest.stem, nextLang, latest.playbackTtsId, hasOriginalChineseAudio);
       if (!url) throw new Error("此条未生成中文音频");
       await playOne(url, controller.signal);
     } catch (reason) {
@@ -207,7 +208,7 @@ export function SequencePlay({ stem }: { stem: string }) {
           onClick={() => void start("cn")}
           className="inline-flex min-h-11 items-center rounded bg-zinc-800 px-3 text-sm text-zinc-200 hover:bg-zinc-700 disabled:opacity-40 md:min-h-0 md:px-2.5 md:py-1 md:text-xs"
         >
-          {hasOriginalChineseAudio ? "中文连播" : "已锁定版本连播"}
+          中文连播
         </button>
         {playing ? (
           <button
@@ -219,7 +220,7 @@ export function SequencePlay({ stem }: { stem: string }) {
           </button>
         ) : null}
         <span className="text-[11px] text-zinc-600">
-          同区域、同类型，按列表顺序取前 3 条和后 2 条，边界处补齐，最多 6 条，间隔 1 秒。左侧官方中文字幕，右侧改字幕；点序号开详情，点名字后的按钮单播。{hasOriginalChineseAudio ? "中文优先播放锁定版，未锁定播放原中文。" : "本作无原中文配音，已锁定版本连播会跳过尚未制作的条目。"}
+          同区域、同类型，按列表顺序取前 3 条和后 2 条，边界处补齐，最多 6 条，间隔 1 秒。左侧官方中文字幕，右侧改字幕；点序号开详情，点名字后的按钮单播。{hasOriginalChineseAudio ? "中文优先播放锁定版，未锁定播放原中文。" : "本作无原中文配音，依次播放锁定版本、带“改”字幕的版本、最新中文版本；尚未制作的条目跳过。"}
         </span>
       </div>
       {error ? <p className="mt-2 text-xs text-red-400">{error}</p> : null}
@@ -263,9 +264,9 @@ export function SequencePlay({ stem }: { stem: string }) {
                     className={`inline-flex min-h-11 items-center rounded px-2.5 text-xs md:min-h-0 md:py-1 ${jpActive ? "bg-sky-900 text-sky-100" : "bg-zinc-800 text-zinc-200 hover:bg-zinc-700"}`}>
                     读日文
                   </button>
-                  <button type="button" disabled={!hasOriginalChineseAudio && !item.lockedTtsId} aria-pressed={cnActive} onClick={() => void playSolo(item, "cn")}
+                  <button type="button" disabled={!hasOriginalChineseAudio && !item.playbackTtsId} aria-pressed={cnActive} onClick={() => void playSolo(item, "cn")}
                     className={`inline-flex min-h-11 items-center rounded px-2.5 text-xs md:min-h-0 md:py-1 ${cnActive ? "bg-sky-900 text-sky-100" : "bg-zinc-800 text-zinc-200 hover:bg-zinc-700"}`}>
-                    {hasOriginalChineseAudio ? "读中文" : item.lockedTtsId ? "读已锁定版本" : "未生成"}
+                    {hasOriginalChineseAudio || item.playbackTtsId ? "读中文" : "未生成"}
                   </button>
                 </div>
                 <div className="grid grid-cols-2 gap-2">

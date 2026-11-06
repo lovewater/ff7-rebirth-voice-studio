@@ -18,7 +18,7 @@ function routeHarness(options={}){
  const sql=async(parts,...values)=>{const q=parts.join('?');if(q.includes('SELECT l.stem'))return[line];if(q.includes('SELECT id,reference_audio_path'))return[{id:'42',reference_audio_path:options.registeredReference??null,stage_payload:{stage:1,model:'grok',allowGapSplit:false}}];if(q.includes('FROM pronunciations'))return[];if(q.includes('INSERT INTO line_tts_versions')){calls.inserted.push({q,values});return[{id:'9'}];}if(q.includes('UPDATE line_tts_versions')){calls.saved.push(values);return[];}throw Error('Unexpected SQL '+q);};sql.json=x=>x;
  const timing=()=>({start:0,end:1,duration:1,speech:1});
  const gap=compile(path.join(__dirname,'auto-run-gap-policy.ts'),{'./auto-run-rules':{isPerformanceMode:mode=>mode==='scene'||mode==='mixed'}});
- const deps={'next/server':{NextResponse:{json:(value,init)=>Response.json(value,init)}},'@/lib/db':{sql},'@/lib/anonymous-tts-reference':policy,
+ const deps={'@/lib/manual-split-clone':{loadSplitClone:async()=>options.splitContext??null,splitCloneBodyText:()=>"仅正文",assembleSplitClone:async()=>{if(options.assemblyFail)throw Error('回拼失败');return{audio:Buffer.from('assembled with original voice'),metadata:{pcmExact:true},restoredText:'嗯，仅正文'};}},'next/server':{NextResponse:{json:(value,init)=>Response.json(value,init)}},'@/lib/db':{sql},'@/lib/anonymous-tts-reference':policy,
   '@/lib/line-processing-state':{isLineSkipped:()=>false},'@/lib/source-audio-policy':{audioReferenceIssue:()=>null},'@/lib/auto-run-gap-policy':gap,
   '@/lib/prompt-refs':{resolvePromptRef:async(s,current,ref)=>({ok:current===ref})},'@/lib/auto-run-subtitle':{autoRunSubtitle:x=>x},'@/lib/pronounce':{applyPronunciations:x=>x},
   '@/lib/tts-gpu':{TTS_URLS:['mock'],normalizeScript:x=>({ttsText:x,spokenText:x}),ensurePromptTailSilence:async b=>b,withTts:(_urls,fn)=>fn('mock'),matchPeak10Loudness:b=>b,wavTiming:timing,gpuJsonAt:async(_url,url,body)=>{calls.gpu.push({url,body});return url==='/health'?{}:{audio_wav_b64:Buffer.from('native audio').toString('base64'),conversion_meta:{}};}},
@@ -45,4 +45,21 @@ test('manual automatic-alignment edit preserves anonymous reference proof at ins
  const sql=async(parts,...values)=>{const q=parts.join('?');if(q.includes('SELECT speaker'))return[{speaker:null,tts_text:'中文',spoken_text:'中文',subtitle_text:null,conversion_meta:{anonymous_single_line:proof}}];if(q.includes('INSERT INTO line_tts_versions')){assert.equal(values[1],null);assert.deepEqual(values.find(x=>x?.anonymous_single_line),{anonymous_single_line:proof});return[{id:'10'}];}if(q.includes('UPDATE line_tts_versions')){saved.push(values);return[];}throw Error(q);};sql.json=x=>x;
  const route=compile(path.resolve(__dirname,'../app/api/lines/[stem]/tts/[id]/edit/route.ts'),{'next/server':{NextResponse:{json:(v,i)=>Response.json(v,i)}},'@/lib/db':{sql},'@/lib/tts-gpu':{wavTiming:()=>({start:0,end:1,duration:1,speech:1})},'@/lib/auto-run-subtitle':{twoLineSubtitle:x=>x},'@/lib/speech-metrics-store':{measureSavedEdit:async()=>({})},'node:fs/promises':{mkdir:async()=>{},writeFile:async()=>{}}});
  const r=await route.POST({json:async()=>({wavBase64:Buffer.alloc(48).toString('base64')})},{params:Promise.resolve({stem:'X',id:'9'})});assert.equal(r.status,200);assert.ok(saved.some(values=>values.some(v=>v?.anonymous_single_line?.source_audio_sha256===sha(japanese))));
+});
+
+
+test('manual split clone sends only cleaned reference/body to TTS and saves assembled ready candidates without locking',async()=>{
+ const splitContext={kind:'casual',runId:'8',promptPath:'tts/X/clean.wav',reference:prompt,sourceScript:'嗯，仅正文',bodyText:'仅正文',originalSha256:sha(japanese),referenceSha256:sha(prompt)};
+ const h=routeHarness({splitContext}),r=await h.post({autoRunId:null,autoRunStage:undefined,candidateCount:undefined,feedbackRound:false,splitAfterAi:true,splitRunId:'8'});
+ assert.equal(r.status,200);const native=h.calls.gpu.filter(x=>x.url==='/v1/tts/clone');assert.equal(native.length,3);
+ assert.ok(native.every(x=>x.body.prompt_audio===prompt.toString('base64')&&x.body.text==='仅正文'));
+ assert.equal(h.calls.inserted.length,3);assert.equal(h.calls.saved.length,3);
+ for(const values of h.calls.saved){const metadata=values.find(v=>v?.manual_split_clone)?.manual_split_clone;assert.equal(metadata.assembled,true);assert.equal(metadata.run_id,'8');assert.equal(values[0],'ready');}
+ assert.ok(h.calls.inserted.every(x=>!x.q.includes('review_state')));
+});
+test('missing AI proof refuses manual split before TTS, and failed assemblies never become ready audio',async()=>{
+ const invalid=routeHarness();assert.equal((await invalid.post({autoRunId:null,splitAfterAi:true,splitRunId:'8'})).status,409);assert.equal(invalid.calls.gpu.length,0);
+ const splitContext={kind:'casual',runId:'8',promptPath:'tts/X/clean.wav',reference:prompt,sourceScript:'仅正文',bodyText:'仅正文',originalSha256:sha(japanese),referenceSha256:sha(prompt)};
+ const h=routeHarness({splitContext,assemblyFail:true}),r=await h.post({autoRunId:null,candidateCount:undefined,splitAfterAi:true,splitRunId:'8'});assert.equal(r.status,422);
+ assert.equal(h.calls.saved.length,3);assert.ok(h.calls.saved.every(v=>v[0]==='failed'&&v.some(meta=>meta?.manual_split_clone?.assembled===false)));
 });

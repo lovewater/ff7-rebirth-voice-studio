@@ -9,3 +9,5 @@
 Remake没有原始中文配音，不创建替代CN音频。4/6声道保留全部声道的无损FLAC；混音MP3仅供试听，不用于普通生成。提取过程只写本作work和website/data，不调用GPU、ASR、LLM，也不改游戏文件。
 
 不能把 Rebirth 的IoStore/Zen头、retoc chunk ID、章节或中文语音包覆盖规则套用到本作。写回仍须完成音频与TxtRes原样往返、重读、最小补丁和Win11试听，才可另行启用封包。研究来源见 `../../studio-common/docs/resource-adapters.md`。
+
+字幕封包政策：与Rebirth共用 `subtitle_pack_policy.py`（`original-chinese-subtitles-only-v1`）。本身没有原始中文字幕（`text_zh`为空）的台词，后存的字幕覆盖、制作稿或模型译文一律不进入游戏字幕，音频选择不受影响。将来启用本作封包器时须使用此规则并检查原始资源是否确有字幕；`adapter.py status` 已声明该政策，封包目前仍未启用。
