@@ -1,3 +1,4 @@
+import { getAutoRunConnection } from "./auto-run-settings";
 import { withGameFixedTerms } from "./game-fixed-terms";
 import { gamePromptMessages } from "./game-prompt";
 import { currentChatModel } from "./llm-model-context";
@@ -136,10 +137,11 @@ export async function callChatCompletion(input: ChatCallOptions) {
   if (grok && input.signal?.aborted) throw new GrokLlmError("cancelled", "Grok调用已取消");
   if (input.volcengine && !volcengine) throw new Error("火山模型选项必须显式选择volcengine连接");
   const volc = volcengine ? volcengineLlmConfig(input.volcengine) : undefined;
-  const grokConfig = grok ? grokLlmConfig() : undefined;
-  const base = grok ? grokConfig?.base : local ? process.env.SELF_HOSTED_LLM_URL : volcengine ? volc?.base : process.env.REWRITE_LLM_URL;
-  const key = grok ? grokConfig?.key : local ? process.env.SELF_HOSTED_LLM_KEY : volcengine ? volc?.key : process.env.REWRITE_LLM_KEY;
-  const model = grok ? grokConfig?.model : local ? process.env.SELF_HOSTED_LLM_MODEL : volcengine ? volc?.model : process.env.REWRITE_LLM_MODEL || "glm-5.3";
+  const configured = modelId === "grok" || modelId === "primary" ? await getAutoRunConnection(modelId) : undefined;
+  const grokConfig = grok ? grokLlmConfig(configured) : undefined;
+  const base = grok ? grokConfig?.base : local ? process.env.SELF_HOSTED_LLM_URL : volcengine ? volc?.base : configured?.base;
+  const key = grok ? grokConfig?.key : local ? process.env.SELF_HOSTED_LLM_KEY : volcengine ? volc?.key : configured?.key;
+  const model = grok ? grokConfig?.model : local ? process.env.SELF_HOSTED_LLM_MODEL : volcengine ? volc?.model : configured?.model;
   if (!base || !model || (!local && !key)) throw new Error(local ? "尚未配置自部署模型地址和名称"
     : grok ? "尚未配置Grok地址和密钥" : volcengine ? "尚未配置火山 Agent Plan 地址和密钥" : "尚未配置改写服务");
   const url = `${base.replace(/\/$/, "")}/chat/completions`;

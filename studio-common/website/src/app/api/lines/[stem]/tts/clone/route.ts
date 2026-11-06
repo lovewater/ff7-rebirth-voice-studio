@@ -1,4 +1,5 @@
 import { isLineSkipped, SKIPPED_LINE_MESSAGE } from "@/lib/line-processing-state";
+import { anonymousTtsReference, type AnonymousTtsReference } from "@/lib/anonymous-tts-reference";
 import { AUTO_RUN_MODEL } from "@/lib/auto-run-stage-context";
 import { audioReferenceIssue } from "@/lib/source-audio-policy";
 import { validatedCloneStage, allowCloneGapSplit, cloneSyncsToJapanese, cloneCandidateCount } from "@/lib/auto-run-gap-policy";
@@ -75,7 +76,6 @@ export async function POST(
   if (!line) return NextResponse.json({ error: "台词不存在" }, { status: 404 });
   if(isLineSkipped(line))return NextResponse.json({error:SKIPPED_LINE_MESSAGE,code:"LINE_SKIPPED"},{status:409});
   if (line.extra) { const issue = audioReferenceIssue(line.extra); if (issue) return NextResponse.json({error:issue,code:"REFERENCE_PREVIEW_ONLY"},{status:409}); }
-  if (!line.speaker) return NextResponse.json({ error: "台词没有说话人" }, { status: 400 });
 
   const body = (await req.json().catch(() => ({}))) as {
     ttsText?: string;
@@ -100,10 +100,12 @@ export async function POST(
   const autoRunId = body.autoRunId == null ? null : String(body.autoRunId);
   if (body.autoRunModel !== undefined && !["grok", "primary", "volcengine"].includes(body.autoRunModel)) return NextResponse.json({ error: "无效的自动运行模型" }, { status: 400 });
   let autoRunStage: 1|2|3|null = null;
+  let registeredReference: string | null = null;
   if (autoRunId != null) {
     if (!/^[1-9]\d*$/.test(autoRunId)) return NextResponse.json({ error: "无效的自动运行编号" }, { status: 400 });
-    const [run] = await sql`SELECT id,(SELECT payload FROM line_auto_run_events WHERE run_id=line_auto_runs.id AND step='model-stage-start' ORDER BY id DESC LIMIT 1) AS stage_payload FROM line_auto_runs WHERE id = ${autoRunId} AND stem = ${stem} AND status = 'running'`;
+    const [run] = await sql`SELECT id,reference_audio_path,(SELECT payload FROM line_auto_run_events WHERE run_id=line_auto_runs.id AND step='model-stage-start' ORDER BY id DESC LIMIT 1) AS stage_payload FROM line_auto_runs WHERE id = ${autoRunId} AND stem = ${stem} AND status = 'running'`;
     if (!run) return NextResponse.json({ error: "自动运行不存在、已结束或不属于这条台词" }, { status: 409 });
+    registeredReference = typeof run.reference_audio_path === "string" ? run.reference_audio_path : null;
     try { autoRunStage=validatedCloneStage(body.autoRunStage,run.stage_payload,body.autoRunModel); }
     catch(error) { return NextResponse.json({error:String(error)}, {status:409}); }
     if(autoRunStage===null)return NextResponse.json({error:"自动运行缺少明确轮次；历史任务需重新发起"},{status:409});
@@ -151,12 +153,14 @@ export async function POST(
   }
   const promptNote = allowed.note;
   const dataRoot = path.join(process.cwd(), "data");
+  let promptRelative = `${promptLang}/${promptStem}.mp3`;
   let promptFile = path.join(dataRoot, promptLang, `${promptStem}.mp3`);
   let preservePromptAudio = false;
   if (typeof body.promptPath === "string" && /^(jp|cn|tts)\/[\w.\-\/]+$/.test(body.promptPath)) {
     const custom = path.join(dataRoot, body.promptPath);
     if (custom.startsWith(dataRoot + path.sep)) {
       promptFile = custom;
+      promptRelative = body.promptPath;
       preservePromptAudio = body.preservePromptAudio === true && custom.endsWith(".wav");
     }
   }
@@ -169,11 +173,19 @@ export async function POST(
     : (Number.isFinite(Number(body.alignStartS)) ? Number(body.alignStartS) : (syncToJp ? slotStart : null));
 
   let prompt: Buffer;
+  let anonymousReference: AnonymousTtsReference | undefined;
   let gapReference: Buffer | null = null;
   let manualGapReference: Buffer | null = null;
   let healthByUrl: Map<string, TtsHealth>;
   try {
     const input = await readFile(promptFile);
+    if (!line.speaker) {
+      const source = await readFile(path.join(dataRoot, "jp", `${stem}.mp3`));
+      const extra = line.extra as {audio_sources?: {jp?: {clip?: {mp3_sha256?: string}}}} | null;
+      anonymousReference = anonymousTtsReference({stem,promptStem,promptLang,promptPath:promptRelative,
+        registeredReference,japanese:source,prompt:input,
+        expectedJapaneseSha256:extra?.audio_sources?.jp?.clip?.mp3_sha256});
+    }
     // 只改自动场景候选：用真实日文输入判断间隙，不把ensurePromptTailSilence补的静音算作目标。
     // 快速原稿、完整正文及整句fallback均由autoRunId归属验证，不影响真人Zero-shot。
     if (autoRunId != null && preservePromptAudio && body.feedbackRound !== true && syncToJp && promptLang === "jp" && promptStem === stem) {
@@ -265,7 +277,7 @@ export async function POST(
       const scriptPolicy:BodyScriptPolicy=autoRunId!=null && ["lines","relaxed"].includes(String(body.bodyScriptPolicy)) ? body.bodyScriptPolicy as BodyScriptPolicy : "strict";
       const groupingScript=scriptPolicy==="lines"&&typeof body.ttsText==="string"?body.ttsText:script.spokenText;
       // 新增“片数恰好也核对切口”只用于自动工作流；真人Zero-shot原本可纯波形对齐的路径不新增ASR/模型调用。
-      if(canRegroup && (autoRunId != null || speechChunks(row.audio).chunks.length>referenceParts))try{regrouped=await (autoRunId != null ? withLlmMetrics(autoRunId,stem,()=>withChatModel(AUTO_RUN_MODEL,()=>regroupTwoPartAudio(row.audio,groupingScript,stem,referenceParts,scriptPolicy,{allowGapSplit}))) : regroupTwoPartAudio(row.audio,groupingScript,stem,referenceParts,scriptPolicy,{allowGapSplit}));}catch(error){
+      if(canRegroup && (autoRunId != null || speechChunks(row.audio).chunks.length>referenceParts))try{regrouped=await (autoRunId != null ? withLlmMetrics(autoRunId,stem,()=>withChatModel(body.autoRunModel ?? AUTO_RUN_MODEL,()=>regroupTwoPartAudio(row.audio,groupingScript,stem,referenceParts,scriptPolicy,{allowGapSplit}))) : regroupTwoPartAudio(row.audio,groupingScript,stem,referenceParts,scriptPolicy,{allowGapSplit}));}catch(error){
         // 单条识别/API失败不能让其他候选及已生成的原音频一起丢失，交给原稿重TTS预算。
         regrouped={audio:row.audio,meta:{version:referenceParts===4?"four-parts-regroup-v1":referenceParts===3?"three-parts-regroup-v1":"two-parts-regroup-v1",requiredParts:referenceParts,consistent:false,serviceFailure:true,reason:String(error),segments:[]}};
       }
@@ -332,14 +344,14 @@ export async function POST(
             stem, auto_run_id, speaker, voice_version_id, voice_gpu_key,
             tts_text, spoken_text, subtitle_text,
             jp_text_snapshot, game_zh_text_snapshot,
-            duration_factor, emo_alpha,
+            duration_factor, emo_alpha, conversion_meta,
             engine_model_version, engine_model_revision, engine_source_revision,
             engine_package_version, engine_precision, engine_device, engine_url
           ) VALUES (
             ${stem}, ${autoRunId}, ${line.speaker}, NULL, ${`zeroshot-${promptLang}`},
             ${script.ttsText}, ${script.spokenText}, ${subtitleText},
             ${line.text_jp}, ${line.text_zh},
-            ${syncToJp ? row.stretch : durationFactor}, ${0},
+            ${syncToJp ? row.stretch : durationFactor}, ${0}, ${sql.json(anonymousReference ? {anonymous_single_line:anonymousReference} : {})},
             ${row.health.model_version ?? null}, ${row.health.model_revision ?? null},
             ${row.health.source_revision ?? null}, ${row.health.package_version ?? null},
             ${row.health.precision ?? null}, ${row.health.device ?? null}, ${row.url}
@@ -358,6 +370,7 @@ export async function POST(
         auto_run_final_subtitle: finalSubtitleText,
         ...(autoRunId != null ? { body_script_policy:row.scriptPolicy, body_grouping_script:row.groupingScript } : {}),
         ...row.meta,
+        ...(anonymousReference ? {anonymous_single_line:anonymousReference} : {}),
         auto_run_stage: autoRunStage,
         native_candidate_count_requested:requestedCount,
         allow_gap_split: allowGapSplit,

@@ -98,3 +98,13 @@ Remake 从零制作中文配音：`sourceOriginalChineseAudio=false` 作为服�
 音频提取若在 `line_meta.extra.audio_extraction` 标明 `eligible_for_generation=false`、`preview_only=true`、缺少 JP，或原始通道数大于 2，该条 MP3 仅供试听。自动运行创建/执行及 clone 在调用模型、ASR、GPU 前拒绝，不把混合预览当单人参考；日文原声锁也拒绝，避免将立体声预览误存为完整多声道成品。音色创建检查所选语言来源，英文来源通过 `extra.audio_sources.en.clip` 独立判定；来源标记缺失时沿用历史 Rebirth 行为。原始多声道无损文件由提取层保存，网站不会从未验证预览自动推导可用参考。
 
 Remake 日英语音库的 clip 编号不保证对应。英文试听、音色选材和 TTS 参考统一使用 `line_meta.extra.english_pairing.en_audio_path` 中经唯一 VoiceID 集合确认的真实 `en/<文件名>.mp3` 路径；缺字段、null、其他目录及目录跳转均视为没有英文配对，返回 404 或在创建任务前拒绝。`audio_sources.en` 仅作来源及参考资格证据，不能替代配对。EN-only 数据行可通过自己的显式路径试听，不能把它当成日文源。列表/详情显示已配对英语试听，未配对时明确提示；Rebirth 仍使用原有同 stem 路径。
+
+## 接口配置与合声专题
+
+`/settings` 保存本项目独立的默认大模型连接；密钥不回显，运行任务冻结连接快照。部署前在各自游戏库应用097–100迁移。详情见 `../docs/auto-run-interface-settings-20261105.md` 与匿名单句TTS说明。
+
+Rebirth的 `/topics/duet-voices` 对照主轨与独立伴随轨的三遍候选；按制作记录实际显示中文锁定、保留原声选择和待复核。采用按钮沿用游戏字幕，不将朗读稿自动填成新增中文字幕。
+
+可选的数字ID排序PostgreSQL集成测试只执行只读CTE。显式设置 `FF7_TEST_POSTGRES_CONTAINER`、`FF7_TEST_POSTGRES_ROLE`、`FF7_TEST_POSTGRES_DB` 后运行 `node --test src/lib/tts-snapshot-order.test.cjs`；未设置时仍运行无数据库的查询检查。
+
+已知测试夹具：`prompt-library.test.cjs` 的4项历史检查与已扩充的模板fixture不同步（32/43数量及三份模板正文）；在本次改动前的012e1b5基线同样复现。本次相关功能回归、类型检查与生产构建独立验证，模板fixture整理需单独处理。

@@ -1,8 +1,9 @@
+import { getAutoRunModel, withAutoRunConnection } from "./auto-run-settings";
 import { isLineSkipped, SKIPPED_LINE_MESSAGE } from "./line-processing-state";
 import { correctAsrWords } from "./asr-word-corrections";
 import { loadAsrWordRules } from "./asr-word-corrections-db";
 import { audioReferenceIssue } from "./source-audio-policy";
-import { AUTO_RUN_MODEL, autoRunStage, currentAutoRunStage, stopAutoRunRetries, withAutoRunStage } from "./auto-run-stage-context";
+import { AUTO_RUN_MODEL, type AutoRunModel, autoRunStage, currentAutoRunStage, stopAutoRunRetries, withAutoRunStage } from "./auto-run-stage-context";
 import { pureInterjectionOriginal } from "./pure-interjection";
 import { modelChineseScript, modelChineseSourceUnchanged, type ModelChineseScript, type ScriptSourceEvent } from "./model-chinese-script";
 import { AutoTtsBudgetError, isAutoTtsBudgetError, autoTtsBudgetFallback, AUTO_TTS_LIMIT_MESSAGE } from "./auto-run-tts-budget";
@@ -72,7 +73,7 @@ import { applyTtsPronunciation } from "./tts-pronunciation";
 import { planOriginalCandidateReuse } from "./casual-original-reuse-policy";
 import { fastCasualSemanticEvidence, casualSemanticMessages, parseCasualSemanticEvidence, semanticEvidenceMatchesFinal, casualQuestionSignature, type CasualSemanticInput } from "./casual-semantic-review";
 import { englishAudioRelativePath } from "./source-audio-policy";
-export type AutoRunOptions={forceGenerate?:boolean;reuseOriginalCandidates?:boolean;requestId?:string};
+export type AutoRunOptions={forceGenerate?:boolean;reuseOriginalCandidates?:boolean;requestId?:string;model?:AutoRunModel};
 import { type BeatResult } from "./beats";
 
 export type AutoRunEvent = {
@@ -572,11 +573,11 @@ async function saveSplicedEdit(runId: string, stem: string, sourceId: string, au
   const timing = wavTiming(audio);
   const source = (
     await sql<{
-      speaker: string;
+      speaker: string | null;
       tts_text: string;
       spoken_text: string;
       subtitle_text: string | null;
-      conversion_meta: { auto_run_final_subtitle?: string | null; body_comparison?: Record<string,string|number|boolean|null>; chinese_speed?: Record<string,string|number|boolean|null> } | null;
+      conversion_meta: { anonymous_single_line?: import("./anonymous-tts-reference").AnonymousTtsReference; auto_run_final_subtitle?: string | null; body_comparison?: Record<string,string|number|boolean|null>; chinese_speed?: Record<string,string|number|boolean|null> } | null;
       jp_text_snapshot: string | null;
       game_zh_text_snapshot: string | null;
       duration_factor: number;
@@ -596,12 +597,12 @@ async function saveSplicedEdit(runId: string, stem: string, sourceId: string, au
         stem, auto_run_id, speaker, voice_version_id, voice_gpu_key,
         tts_text, spoken_text, subtitle_text,
         jp_text_snapshot, game_zh_text_snapshot,
-        duration_factor, emo_alpha
+        duration_factor, emo_alpha, conversion_meta
       ) VALUES (
         ${stem}, ${runId}, ${source.speaker}, NULL, ${"audio-edit"},
         ${source.tts_text}, ${source.spoken_text}, ${finalSubtitleText == null ? null : twoLineSubtitle(finalSubtitleText)},
         ${source.jp_text_snapshot}, ${source.game_zh_text_snapshot},
-        ${source.duration_factor}, ${0}
+        ${source.duration_factor}, ${0}, ${sql.json(source.conversion_meta?.anonymous_single_line ? {anonymous_single_line:source.conversion_meta.anonymous_single_line} : {})}
       )
       RETURNING id::text AS id
     `
@@ -611,6 +612,7 @@ async function saveSplicedEdit(runId: string, stem: string, sourceId: string, au
   await mkdir(path.dirname(absolutePath), { recursive: true });
   await writeFile(absolutePath, audio);
   const conversion = {
+    ...(source.conversion_meta?.anonymous_single_line ? {anonymous_single_line:source.conversion_meta.anonymous_single_line} : {}),
     auto_run_stage: currentAutoRunStage()?.index ?? 1,
     pipeline: "audio-edit",
     stretch_algorithm: STRETCH_ALGORITHM,
@@ -745,6 +747,10 @@ async function loadDialogueContext(stem: string,productionScript?:ModelChineseSc
     if(!current||!modelChineseSourceUnchanged(productionScript,current))throw new CasualInterventionError('读取制作稿时原文或模型译稿已改变');
     return {line:{...current,text_zh:productionScript.translation} as ContextRow,before:[] as ShowLine[],after:[] as ShowLine[]};
   }
+  // 未关联人物的音频只处理本句。即使人工已补中文，也不能凭文件相邻位置猜对话上下文。
+  const current = await loadLine(stem);
+  if (current && !current.speaker)
+    return {line:current as ContextRow,before:[] as ShowLine[],after:[] as ShowLine[]};
   const rows = await sql<ContextRow[]>`
     SELECT l.stem, COALESCE(s.name_zh, l.speaker) AS name_zh,
            l.text_jp, l.text_en, l.text_zh, l.translate_zh_jp, l.translate_zh_en, l.subtitle_italic, l.kind,
@@ -806,6 +812,8 @@ export async function latestAutoRun(stem: string) {
 }
 
 export async function startAutoRun(stem: string, options: AutoRunOptions = {}) {
+  if(options.model!==undefined && !["grok","primary"].includes(options.model))throw Object.assign(new Error("无效的自动运行模型"),{status:400});
+  options.model ??= await getAutoRunModel();
   const line = await loadLine(stem);
   if (!line) throw Object.assign(new Error("台词不存在"), { status: 404 });
   if(isLineSkipped(line))return {skipped:true as const,selectedTtsId:null,reason:SKIPPED_LINE_MESSAGE};
@@ -895,41 +903,46 @@ export async function startAutoRun(stem: string, options: AutoRunOptions = {}) {
   }
   const kind = isPerformanceMode(line.dialogue_mode) ? "performance" : "casual";
   const createRun=async (tx:typeof sql)=>{
+    await tx`SELECT pg_advisory_xact_lock(70261105)`;
     const allowed=await tx`SELECT stem FROM lines WHERE stem=${stem} AND processing_state='active' FOR UPDATE`;
     if(!allowed.length)throw Object.assign(new Error(SKIPPED_LINE_MESSAGE),{status:409});
     const [created]=await tx<{id:string}[]>`INSERT INTO line_auto_runs(stem,kind,status) VALUES(${stem},${kind},'running') RETURNING id::text`;
     if(options.requestId||options.reuseOriginalCandidates)await tx`INSERT INTO line_auto_run_events(run_id,step,level,message,payload)
-      VALUES(${created.id},'auto-run-request','info','受控自动运行意图；新run与意图同事务登记',${tx.json({requestId:options.requestId??null,reuseOriginalCandidates:options.reuseOriginalCandidates===true,forceGenerate:options.forceGenerate===true,semanticAutoLock:true})})`;
+      VALUES(${created.id},'auto-run-request','info','受控自动运行意图；新run与意图同事务登记',${tx.json({requestId:options.requestId??null,reuseOriginalCandidates:options.reuseOriginalCandidates===true,forceGenerate:options.forceGenerate===true,semanticAutoLock:true,model:options.model??AUTO_RUN_MODEL})})`;
     return created;
   };
   const run=await sql.begin(tx=>createRun(tx as unknown as typeof sql));
   // 仅新运行记录自己的前置检查，不篡改旧运行或音频；完整线路会按裁后参考再次复核。
   if (rejectedQuickResults.length) await log(run.id, "preflight-beat", "已有成品时间虽正常，但比检查未过，继续完整自动流程", { rejected: rejectedQuickResults }, "result");
-  return { skipped: false as const, id: run.id, kind };
+  return { skipped: false as const, id: run.id, kind, model: options.model };
 }
 
-async function finalSplitFailureEvidence(runId: string) {
+async function finalSplitFailureEvidence(runId: string, model: AutoRunModel = AUTO_RUN_MODEL) {
   const [event] = await sql<{step:string}[]>`SELECT step FROM line_auto_run_events
-    WHERE run_id=${runId} AND (payload->>'stage')::int=2 AND payload->>'model'=${AUTO_RUN_MODEL}
+    WHERE run_id=${runId} AND (payload->>'stage')::int=2 AND payload->>'model'=${model}
       AND step IN ('stage-tts-batch','stage-split-failure') ORDER BY id DESC LIMIT 1`;
   return event?.step ?? null;
 }
 
 export async function executeAutoRun(runId: string, stem: string, options: AutoRunOptions = {}) {
+  const model = options.model ?? await getAutoRunModel();
+  const modelName = model === "primary" ? "官方GLM 5.3" : "Grok 4.7";
   const line = await loadLine(stem);
   if(isLineSkipped(line)){await finish(runId,"failed",SKIPPED_LINE_MESSAGE,null,{preserveSubtitle:true,noModelRetry:true});return;}
   if (line?.extra) { const issue = audioReferenceIssue(line.extra); if (issue) { await finish(runId,"failed",issue,null,{preserveSubtitle:true,noModelRetry:true}); return; } }
+  return withAutoRunConnection(model, async () => {
   if (line && !isPerformanceMode(line.dialogue_mode)) {
-    return withLlmMetrics(runId, stem, () => withChatModel(AUTO_RUN_MODEL, () =>
-      withAutoRunStage(autoRunStage(1), async () => {
-        await log(runId,"model-stage-start","普通对话完整时长流程：Grok 4.7，单轮不补切",{model:AUTO_RUN_MODEL,allowGapSplit:false,limit:24},"result");
+    return withLlmMetrics(runId, stem, () => withChatModel(model, () =>
+      withAutoRunStage(autoRunStage(1, model), async () => {
+        await log(runId,"model-stage-start",`普通对话完整时长流程：${modelName}，单轮不补切`,{model,allowGapSplit:false,limit:24},"result");
         return withTwoPartContext(() => executeAutoRunMeasured(runId, stem, options));
       })));
   }
   return withLlmMetrics(runId, stem, () => runAutoRunModels({
+    model,
     attempt: () => withTwoPartContext(() => executeAutoRunMeasured(runId, stem, options)),
     event: async (model, outcome, stage) => {
-      const name = `Grok 4.7 第${stage?.index ?? 1}轮${stage?.allowGapSplit ? "（允许补切）" : "（正常）"}`;
+      const name = `${modelName} 第${stage?.index ?? 1}轮${stage?.allowGapSplit ? "（允许补切）" : "（正常）"}`;
       await log(runId, outcome ? "model-stage-result" : "model-stage-start",
         outcome ? `${name}整轮${outcome.status === "passed" ? "通过" : "未通过"}` : `开始${name}完整工作流`,
         { model, allowGapSplit: stage?.allowGapSplit ?? false, limit: 24, ...(outcome ?? {}) }, "result");
@@ -940,13 +953,14 @@ export async function executeAutoRun(runId: string, stem: string, options: AutoR
     },
     canUseGapSplit: async () => {
       // 只认第二轮最后一批的明确结构失败；更早的小插曲、时长或文字问题不触发补切。
-      const evidence = await finalSplitFailureEvidence(runId);
+      const evidence = await finalSplitFailureEvidence(runId, model);
       const allowed = evidence === "stage-split-failure";
       await log(runId,"gap-stage-eligibility",allowed ? "第二轮最终仍分句失败，允许第三轮从原稿补切重跑" : "第二轮最终未证明分句失败，不启用补切",{allowed,evidence},"result");
       return allowed;
     },
     finish: outcome => finish(runId, outcome.status, outcome.error, outcome.selected, outcome.options),
   }));
+  });
 }
 
 async function executeAutoRunMeasured(runId: string, stem: string, options: AutoRunOptions) {
@@ -2420,6 +2434,8 @@ function casualJapaneseTextEvidence(line: LinePack) {
  * 参考译文不充当邻句或原稿快照；最终行锁复核被采用的来源/译文，读音/时长/PCM门禁不因此放宽。
  * 无原中文：先以来源闭合的模型译文作制作起稿，不写回lines.text_zh、不伪造游戏原稿快照；改写不比较其与译文/原中文的意思。
  * 两者都必须核当前稿实际ASR/读音、完整时长、字幕/PCM及源SHA；无原中文不等于豁免漏读或声调疑点。
+ * 人物未知不跳过：以本句JP作zero-shot参考（或本run登记的本句清理参考），保持speaker=NULL。
+ * 该类不读取邻句；起稿处理后仍超长先同稿最多3次，失败再按实测时长改稿，每轮3条择优。
  * 原稿与改稿全部门禁严格通过均自动锁；语义/读音不确定保留failed/candidate，不能为99%愿景放宽。不在assembly后stretch，不做逐段口型/Seed/拍数验收。
  */
 async function runCasualDuration(runId: string, line: LinePack, markAbnormal: boolean, options:AutoRunOptions={}) {
@@ -2438,10 +2454,14 @@ async function runCasualDuration(runId: string, line: LinePack, markAbnormal: bo
     const attempts: CasualDurationAttempt[] = [];
     const verifiedBodySha256=new Map<string,string>();
     let passed = false, selected: CasualDurationAttempt | undefined, error: string | null = null;
+    let generationError: string | null = null;
     let cleanup: CasualAudioCleanupPlan | null = null;
     try {
       await guard();
       line=await prepareProductionLine(runId,line);
+      if (!line.speaker) await log(runId,"anonymous-single-line-policy","人物未知：仅使用本句日文音色，改稿及终审不读取邻句，沿用普通总长、核字、重试与改稿验收",{
+        reference:`jp/${stem}.mp3`,context:"none",speaker:null,originalAttempts:3,rewriteRounds:3,rewriteCandidates:3,
+      },"result");
       await guard();
       if(await finishWholeNonverbalFirst(runId,line,"casual"))return;
       if (isSingingLine(line)) {
@@ -2613,7 +2633,7 @@ async function runCasualDuration(runId: string, line: LinePack, markAbnormal: bo
         };
         let evidence=fastCasualSemanticEvidence(input);
         if(!evidence) {
-          input.context=line.productionScript?null:await contextForMeaning();
+          input.context=line.productionScript||!line.speaker?null:await contextForMeaning();
           try {
             const response=await rewriteChat(casualSemanticMessages(input),.1,'casual-semantic-review',1,{stem});
             evidence=parseCasualSemanticEvidence(parseJsonObject(response.content),input);
@@ -2665,6 +2685,7 @@ async function runCasualDuration(runId: string, line: LinePack, markAbnormal: bo
               ...(promptPath?{promptPath,preservePromptAudio:true}:{}),subtitleText:cleanup||line.productionScript?script:round===0?null:script});
           } catch(cause) {
             if(isAutoTtsBudgetError(cause) || cause instanceof CasualInterventionError)throw cause;
+            generationError = cause instanceof Error ? cause.message : String(cause);
             await guard();
             await log(runId,"casual-native-batch-error","本次未返回可用原生候选，保留历史并按当前稿继续有限重试",{round,originalAttempt,requestedCount:count,error:String(cause)},"error");
             return [];
@@ -2713,7 +2734,7 @@ async function runCasualDuration(runId: string, line: LinePack, markAbnormal: bo
           const feedbackSha=feedbackSource?.audio_path?createHash("sha256").update(await readFile(dataFile(feedbackSource.audio_path))).digest("hex"):null;
           if(!feedbackSha || verifiedBodySha256.get(previous.id)!==feedbackSha)
             throw new CasualInterventionError("改稿依据的完整音频已变化或缺少对应核字SHA，停止本条处理");
-          const context = line.productionScript?null:await loadDialogueContext(stem);
+          const context = line.productionScript||!line.speaker?null:await loadDialogueContext(stem);
           const characterCount = Array.from(compactCasualText(previous.script)).length;
           // 两份中文参考译文必须随本句原日/英文一起交给改稿与独立审核。
           // 它们是完整原句的机器参考（不是清理后的body、也不是邻句）；保留原声的首尾仍禁止重加。
@@ -2745,7 +2766,9 @@ async function runCasualDuration(runId: string, line: LinePack, markAbnormal: bo
         selectedId:selected?.id??null,passed,pronunciationNotes:selected?.pronunciationNotes??[],processingSteps:selected?.processingSteps,compressionRatio:selected?.compressionRatio,
         candidates:result.attempts.map(row=>({id:row.id,textPassed:row.textPassed,duration:row.duration,processingFailed:row.processingFailed,pronunciationNotes:row.pronunciationNotes,processingSteps:row.processingSteps})),
       },"result");
-      if (!passed) error = result.rewriteError || "三次原稿及最多三轮改稿批次后仍未同时满足核字完整及时长，交人工复核";
+      if (!passed) error = result.rewriteError || (!result.attempts.length && generationError
+        ? `未生成可用音频：${generationError}`
+        : "三次原稿及最多三轮改稿批次后仍未同时满足核字完整及时长，交人工复核");
       if (cleanup && selected) {
         await guard();
         const [source] = await sql<(TtsClip & {subtitle_text:string|null})[]>`SELECT id::text,tts_text,spoken_text,dur_s,audio_path,subtitle_text FROM line_tts_versions
@@ -2818,7 +2841,8 @@ async function importCasualOriginalCandidate(runId:string,line:LinePack,source:T
     if(admission.decision!=='candidate-for-dsp')throw new CasualInterventionError('复用源已不满足当前原稿/发音规则：'+admission.reason);
     const audio=await readFile(dataFile(live.audio_path!)),sha=createHash('sha256').update(audio).digest('hex');
     if(!source.reuseExpectedAudioSha256||source.reuseExpectedAudioSha256!==sha)throw new CasualInterventionError('复用源音频在准备后已变化，保留人工源文件');
-    const metadata={pipeline:'audio-edit',operation:'casual-original-reuse',source_id:live.id,source_run_id:live.auto_run_id,source_audio_sha256:sha,
+    const anonymousReference=(live.conversion_meta as {anonymous_single_line?:import("./anonymous-tts-reference").AnonymousTtsReference}|null)?.anonymous_single_line;
+    const metadata={...(anonymousReference?{anonymous_single_line:anonymousReference}:{}),pipeline:'audio-edit',operation:'casual-original-reuse',source_id:live.id,source_run_id:live.auto_run_id,source_audio_sha256:sha,
       tts_text_sent:currentSent,source_current_lexicon_sha256:createHash('sha256').update(JSON.stringify(currentRules)).digest('hex'),
       auto_run_stage:1,original_reuse:{copied_bytes:true,fresh_asr_required:true,old_asr_reused:false,subtitle_strategy:'original-game-subtitle'}};
     const [clip]=await tx<TtsClip[]>`INSERT INTO line_tts_versions(stem,auto_run_id,speaker,voice_gpu_key,tts_text,spoken_text,subtitle_text,jp_text_snapshot,game_zh_text_snapshot,duration_factor,emo_alpha,conversion_meta)

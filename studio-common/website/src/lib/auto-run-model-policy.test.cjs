@@ -19,3 +19,8 @@ test('four Grok tasks isolate all nested awaits from a concurrent explicit histo
  });
  assert.equal(f.currentChatModel(),undefined);
 });
+
+test('explicit GLM stays GLM through all three stages while concurrent defaults stay Grok',async()=>{
+ const f=fixture();await Promise.all(['primary','grok'].map(model=>run(f,{model,attempt:async()=>{const stage=f.currentAutoRunStage();await new Promise(r=>setTimeout(r,2));assert.equal(f.currentChatModel(),model);assert.equal(stage.model,model);f.captureAutoRunOutcome(failed);}})));assert.equal(f.currentChatModel(),undefined);
+ const result=await run(f,{model:'primary'});assert.deepEqual(result.seen.map(x=>x.model),['primary','primary','primary']);assert.equal(result.seen[2].allowGapSplit,true);assert.deepEqual(result.done,[failed]);
+});

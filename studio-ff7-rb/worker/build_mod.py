@@ -46,6 +46,7 @@ from zoneinfo import ZoneInfo
 
 import psycopg
 import mod_incremental as incremental
+import movie_surround
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from cn_iostore import extract_chunk_ids, parse_utoc  # noqa: E402
@@ -1040,6 +1041,112 @@ def _bank_wav(wavs: list[Path], channel: int) -> Path:
     return max(ranked, key=lambda path: path.stat().st_size)
 
 
+def movie_surround_profiles(group: list[dict]) -> dict[str, dict]:
+    """Bind reviewed movie windows to the real original Voice event asset."""
+    profiles = {}
+    approvals_path = ROOT / 'work/mod-build/movie-overlap-approvals.json'
+    approvals = json.loads(approvals_path.read_text()) if approvals_path.is_file() else {}
+    module_sha = incremental.digest([hashlib.sha256(Path(movie_surround.__file__).read_bytes()).hexdigest(), inspect.getsource(rebuild_added_bank_surround)])
+    cache = {}
+    for row in group:
+        extra = row['extra']
+        if not extra.get('multichannel_review_required') or row.get('voice_gpu_key') == 'jp-lock':
+            continue
+        bank = extra.get('bank') or ''
+        if not re.fullmatch(r'MV_[A-Z0-9_]+_Voice_[0-9]+f', bank):
+            raise RuntimeError(f"{row['stem']}: unreviewed movie bank identity")
+        event_name = bank.split('_Voice_')[0] + '_Voice.uasset'
+        container = row['jp_container']
+        identity = (container, event_name)
+        if identity not in cache:
+            utoc = GAME_PAKS / (container + '.utoc')
+            assets = iter_pack_assets(utoc, full_paths=True)
+            hits = [(cid, path) for cid, path in assets.values()
+                    if Path(path).name == event_name and '/Cut/' in path]
+            if len(hits) != 1:
+                raise RuntimeError(f'{event_name}: expected exactly one original voice event')
+            cid, path = hits[0]
+            raw = extract_chunk_ids(utoc, {cid: 'event'}, strict=True)['event']
+            cache[identity] = (movie_surround.event_cues(raw), hashlib.sha256(raw).hexdigest())
+        cues, event_sha = cache[identity]
+        p = movie_surround.window_profile(extra, row['stem'], cues, event_sha, approvals.get(row['stem']))
+        p['renderer_sha256'] = module_sha
+        profiles[row['stem']] = p
+    return profiles
+
+
+def rebuild_added_bank_surround(task: tuple[str, str, list[dict], str]) -> str:
+    """Route only explicitly reviewed banks; leave the legacy encoder unchanged."""
+    bank, orig_path, slices, cache_path = task
+    if not any(p.get('surround') for p in slices):
+        return rebuild_added_bank(task)
+    original = Path(orig_path).read_bytes()
+    sources = [DATA / p['audio'] for p in slices if not p.get('keep_japanese')]
+    key = source_audio_key(original, slices, sources)
+    cache = Path(cache_path).with_name(Path(cache_path).stem + '-' + key + '.uasset')
+    audit_path = Path(str(cache) + '.surround.json')
+    if cache.is_file() and audit_path.is_file():
+        proof = json.loads(audit_path.read_text())
+        if proof['rebuilt_sha256'] == hashlib.sha256(cache.read_bytes()).hexdigest():
+            validate_zen_exports(cache.read_bytes())
+            return str(cache)
+    audit_encode('added-surround', dict(bank=bank, source_audio_key=key))
+    with tempfile.TemporaryDirectory(prefix='ff7-surround-', dir=str(BUILD_ROOT / 'tmp')) as temp:
+        folder = Path(temp)
+        source = folder / (bank + '.uasset')
+        source.write_bytes(original)
+        run_audiomog(source)
+        project = folder / (bank + '_Project')
+        wavs = list(project.glob('*.wav'))
+        if len(wavs) != 1:
+            raise RuntimeError(f'{bank}: reviewed movie bank must contain one six-channel stream')
+        wav = wavs[0]
+        source_wav_sha = hashlib.sha256(wav.read_bytes()).hexdigest()
+        samples, channels, rate = read_wav_s16(wav)
+        pieces = []
+        for p in slices:
+            profile = p.get('surround')
+            if not p.get('keep_japanese') and (not profile or profile['source_wav_sha256'] != source_wav_sha):
+                raise RuntimeError(f"{p['stem']}: source movie PCM does not match its reviewed SHA")
+            pieces.append(dict(p, mono=array.array('h') if p.get('keep_japanese') else load_mono_s16(DATA / p['audio'],rate)))
+        windows = movie_surround.replace_windows(samples, channels, rate, pieces, SLICE_OVERRUN_S)
+        write_wav_s16(wav, samples, channels, rate)
+        cache.parent.mkdir(parents=True,exist_ok=True)
+        render = Path(str(cache) + '.render.wav')
+        shutil.copyfile(wav,render)
+        run_audiomog(project / 'RebuildSettings.json')
+        built = project / (bank + '.uasset')
+        result = repair_audio_exports(original,built.read_bytes())
+        verify_dir = folder / 'roundtrip'
+        verify_dir.mkdir()
+        verify_asset = verify_dir / (bank + '.uasset')
+        verify_asset.write_bytes(result)
+        run_audiomog(verify_asset)
+        decoded = list((verify_dir / (bank + '_Project')).glob('*.wav'))
+        if len(decoded) != 1:
+            raise RuntimeError(f'{bank}: rebuilt movie stream count changed')
+        got, got_channels, got_rate = read_wav_s16(decoded[0])
+        if (channels,rate,len(samples)) != (got_channels,got_rate,len(got)):
+            raise RuntimeError(f'{bank}: rebuilt movie PCM layout/duration changed')
+        errors = []
+        for ch in range(channels):
+            expected = samples[ch::channels]
+            actual = got[ch::channels]
+            rms = (sum(v*v for v in expected) / len(expected)) ** .5
+            error = (sum((a-b)**2 for a,b in zip(expected,actual))/len(expected))**.5
+            if error > max(2.,rms*(.08 if ch == 2 else .20)):
+                raise RuntimeError(f'{bank}: HCA roundtrip error on channel {ch}: {error}/{rms}')
+            errors.append(dict(channel=ch,rms=rms,error_rms=error))
+        proof = dict(bank=bank,policy=movie_surround.POLICY,source_sha256=hashlib.sha256(original).hexdigest(),
+                     source_wav_sha256=source_wav_sha,rendered_wav_sha256=hashlib.sha256(render.read_bytes()).hexdigest(),
+                     rebuilt_sha256=hashlib.sha256(result).hexdigest(),windows=windows,
+                     untouched_pcm_exact_before_codec=True,lfe_pcm_exact_before_codec=True,
+                     codec_roundtrip=errors,codec_rms_relative_limits=dict(center=.08,surround=.20,lfe_absolute=2),original_reverb_recreated=False,game_launch_tested=False)
+        cache.write_bytes(result)
+        audit_path.write_text(json.dumps(proof,ensure_ascii=False,indent=2))
+    return str(cache)
+
+
 def added_cache_path(bank_stem: str, slices: list[dict]) -> Path:
     key = hashlib.sha1(
         json.dumps(slices, ensure_ascii=False, sort_keys=True, default=str).encode()
@@ -1250,7 +1357,7 @@ def load_build_snapshot(regions, limit):
             _READ_CONN = None
 
 
-def build_policy():
+def legacy_encoder_policy():
     # Stable across orchestration-only edits; encoder, layout and writer changes invalidate.
     functions = (rebuild_locked, rebuild_added_bank, rebuild_battle_bank, place_channel,
                  repair_audio_exports, bump_export_size, write_container, patch_voice_pack,
@@ -1272,6 +1379,21 @@ def build_policy():
                                {p.name:incremental.sha(p) for p in files if p.is_file()}])
 
 
+class PolicyIdentity(str):
+    def __new__(cls, value: str, encoder_cache_policy: str):
+        result = super().__new__(cls, value)
+        result.encoder_cache_policy = encoder_cache_policy
+        return result
+
+
+def build_policy():
+    legacy = legacy_encoder_policy()
+    value = incremental.digest([legacy,
+        incremental.sha(Path(movie_surround.__file__)),
+        inspect.getsource(movie_surround_profiles),inspect.getsource(rebuild_added_bank_surround)])
+    return PolicyIdentity(value,legacy)
+
+
 def build_source_files(added, aliases):
     paths = list(CN_MODS.glob('zzz_cn_voice_*_P.*'))
     paths += list(TXTRES_RAW.glob('*.uasset')) + [TXTRES_INDEX, ROOT / 'work/jp-voice-index.jsonl']
@@ -1279,6 +1401,9 @@ def build_source_files(added, aliases):
     containers = {r['jp_container'] for r in added} | {r['container'] for r in aliases}
     for container in containers:
         paths += list(GAME_PAKS.glob(container + '.*'))
+    approvals = ROOT / "work/mod-build/movie-overlap-approvals.json"
+    if approvals.is_file():
+        paths.append(approvals)
     return paths
 
 
@@ -1331,7 +1456,7 @@ def build_main() -> int:
                               full=not args.incremental, publish=not (args.no_rsync or args.limit),
                               started=getattr(snapshot, "started", boundary))
     _ENCODING_LOG = inc.out / "encoding-events.jsonl"
-    _CACHE_POLICY = inc.policy
+    _CACHE_POLICY = getattr(inc.policy,"encoder_cache_policy",inc.policy)
     locked = [r for r in rows if r["id"] is not None]
     sub_rows = []
     for r in locked:
@@ -1495,6 +1620,7 @@ def build_main() -> int:
     for r in rows:
         voice_bytes[r["stem"]] = rebuilt.get(r["stem"], originals[r["stem"]])
 
+    surround_proof = []
     added_bytes: dict[str, bytes] = {}
     added_rels: dict[str, str] = {}
     added_cids: dict[str, bytes] = {}
@@ -1516,6 +1642,7 @@ def build_main() -> int:
                 raise SystemExit(f"语音 chunk {bank} 出现了两次")
             by_container[container][cid] = bank
             sliced = group[0]["extra"].get("slice_start_s") is not None
+            surround_profiles = movie_surround_profiles(group)
             slices = []
             for row in sorted(group, key=lambda item: float(item["extra"].get("slice_start_s") or 0)):
                 extra = row["extra"]
@@ -1526,6 +1653,7 @@ def build_main() -> int:
                     "end": extra.get("slice_end_s") if sliced else None,
                     "channel": int(extra.get("voice_channel", 4)) if sliced else 0,
                     "keep_japanese": row.get("voice_gpu_key") == "jp-lock",
+                    **({"surround":surround_profiles[row["stem"]]} if row["stem"] in surround_profiles else {}),
                 })
             planned[bank] = (cid, rel_in_container(path), slices)
             added_rels[bank] = rel_in_container(path)
@@ -1556,10 +1684,14 @@ def build_main() -> int:
                 add_tasks.append((Path(_rel).stem, str(orig), slices, str(added_cache_path(bank, slices))))
         workers = max(1, args.jobs)
         with ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("fork")) as pool:
-            futs = {pool.submit(rebuild_added_bank, task): bank for bank, task in zip(add_task_banks, add_tasks)}
+            futs = {pool.submit(rebuild_added_bank_surround, task): bank for bank, task in zip(add_task_banks, add_tasks)}
             for fut in as_completed(futs):
                 bank = futs[fut]
-                added_bytes[bank] = Path(fut.result()).read_bytes()
+                result_path = Path(fut.result())
+                added_bytes[bank] = result_path.read_bytes()
+                proof_path = Path(str(result_path) + ".surround.json")
+                if proof_path.is_file():
+                    surround_proof.append(json.loads(proof_path.read_text()))
                 print(f"  补上 {bank}", flush=True)
 
         for bank in planned:
@@ -1806,6 +1938,7 @@ def build_main() -> int:
         "same_stem_additional_assets": len(aliases),
         "same_stem_aliases": alias_proof,
         "same_stem_coverage": variant_coverage_proof,
+        "multichannel_dialogue": surround_proof,
         "same_stem_unlocked_missing": unlocked_variants,
         "added_lines": len(added),
         "battle_bank_lines": len(battle_rows),

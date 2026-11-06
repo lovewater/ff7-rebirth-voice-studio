@@ -42,7 +42,8 @@ export async function POST(
   }
   const source = (
     await sql<{
-      speaker: string;
+      speaker: string | null;
+      conversion_meta: {anonymous_single_line?: import("@/lib/anonymous-tts-reference").AnonymousTtsReference} | null;
       tts_text: string;
       spoken_text: string;
       subtitle_text: string | null;
@@ -50,7 +51,7 @@ export async function POST(
       game_zh_text_snapshot: string | null;
       duration_factor: number;
     }[]>`
-      SELECT speaker, tts_text, spoken_text, subtitle_text,
+      SELECT speaker, conversion_meta, tts_text, spoken_text, subtitle_text,
              jp_text_snapshot, game_zh_text_snapshot, duration_factor
       FROM line_tts_versions
       WHERE id = ${Number(id)} AND stem = ${stem} AND status = 'ready'
@@ -63,12 +64,12 @@ export async function POST(
         stem, speaker, voice_version_id, voice_gpu_key,
         tts_text, spoken_text, subtitle_text,
         jp_text_snapshot, game_zh_text_snapshot,
-        duration_factor, emo_alpha
+        duration_factor, emo_alpha, conversion_meta
       ) VALUES (
         ${stem}, ${source.speaker}, NULL, ${"audio-edit"},
         ${source.tts_text}, ${source.spoken_text}, ${source.subtitle_text == null ? null : twoLineSubtitle(source.subtitle_text)},
         ${source.jp_text_snapshot}, ${source.game_zh_text_snapshot},
-        ${source.duration_factor}, ${0}
+        ${source.duration_factor}, ${0}, ${sql.json(source.conversion_meta?.anonymous_single_line ? {anonymous_single_line:source.conversion_meta.anonymous_single_line} : {})}
       )
       RETURNING id
     `
@@ -77,7 +78,8 @@ export async function POST(
   const absolutePath = path.join(process.cwd(), "data", relativePath);
   await mkdir(path.dirname(absolutePath), { recursive: true });
   await writeFile(absolutePath, audio);
-  const conversion = { pipeline: "audio-edit", source_id: Number(id), stem };
+  const conversion = { pipeline: "audio-edit", source_id: Number(id), stem,
+    ...(source.conversion_meta?.anonymous_single_line ? {anonymous_single_line:source.conversion_meta.anonymous_single_line} : {}) };
   await sql`
     UPDATE line_tts_versions SET
       status = 'ready',

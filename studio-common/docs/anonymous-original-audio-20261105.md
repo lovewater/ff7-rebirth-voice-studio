@@ -1,3 +1,5 @@
+> 后续规则：用户已明确人物未知也参加中文制作。097迁移支持带本句JP参考证据的匿名zero-shot及编辑派生，详见 [匿名单句TTS](anonymous-single-line-tts-20261105.md)。下述096“匿名合成仍被拒绝”是此前原声修复的历史范围。
+
 # 匿名条目保留日文原声
 
 群体呼声、笑声和环境声可能没有单一人物。lines.speaker允许NULL，旧line_tts_versions.speaker却NOT NULL，导致正常保留原声在写版本时失败。不能通过编造人物修复。

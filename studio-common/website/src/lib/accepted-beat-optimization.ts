@@ -2,11 +2,15 @@ import { callChatCompletion } from "./llm-chat-client";
 import { acceptedScriptParts } from "./accepted-script-polish";
 import { scriptFromPolicyParts, validBodyScript, type BodyScriptPolicy } from "./two-part-script";
 
+/** 2026-11-05 用户关闭新增的合格后比值优化；保留历史实现，不影响原验收与原等字润色。 */
+export const ACCEPTED_BEAT_OPTIMIZATION_ENABLED = false;
+
 /** Optional work after a saved final has passed every hard gate. It creates candidates, never a winner. */
 export function acceptedBeatOptimizationGate(input: {
   qualifiedFinal: boolean; ratio: number | null; band: {low:number;high:number};
   shortOrSlow: boolean; availableSlots: number;
 }) {
+  if(!ACCEPTED_BEAT_OPTIMIZATION_ENABLED)return '用户已关闭合格后额外比值优化';
   if(!input.qualifiedFinal)return '尚无最终验收合格成品';
   if(input.shortOrSlow)return '短句或日文慢速沿用原豁免，不为比值扩写';
   if(input.ratio==null||!Number.isFinite(input.ratio)||input.ratio<=0)return '没有可靠的归一拍数比';

@@ -14,6 +14,10 @@ export default function TopicsPage() {
     <main className="mx-auto max-w-3xl px-3 py-6 sm:px-6">
       <h1 className="text-xl font-semibold tracking-tight">专题</h1>
       <p className="mt-2 text-sm leading-6 text-zinc-400">按一场戏集中改词、对拍数、生成并对照日文波形。</p>
+      <Link href="/topics/duet-voices" className="mt-4 block rounded-xl border border-zinc-800 px-4 py-4 hover:border-zinc-600">
+        <div className="font-medium">同句合声 · 漏轨补配</div>
+        <p className="mt-1 text-sm leading-6 text-zinc-400">对照原有主轨，逐条试听补入的角色语音和三遍候选；沿用游戏字幕。</p>
+      </Link>
       <Link href="/topics/junon-rufus" className="mt-4 block rounded-xl border border-zinc-800 px-4 py-4 hover:border-zinc-600">
         <div className="font-medium">珠诺 · 路法斯就职演讲</div>
         <p className="mt-1 text-sm leading-6 text-zinc-400">

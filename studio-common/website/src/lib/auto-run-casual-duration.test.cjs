@@ -11,7 +11,7 @@ const modelPolicy=compile('auto-run-model-policy',{'./llm-model-context':context
 const budget=compile('auto-run-tts-budget');
 const subtitles=compile('auto-run-subtitle');
 function harness(options={}) {
- const line={processing_state:options.processingState??'active',stem:'TEST',speaker:'cloud',text_zh:options.originalText??'完整的中文原稿',text_jp:options.textJp??'原文',text_en:options.textEn??'Original',translate_zh_jp:options.translateZhJp??null,translate_zh_en:options.translateZhEn??null,dialogue_mode:Object.hasOwn(options,'mode')?options.mode:'field',extra:options.extra,subtitle_italic:!!options.italic};
+ const line={processing_state:options.processingState??'active',stem:'TEST',speaker:Object.hasOwn(options,'speaker')?options.speaker:'cloud',text_zh:options.originalText??'完整的中文原稿',text_jp:options.textJp??'原文',text_en:options.textEn??'Original',translate_zh_jp:options.translateZhJp??null,translate_zh_en:options.translateZhEn??null,dialogue_mode:Object.hasOwn(options,'mode')?options.mode:'field',extra:options.extra,subtitle_italic:!!options.italic};
  if(options.productionScript){line.productionScript=options.productionScript;line.text_zh=options.productionScript.translation;}
  const clips=new Map(),files=new Map(),calls={tts:[],asr:[],actualBodyApi:[],jpAsr:[],cleanupPlans:[],assemblies:[],rewrites:[],events:[],edits:[],queries:[],transactions:[],referenceFiles:[],referenceRecords:[],judges:[],grouping:[],budgetFallback:0,normalizations:[],alignments:[],native:[],semanticRequests:[],imports:[]};
  let activeTransaction=null;
@@ -99,6 +99,7 @@ function harness(options={}) {
  };
  sql.json=x=>x;sql.begin=async fn=>{const previous=activeTransaction,trace=[];calls.transactions.push(trace);activeTransaction=trace;try{return await fn(sql)}finally{activeTransaction=previous}};
  const api=compile('auto-run',{
+  './auto-run-settings':{getAutoRunModel:async()=> 'grok',withAutoRunConnection:(_model,fn)=>fn()},
   './db':{sql},'./asr-word-corrections-db':{loadAsrWordRules:async()=>options.asrWordRules??[]},'./casual-duration-workflow':workflow,'./llm-model-context':context,
   './llm-metrics':{withLlmMetrics:(_r,_s,fn)=>fn(),llmMetricsForRun:async()=>options.metrics??({tokens:null,speed:null})},
   './auto-run-model-policy':modelPolicy,
@@ -792,4 +793,29 @@ test('a queued task rechecks skipped state before any paid or GPU operation',asy
  const h=harness({processingState:'skipped'});await h.api.executeAutoRun('run','TEST');
  assert.equal(h.finished[0],'failed');assert.match(h.finished[1],/跳过/);
  assert.equal(h.calls.tts.length,0);assert.equal(h.calls.asr.length,0);assert.equal(h.calls.rewrites.length,0);
+});
+
+
+test('anonymous ordinary audio retries three processed originals then rewrites without any neighboring context',async()=>{
+ const h=harness({speaker:null,target:9,duration:call=>call<=3?12:8,rewriteText:'完整中文',semanticReview:()=>({faithful:true,readingEquivalent:true,needsHuman:false,readingUncertain:false,hardReadingRisk:false,negationChanged:false,questionChanged:false,entityChanged:false,missingMeaning:[],addedMeaning:[],changedMeaning:[],reason:'通过'})});
+ await h.api.executeAutoRun('run','TEST');assert.equal(h.calls.tts.length,4);assert.equal(h.calls.rewrites.length,1);
+ for(const input of h.calls.rewrites){assert.equal(Object.hasOwn(input,'before'),false);assert.equal(Object.hasOwn(input,'after'),false);}
+ for(const input of h.calls.semanticRequests)assert.equal(input.context,null);
+ assert.equal(h.calls.queries.some(q=>q.includes('l.id BETWEEN')),false);
+ assert.equal(h.calls.tts[3].extra.candidateCount,3);assert.equal(h.finished[0],'passed');assert.equal(h.clips.get(h.finished[2]).review_state,'locked');
+});
+test('anonymous unchanged ordinary first pass can lock without a named actor or neighboring query',async()=>{
+ const h=harness({speaker:null,duration:8});await h.api.executeAutoRun('run','TEST');assert.equal(h.calls.tts.length,1);assert.equal(h.calls.rewrites.length,0);assert.equal(h.calls.queries.some(q=>q.includes('l.id BETWEEN')),false);assert.equal(h.finished[0],'passed');assert.equal(h.clips.get(h.finished[2]).review_state,'locked');
+});
+test('ordinary total generation failure reports the actual generation error rather than a false timing result',async()=>{
+ const h=harness({speaker:null,noAudio:true});await h.api.executeAutoRun('run','TEST');assert.equal(h.calls.tts.length,3);assert.equal(h.calls.rewrites.length,0);assert.equal(h.finished[0],'failed');assert.match(h.finished[1],/未生成可用音频.*TTS failed/);assert.ok([...h.clips.values()].every(c=>c.review_state!=='locked'));
+});
+
+test('anonymous ASR-translation baseline follows the same retry/rewrite pipeline without original Chinese or neighboring dialogue',async()=>{
+ const h=harness({speaker:null,productionScript:{...translationSource(),originalChinese:null},duration:n=>n<=3?12:8,rewriteText:'自然短稿'});
+ await h.api.executeAutoRun('run','TEST');assert.equal(h.finished[0],'passed');assert.equal(h.calls.tts.length,4);assert.equal(h.calls.tts[3].extra.candidateCount,3);
+ const clip=h.clips.get(h.finished[2]);assert.equal(clip.review_state,'locked');assert.equal(clip.game_zh_text_snapshot,null);assert.equal(clip.spoken_text,'自然短稿');
+ assert.equal(h.calls.rewrites[0].originalChinese,null);assert.equal(h.calls.rewrites[0].modelTranslatedChinese,translationSource().translation);
+ assert.equal(h.calls.rewrites[0].checkOriginalMeaning,false);assert.equal(Object.hasOwn(h.calls.rewrites[0],'before'),false);assert.equal(Object.hasOwn(h.calls.rewrites[0],'after'),false);
+ assert.equal(h.calls.queries.some(q=>q.includes('l.id BETWEEN')),false);
 });

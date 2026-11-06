@@ -64,12 +64,13 @@ export async function loadNearbySpeakerRefs(
 }
 
 export async function resolvePromptRef(
-  speaker: string,
+  speaker: string | null,
   currentStem: string,
   promptStem: string,
   promptLang: "jp" | "cn",
 ): Promise<{ ok: true; note: string | null } | { ok: false }> {
   if (promptStem === currentStem) return { ok: true, note: null };
+  if (!speaker) return { ok: false };
   const owned = await sql<{ note: string }[]>`
     SELECT note FROM speaker_timbre_refs
     WHERE speaker = ${speaker} AND stem = ${promptStem}

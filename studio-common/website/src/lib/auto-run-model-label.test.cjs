@@ -8,7 +8,7 @@ test('new Grok scene and field labels retain their different retry policies',()=
  assert.equal(label('casual',{model:'grok',stage:1}),'Grok 4.7 · 普通时长单轮');
 });
 test('persisted GLM and DeepSeek history keeps its actual provider and never becomes Grok',()=>{
- for(const model of ['primary','volcengine']){const text=label('performance',{model,stage:2});assert.match(text,/历史/);assert.doesNotMatch(text,/Grok|\/3轮/);}
+ for(const model of ['primary','volcengine']){const text=label('performance',{model,stage:2});if(model==='volcengine')assert.match(text,/历史/);assert.doesNotMatch(text,/Grok|\/3轮/);}
  assert.match(label('performance',{model:'primary',stage:3,allowGapSplit:true}),/官方GLM 5.3/);
  for(const payload of [undefined,null,{}, {model:'unknown'}])assert.equal(label('performance',payload),'');
 });

@@ -103,7 +103,7 @@ cd studio-common/website && git add -A --dry-run
 
 每句剧情语音是自己的 `.uasset`，chunk id 跟原中文包相同。修订会重写受影响的同名 `zzz_cn_voice_*` 包；包内其他章节的 chunk 原样保留。原来的九个中文包必须齐全，受影响的包用新版覆盖。战斗语音库是整份 `VO_*.uasset`，不在章节区域里。
 
-原中文包里没有、但已经锁定的语音，打进 `zzz_cn_voice_add_P`。它用游戏原来的 chunk id，这些 id 不在九个 `zzz_cn_voice_*` 里，所以能盖住日文原声。多句共用一条过场语音时，按 `line_meta.extra` 的 `slice_start_s`、`slice_end_s`、`voice_channel` 只替换那一声道上的切片，其他声道保持游戏原文件。没锁的切片仍是日文。`aa_cn_voice_edit_P` 仍然只放字幕。
+原中文包里没有、但已经锁定的语音，打进 `zzz_cn_voice_add_P`。它用游戏原来的 chunk id，这些 id 不在九个 `zzz_cn_voice_*` 里，所以能盖住日文原声。多句共用一条过场语音时，按 `line_meta.extra` 的 `slice_start_s`、`slice_end_s`、`voice_channel` 只替换那一声道上的切片，其他声道保持游戏原文件。没锁的切片仍是日文。`aa_cn_voice_edit_P` 仍然只放字幕。 标记为待复核多声道的MV bank不能仅替换中心声道；使用真实Voice事件与源SHA绑定的全对白声道策略。原声重叠处默认拒绝，只有用户明确选择才可按该句精确窗口登记例外。编码前窗口外/LFE保留、HCA真实回读及混响变化说明见 `studio-common/docs/movie-surround-packing.md`。
 
 字幕在游戏自己的 `TxtRes` 里，不在中文语音包里。改一句字幕会把**整份** TxtRes 打进补丁，只换这几句的文本，同一文件里其他句子保持原样。
 

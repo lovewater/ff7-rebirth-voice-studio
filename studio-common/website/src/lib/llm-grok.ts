@@ -4,10 +4,10 @@ export const GROK_DEFAULT_TIMEOUT_MS = 310000;
 export const GROK_MAX_ATTEMPTS = 3;
 export const GROK_MAX_RETRY_DELAY_MS = 60000;
 
-export function grokLlmConfig() {
-  const base = process.env.GROK_LLM_URL?.trim();
-  const key = process.env.GROK_LLM_KEY?.trim();
-  const model = process.env.GROK_LLM_MODEL?.trim() || GROK_DEFAULT_MODEL;
+export function grokLlmConfig(override?: {base:string;key:string;model:string}) {
+  const base = (override?.base ?? process.env.GROK_LLM_URL)?.trim();
+  const key = (override?.key ?? process.env.GROK_LLM_KEY)?.trim();
+  const model = (override?.model ?? process.env.GROK_LLM_MODEL)?.trim() || GROK_DEFAULT_MODEL;
   if (!/^[a-zA-Z0-9_.:-]+$/.test(model)) throw new Error("Grok模型名称无效");
   if (base) {
     let url: URL;

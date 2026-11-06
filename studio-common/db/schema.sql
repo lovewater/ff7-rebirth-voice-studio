@@ -1679,6 +1679,52 @@ CREATE TABLE IF NOT EXISTS line_processing_events (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- 096: 保留原声允许人物未知；合成仍需合法人物。
-ALTER TABLE ONLY public.line_tts_versions
-    ADD CONSTRAINT line_tts_versions_anonymous_original_only CHECK ((speaker IS NOT NULL) OR (voice_gpu_key = 'jp-lock'::text));
+-- 097: 人物未知的本句JP克隆及派生，仍须核字、时长及参考证据。
+-- 人物未知也可用本句日文做zero-shot；不伪造人物，仍保留人物外键。
+-- 只有带本句参考来源记录的zeroshot-jp及其audio-edit派生可为NULL。
+BEGIN;
+ALTER TABLE line_tts_versions DROP CONSTRAINT IF EXISTS line_tts_versions_anonymous_original_only;
+ALTER TABLE line_tts_versions DROP CONSTRAINT IF EXISTS line_tts_versions_anonymous_audio_policy;
+ALTER TABLE line_tts_versions ADD CONSTRAINT line_tts_versions_anonymous_audio_policy CHECK (
+  speaker IS NOT NULL OR voice_gpu_key='jp-lock' OR COALESCE((
+    voice_gpu_key IN ('zeroshot-jp','audio-edit')
+    AND conversion_meta->'anonymous_single_line'->>'version'='anonymous-self-reference-v1'
+    AND conversion_meta->'anonymous_single_line'->>'stem'=stem
+    AND conversion_meta->'anonymous_single_line'->>'context'='none'
+    AND conversion_meta->'anonymous_single_line'->>'source_audio_path'='jp/'||stem||'.mp3'
+    AND conversion_meta->'anonymous_single_line'->>'source_audio_sha256' ~ '^[a-f0-9]{64}$'
+    AND conversion_meta->'anonymous_single_line'->>'reference_audio_sha256' ~ '^[a-f0-9]{64}$'
+    AND (conversion_meta->'anonymous_single_line'->>'reference_audio_path'='jp/'||stem||'.mp3'
+      OR starts_with(conversion_meta->'anonymous_single_line'->>'reference_audio_path','tts/'||stem||'/'))
+  ),false)
+);
+COMMENT ON COLUMN line_tts_versions.speaker IS
+  '人物可未知：jp-lock原声或带本句JP参考证据的zero-shot/编辑派生允许NULL；不猜人物、不给邻句上下文。';
+COMMIT;
+
+
+-- 098: Empty per-game interface settings; no configuration data is seeded.
+-- Per-game connection configuration; credentials stay in the private database.
+BEGIN;
+CREATE TABLE IF NOT EXISTS auto_run_settings (
+ id smallint PRIMARY KEY CHECK(id=1),
+ model text NOT NULL DEFAULT 'grok' CHECK(model IN ('grok','primary')),
+ connections jsonb NOT NULL DEFAULT '{}'::jsonb CHECK(jsonb_typeof(connections)='object'),
+ updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS auto_run_settings_events (
+ id bigserial PRIMARY KEY,
+ previous_model text NOT NULL,
+ model text NOT NULL,
+ changes jsonb NOT NULL DEFAULT '[]'::jsonb,
+ at timestamptz NOT NULL DEFAULT now()
+);
+COMMENT ON COLUMN auto_run_settings.connections IS '私密接口配置，含API密钥；禁止日志输出、发布或导出到公共报告';
+DO $$ BEGIN
+ IF current_database()='studio_ff7_remake' AND EXISTS(SELECT 1 FROM pg_roles WHERE rolname='ff7remake') THEN
+  GRANT SELECT,INSERT,UPDATE ON auto_run_settings TO ff7remake;
+  GRANT SELECT,INSERT ON auto_run_settings_events TO ff7remake;
+  GRANT USAGE,SELECT ON SEQUENCE auto_run_settings_events_id_seq TO ff7remake;
+ END IF;
+END $$;
+COMMIT;

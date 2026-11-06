@@ -6,7 +6,7 @@ async function request(body,persisted={stage:3,model:'grok',allowGapSplit:true},
  let prompts=0,queries=0;
  const sql=async parts=>{queries++;return parts.join('').includes('FROM lines l')?[{stem:'TEST',speaker:'cloud',dialogue_mode:mode}]:running?[{id:'7',stage_payload:persisted}]:[];};
  const route=compile('../app/api/lines/[stem]/tts/clone/route.ts',{
-  '@/lib/db':{sql},'@/lib/source-audio-policy':{audioReferenceIssue:()=>null},'@/lib/auto-run-gap-policy':policy,'@/lib/auto-run-stage-context':{AUTO_RUN_MODEL:'grok'},
+  '@/lib/db':{sql},'@/lib/line-processing-state':{isLineSkipped:()=>false},'@/lib/source-audio-policy':{audioReferenceIssue:()=>null},'@/lib/auto-run-gap-policy':policy,'@/lib/auto-run-stage-context':{AUTO_RUN_MODEL:'grok'},
   '@/lib/tts-gpu':{normalizeScript:()=>({ttsText:'原稿',spokenText:'原稿'})},
   '@/lib/prompt-refs':{resolvePromptRef:async()=>{prompts++;return{ok:false};}},
   'next/server':{NextResponse:{json:(body,options)=>({body,status:options?.status??200})}},
@@ -50,4 +50,8 @@ test('qualified scene optimization uses the existing implicit three-candidate co
  const result=await request({ttsText:'优化稿',autoRunId:'7',autoRunStage:1,autoRunModel:'grok',...extra},{stage:1,model:'grok',allowGapSplit:false});
  assert.equal(result.prompts,1);assert.match(result.response.body.error,/参考音色/);
  assert.equal(policy.cloneCandidateCount(undefined,'7',1,'scene',false),3);
+});
+
+test('explicit GLM clone stages require matching persisted GLM and reach reference selection',async()=>{
+ for(const stage of [1,2,3]){const r=await request({autoRunId:'7',autoRunStage:stage,autoRunModel:'primary'},{stage,model:'primary',allowGapSplit:stage===3});assert.equal(r.prompts,1);assert.match(r.response.body.error,/参考音色/);}
 });

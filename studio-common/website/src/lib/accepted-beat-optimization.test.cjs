@@ -7,8 +7,9 @@ function setup(responses=[]){const cache=new Map(),calls=[];function load(file){
  return {...load(__dirname+'/accepted-beat-optimization.ts'),calls};}
 const args={stem:'test',qualifiedFinalId:'saved-final',script:'你也和我们一样，替这个星球着想──',requiredParts:1,policy:'lines',normalizedRatio:1.358,textJp:'星の未来',textEn:'the future',originalChinese:'你也和我们一样，替这个星球着想──',japaneseChineseTranslation:'为星球的未来着想',englishChineseTranslation:'星球的未来',speaker:'威吉',noOriginalChinese:false};
 const faithful={faithful:true,needsHuman:false,missingMeaning:[],addedMeaning:[],changedMeaning:[],reason:'只展开源文已有的未来含义'};
-test('gate requires a saved qualified final, reliable out-of-band ratio and one three-clip batch budget',()=>{
- const c=setup(),valid={qualifiedFinal:true,ratio:1.358,band:{low:.85,high:1.15},shortOrSlow:false,availableSlots:3};assert.equal(c.acceptedBeatOptimizationGate(valid),null);
+test('disabled optional node never admits an extra optimization, including already qualified out-of-band19319/19094 cases',()=>{
+ const c=setup(),valid={qualifiedFinal:true,ratio:1.358,band:{low:.85,high:1.15},shortOrSlow:false,availableSlots:3};assert.equal(c.ACCEPTED_BEAT_OPTIMIZATION_ENABLED,false);assert.equal(c.acceptedBeatOptimizationGate(valid),'用户已关闭合格后额外比值优化');
+ for(const ratio of [1.2781954887218043,.7160759040458288,1.2531328320802004])assert.equal(c.acceptedBeatOptimizationGate({...valid,ratio}),'用户已关闭合格后额外比值优化');
  for(const change of [{qualifiedFinal:false},{ratio:null},{ratio:NaN},{ratio:1},{shortOrSlow:true},{availableSlots:2}])assert.ok(c.acceptedBeatOptimizationGate({...valid,...change}));assert.equal(c.calls.length,0);
 });
 test('one meaning-preserving proposal may change character count and remains only an additional candidate',async()=>{

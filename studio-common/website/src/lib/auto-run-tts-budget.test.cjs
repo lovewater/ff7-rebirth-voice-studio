@@ -19,6 +19,8 @@ function fixture(initial=0){
  };sql.json=x=>x;sql.begin=async fn=>{const previous=tail;let release;tail=new Promise(r=>release=r);await previous;try{return await fn(sql);}finally{release();}};
  function load(file){if(cache.has(file))return cache.get(file).exports;const m=new Module(file);cache.set(file,m);m.require=id=>{
   if(id==='./db')return{sql};
+  if(id==='./auto-run-settings')return{getAutoRunModel:async()=> 'grok',withAutoRunConnection:(_model,fn)=>fn()};
+  if(id==='./line-processing-state')return{isLineSkipped:()=>false};
   if(id.startsWith('node:'))return require(id);
   if(id==='./auto-run-model-policy')return{captureAutoRunOutcome:outcome=>{outcomes.push(outcome);return true;}};
   if(id==='./llm-model-context')return{currentChatModel:()=>undefined,withChatModel:(model,fn)=>fn()};

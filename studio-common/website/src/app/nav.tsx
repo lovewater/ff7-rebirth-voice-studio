@@ -41,6 +41,7 @@ export function Nav({ title, gameId, sourceOrigin }: { title: string; gameId: Ga
           <Link href="/prompts" className="shrink-0 whitespace-nowrap rounded px-2.5 py-2 hover:text-white">
             提示词库
           </Link>
+          <Link href="/settings" className="shrink-0 whitespace-nowrap rounded px-2.5 py-2 hover:text-white">接口配置</Link>
           <Link href="/abnormal" className="shrink-0 whitespace-nowrap rounded px-2.5 py-2 hover:text-white">异常处理</Link>
         </nav>
       </div>

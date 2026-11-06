@@ -14,6 +14,7 @@ export function captureAutoRunOutcome(outcome: AutoRunOutcome) {
   current.outcome = currentAutoRunStage()?.stopRetry ? { ...outcome, options: {...outcome.options, noModelRetry:true} } : outcome; return true;
 }
 export async function runAutoRunModels(input: {
+  model?: AutoRunStage["model"];
   attempt: () => Promise<void>;
   event: (model: AutoRunStage["model"], outcome?: AutoRunOutcome, stage?: AutoRunStage) => Promise<void>;
   canFallback: () => Promise<boolean>;
@@ -21,7 +22,7 @@ export async function runAutoRunModels(input: {
   finish: (outcome: AutoRunOutcome) => Promise<void>;
 }) {
   for (const index of [1, 2, 3] as const) {
-    const config = autoRunStage(index);
+    const config = autoRunStage(index, input.model);
     const current: {outcome?: AutoRunOutcome} = {};
     await withAutoRunStage(config, () => withChatModel(config.model, async () => {
       await input.event(config.model, undefined, config);

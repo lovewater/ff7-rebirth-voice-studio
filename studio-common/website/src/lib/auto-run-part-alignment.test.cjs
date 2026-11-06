@@ -5,9 +5,13 @@ const {alignParts,alignZeroShotParts,assembleParts,PartAssemblyError}=load(__dir
 const {encodeWavMono:encode,decodeWavMono:decode}=load(__dirname+'/wav-stretch.ts');
 function wav(first,gap,second,sr=24000,lead=.1,tail=.1){const a=new Float32Array(Math.round((lead+first+gap+second+tail)*sr));for(const [x,y]of[[lead,lead+first],[lead+first+gap,lead+first+gap+second]])for(let i=Math.round(x*sr);i<Math.round(y*sr);i++)a[i]=.35*Math.cos(2*Math.PI*180*i/sr);return encode(sr,a);}
 const plan={enabled:false,onomatopoeia:[],ambient:[],speech:[]};
-test('入口450ms与候选250ms分开；短停顿不误入，手工编辑默认250ms不变',()=>{
+test('入口420ms与候选250ms分开；短停顿不误入，手工编辑默认250ms不变',()=>{
  const {singleInternalGap}=load(__dirname+'/gap-only-align.ts');
- assert.equal(alignParts(wav(1,.4,1),wav(1,.44,1)),null);
+ assert.equal(alignParts(wav(1,.4,1),wav(1,.41,1)),null);
+ assert.ok(alignParts(wav(1,.25,1),wav(1,.42,1)));
+ assert.ok(alignParts(wav(1,.25,1),wav(1,.44,1)));
+ assert.equal(load(__dirname+'/gap-only-align.ts').TWO_PART_JP_GAP_S,.42);
+ assert.equal(load(__dirname+'/gap-only-align.ts').TWO_PART_CN_GAP_S,.25);
  assert.ok(alignParts(wav(1,.25,1),wav(1,1,1)));
  assert.ok(alignParts(wav(1,.25,1),wav(1,.45,1)));
  assert.ok(alignParts(wav(1,.25,1),wav(1,.48,1)));

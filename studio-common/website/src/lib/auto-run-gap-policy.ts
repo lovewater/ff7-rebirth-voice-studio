@@ -1,6 +1,6 @@
 import { isPerformanceMode } from "./auto-run-rules";
-import type { AutoRunStage, AutoRunStageIndex } from './auto-run-stage-context';
-const CLONE_STAGE_MODEL: AutoRunStage['model'] = 'grok';
+import type { AutoRunStageIndex } from './auto-run-stage-context';
+
 
 /** Client stage claims need a matching persisted, server-owned running stage. */
 export function validatedCloneStage(requested: unknown, persisted: unknown, requestedModel?: unknown): AutoRunStageIndex | null {
@@ -8,7 +8,7 @@ export function validatedCloneStage(requested: unknown, persisted: unknown, requ
   if(![1,2,3].includes(requested as number))throw new Error('无效的自动运行轮次');
   if(!persisted || typeof persisted!=='object')throw new Error('自动运行轮次尚未开始或已变化');
   const current=persisted as {stage?:unknown;model?:unknown;allowGapSplit?:unknown};
-  if(requestedModel!==CLONE_STAGE_MODEL || current.stage!==requested || current.model!==CLONE_STAGE_MODEL || current.allowGapSplit!==(requested===3))throw new Error('自动运行轮次尚未开始或已变化');
+  if(!['grok','primary'].includes(requestedModel as string) || current.stage!==requested || current.model!==requestedModel || current.allowGapSplit!==(requested===3))throw new Error('自动运行轮次尚未开始或已变化');
   return requested as AutoRunStageIndex;
 }
 export function allowCloneGapSplit(stage: AutoRunStageIndex|null, dialogueMode:string|null, syncToJp:boolean):boolean {

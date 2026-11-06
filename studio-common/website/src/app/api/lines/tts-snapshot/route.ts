@@ -57,7 +57,7 @@ export async function GET(req: NextRequest) {
       start_s, end_s, dur_s, speech_s
     FROM line_tts_versions
     WHERE stem = ANY(${stems}) AND status = 'ready'
-    ORDER BY stem, (review_state <> 'candidate') DESC, (parent_tts_id IS NULL) DESC, id DESC
+    ORDER BY stem, (review_state <> 'candidate') DESC, (parent_tts_id IS NULL) DESC, line_tts_versions.id DESC
   `;
   const counts = await sql<{ stem: string; n: number }[]>`
     SELECT stem, COUNT(*)::int AS n

@@ -16,9 +16,9 @@ function setup({answer={parts:['第一段','第二段','第三段','第四段']}
 }
 function wav(c,durations=[1,1,1,1],gaps=[.6,.7,.8],sr=24000){const pieces=[new Float32Array(Math.round(.12*sr))];durations.forEach((seconds,n)=>{const a=new Float32Array(Math.round(seconds*sr));for(let i=0;i<a.length;i++)a[i]=.4*Math.cos(i*.08);pieces.push(a);if(n<gaps.length)pieces.push(new Float32Array(Math.round(gaps[n]*sr)));});pieces.push(new Float32Array(Math.round(.18*sr)));const out=new Float32Array(pieces.reduce((n,a)=>n+a.length,0));let at=0;for(const a of pieces){out.set(a,at);at+=a.length;}return c.encodeWavMono(sr,out);}
 const emptyPlan={enabled:false,onomatopoeia:[],ambient:[],speech:[],subtitleRestore:{preserved:[]}};
-test('四段采用450ms日文、250ms中文门槛，逐段缩放与三个留白后精确等长',()=>{
+test('四段采用420ms日文、250ms中文门槛，逐段缩放与三个留白后精确等长',()=>{
  const c=setup(),ref=wav(c),result=c.alignParts(wav(c,[.9,1.1,.95,1.05],[.25,.25,.25]),ref);
- assert.equal(c.speechChunks(ref,.45).chunks.length,4);assert.equal(c.speechChunks(wav(c,undefined,[.44,.7,.8]),.45).chunks.length,3);
+ assert.equal(c.speechChunks(ref,.42).chunks.length,4);assert.equal(c.speechChunks(wav(c,undefined,[.41,.7,.8]),.42).chunks.length,3);
  assert.equal(result.meta.version,'four-parts-v1');assert.equal(result.meta.requiredParts,4);assert.equal(result.meta.status,'correct');assert.equal(result.meta.parts.length,4);
  assert.ok(result.meta.parts.every(p=>p.factor>=.85&&p.factor<=1.15));assert.ok(result.meta.gapsSeconds.every(s=>s>=.25));assert.equal(result.meta.gapsSeconds.length,3);
  assert.equal(c.decodeWavMono(result.audio).samples.length,c.decodeWavMono(ref).samples.length);
@@ -79,7 +79,7 @@ test('四段最后评选考虑第四段差异，最终检查及元数据识别�
  })));
 });
 test('四段JP每一块都需原始字轴证据，缺第四段不能只凭波形强行分段',()=>{
- const c=setup(),{wave,chunks}=c.speechChunks(wav(c),.45),kept=[{sourceStart:0,sourceEnd:wave.samples.length,targetStart:0}];
+ const c=setup(),{wave,chunks}=c.speechChunks(wav(c),.42),kept=[{sourceStart:0,sourceEnd:wave.samples.length,targetStart:0}];
  const words=chunks.map((p,i)=>({text:['甲','乙','丙','丁'][i],start:p.start/wave.sampleRate*1000,end:p.end/wave.sampleRate*1000}));
  assert.equal(c.referenceWordEvidence({sampleRate:wave.sampleRate,chunks,kept,words}).pass,true);
  assert.equal(c.referenceWordEvidence({sampleRate:wave.sampleRate,chunks,kept,words:words.slice(0,3)}).pass,false);
