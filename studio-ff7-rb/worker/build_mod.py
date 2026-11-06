@@ -705,8 +705,10 @@ def load_lines(regions: list[str] | None) -> list[dict]:
     where = "WHERE " + " AND ".join(clauses)
     sql = f"""
         SELECT l.stem, l.region, l.pack, l.asset_path, l.text_zh,
-               t.id, t.audio_path, t.subtitle_text, t.voice_gpu_key
+               t.id, t.audio_path, t.subtitle_text, t.voice_gpu_key,
+               sm.extra->'dual_speaker'->>'main_stem' AS subtitle_parent_stem
         FROM lines l
+        LEFT JOIN line_meta sm ON sm.stem=l.stem
         LEFT JOIN line_tts_versions t
           ON t.stem = l.stem AND t.status = 'ready' AND t.review_state='locked'
         {where}
@@ -1164,6 +1166,19 @@ def spoken_subtitle(row: dict) -> str:
     return (original if original is not None else row.get("tts_text") or "").strip()
 
 
+def companion_subtitle_parent(row: dict) -> str | None:
+    """A linked independent voice shares the main line's subtitle, even after UI mistakes."""
+    parent = row.get("subtitle_parent_stem")
+    if parent is None:
+        linkage = _extra(row).get("dual_speaker")
+        parent = linkage.get("main_stem") if isinstance(linkage,dict) else None
+    return parent if isinstance(parent,str) and parent.strip() and parent != row.get("stem") else None
+
+
+def packed_subtitle(row: dict) -> str:
+    return "" if companion_subtitle_parent(row) else spoken_subtitle(row)
+
+
 def index_txtres() -> tuple[dict[str, str], dict[str, dict]]:
     by_name = {}
     with TXTRES_INDEX.open(encoding="utf-8") as fh:
@@ -1390,7 +1405,8 @@ def build_policy():
     legacy = legacy_encoder_policy()
     value = incremental.digest([legacy,
         incremental.sha(Path(movie_surround.__file__)),
-        inspect.getsource(movie_surround_profiles),inspect.getsource(rebuild_added_bank_surround)])
+        inspect.getsource(movie_surround_profiles),inspect.getsource(rebuild_added_bank_surround),
+        inspect.getsource(companion_subtitle_parent),inspect.getsource(packed_subtitle)])
     return PolicyIdentity(value,legacy)
 
 
@@ -1462,7 +1478,7 @@ def build_main() -> int:
     for r in locked:
         sub = (r["subtitle_text"] or "").strip()
         base = (r["text_zh"] or "").strip()
-        if sub and sub != base:
+        if sub and sub != base and not companion_subtitle_parent(r):
             sub_rows.append(r)
     added_groups = group_added(added)
     print(
@@ -1762,7 +1778,7 @@ def build_main() -> int:
     added_spoken = {}
     if not args.limit:
         for row in added:
-            text = spoken_subtitle(row)
+            text = packed_subtitle(row)
             if text:
                 added_spoken[row["stem"]] = text
     if (sub_rows or added_spoken) and not args.limit:
@@ -1939,6 +1955,9 @@ def build_main() -> int:
         "same_stem_aliases": alias_proof,
         "same_stem_coverage": variant_coverage_proof,
         "multichannel_dialogue": surround_proof,
+        "companion_subtitles_suppressed": [dict(stem=r["stem"],tts_id=r["id"],
+            parent=companion_subtitle_parent(r),had_override=bool((r.get("subtitle_text") or "").strip()))
+            for r in locked+added if companion_subtitle_parent(r)],
         "same_stem_unlocked_missing": unlocked_variants,
         "added_lines": len(added),
         "battle_bank_lines": len(battle_rows),

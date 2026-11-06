@@ -284,3 +284,15 @@ class SameStemVariants(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CompanionSubtitles(unittest.TestCase):
+    def test_linked_voice_never_emits_mistaken_override_or_original_text(self):
+        from build_mod import packed_subtitle,companion_subtitle_parent
+        for row in [dict(stem='child',subtitle_parent_stem='main'),dict(stem='child',extra={'dual_speaker':{'main_stem':'main'}})]:
+            row.update(subtitle_text='误存的中文字幕',text_zh='原字幕',tts_text='朗读稿')
+            self.assertEqual(companion_subtitle_parent(row),'main')
+            self.assertEqual(packed_subtitle(row),'')
+            self.assertEqual(row['subtitle_text'],'误存的中文字幕')
+        self.assertEqual(packed_subtitle(dict(stem='main',subtitle_text='人工改稿',text_zh='原字幕')),'人工改稿')
+        self.assertEqual(packed_subtitle(dict(stem='main',subtitle_parent_stem='main',text_zh='原字幕')),'原字幕')

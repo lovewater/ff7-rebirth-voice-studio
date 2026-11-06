@@ -114,7 +114,7 @@ def audio_fingerprint(original, selection, audio_hashes):
 
 # Match the three SELECT projections, excluding unlocked text/candidates entirely.
 SELECTION_FIELDS = (
-    ('stem', 'region', 'pack', 'asset_path', 'text_zh', 'id', 'audio_path', 'subtitle_text', 'voice_gpu_key'),
+    ('stem', 'region', 'pack', 'asset_path', 'text_zh', 'id', 'audio_path', 'subtitle_text', 'voice_gpu_key', 'subtitle_parent_stem'),
     ('stem', 'region', 'pack', 'asset_path', 'text_zh', 'jp_chunk_id', 'jp_container',
      'id', 'audio_path', 'subtitle_text', 'tts_text', 'voice_gpu_key', 'extra'),
     ('stem', 'pack', 'id', 'audio_path', 'voice_gpu_key', 'extra'),
