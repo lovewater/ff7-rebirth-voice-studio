@@ -1,4 +1,4 @@
-import { naturalErhuaEquivalent, NATURAL_ERHUA_HINT } from "./spoken-text-review";
+import { naturalErhuaEquivalent } from "./spoken-text-review";
 import { createHash } from "node:crypto";
 import { correctAsrWords, asrComparisonBody, type AsrWordRule, type AsrWordCorrection } from "./asr-word-corrections";
 
@@ -65,31 +65,15 @@ export function fastCasualSemanticEvidence(input:CasualSemanticInput):CasualSema
   return {...binding(input),...equivalence,passed:true,kind:"verbatim",needsHuman:false,reason:"原稿正文未改且新ASR逐字、明确发音表、ASR词语纠错或自然儿化对应",feedback:""};
 }
 
+/** 终审提示词在 prompt_templates，按 key 取最新启用版本。正文不放在代码里。 */
 export function casualSemanticMessages(input:CasualSemanticInput) {
   const correction=correctAsrWords(input.candidateBodyChinese,input.asr,input.asrWordRules??[]);
   const reviewInput=correction.hits.length?{...input,rawAsr:input.asr,asr:correction.correctedText,asrWordCorrection:correction}:input;
-  const correctionHint='用户配置的ASR词语纠错已按当前朗读稿的唯一对应位置应用。asr是核字使用的文字，rawAsr是保留的原始识别，asrWordCorrection记录明确命中。不得仅因已配置的别名再判人名变化或读音不确定；其余漏字、重复、替换仍严格检查。这不会改变TTS稿或字幕。';
-  if(input.checkOriginalMeaning===false)return [{role:'system' as const,content:[
-    NATURAL_ERHUA_HINT,correctionHint,
-    '检查当前中文配音的实际ASR核字及读音风险。没有原始中文；modelTranslationBaseline仅是模型译文制作起稿，不能当原稿。',
-    '不要比较当前稿与模型译文、日文或英文是否意思一致，也不要因改稿删改起稿的词语、对象或问句而拒绝；本分支不执行改稿对原中文语义校验。',
-    '只比较实际ASR与打算朗读的当前稿是否完整、发音能否逐字或明确同音/发音表对应。实义近音、遗漏和低确定性仍不可放行；你没有听音频，不声称确实读错。',
-    'JP保留片段不属于中文body ASR；必须维持既有组件恢复与音频SHA绑定。',
-    '输出完整JSON：faithful=true、negationChanged=false、questionChanged=false、entityChanged=false、missingMeaning=[]、addedMeaning=[]、changedMeaning=[]，这些字段表示稿间语义检查不适用；readingEquivalent、needsHuman、readingUncertain、hardReadingRisk为布尔，reason为非空读音证据。',
-  ].join('\n')},{role:'user' as const,content:JSON.stringify(reviewInput)}];
-  return [{role:"system" as const,content:[
-    NATURAL_ERHUA_HINT,correctionHint,
-    "独立严格复核游戏普通中文配音。输入是原稿、当前稿、日文/可靠配对英文、日译中和英译中两份机器参考、邻句/人物名、实际新音频ASR与读音疑点；你没有听音频，不能声称读音确实错误。",
-    "最终语义验收允许三选一：当前稿与原中文 originalChinese、日译中 japaneseChineseTranslation、英译中 englishChineseTranslation 中任意一份的核心意思接近且完整自然，就可以 faithful=true；不要求同时贴合三份，也不因与原中文措辞或翻译取舍不同而拒绝。输出 meaningReference=original-chinese、japanese-translation 或 english-translation，明确采用实际提供的哪一份，并在reason说明对应含义。缺失的译文不能选。日英原语言辅助理解；两份机器译文可能出错、不是绝对标准，但任一份能支持当前完整核心意图就可以作为通过依据。缺少所有可靠依据才交复核。",
-    "以下语义检查均针对所选meaningReference，不是强行对比原中文：逐项检查否定/限定（不、没、只、才、已经等）、有义问句、说话对象/主客体、人物姓名/称谓、数量、条件、动作方向、语气意图。允许自然转述、合理省略和核心意思接近；不能只因字少、符合时长便放行与三份依据都无关、核心动作丢失或语义不闭合的稿。类似‘句够’等语义不闭合残句必须拒绝。",
-    "允许中文自然的主语/代词省略与条件句压缩，但必须能从所选参考及可靠说话语境恢复同一主客体，且条件、否定、动作对象不变。不可机械把未复述‘我’判为缺义：例如说话者威胁对方时，‘敢动的话我就开枪！’→‘敢动就开枪！’可保留同一条件和开枪主体；‘我敢动就开枪’或换成他人开枪则不等价。不能用自然省略解释唯一问意、否定、姓名或实义限定被删除，也不能含糊换人。",
-    "自然压缩示例：本条日文‘回復して 立て直す’、英文‘Heal up and regroup.’及两份中文参考均表达恢复状态后重整再战时，原稿‘必须治疗才能继续战斗’可自然压缩为‘恢复状态，重新战斗’或‘恢复后再战’；不得仅因未复述‘必须/才能/继续’判为条件丢失。按所选参考判断真正的必要条件、否定或对象是否改变，不因另一份参考的不同措辞重复否决。",
-    "readingEquivalent独立比较实际ASR与打算朗读的当前稿：完全同音/明确发音表可等价；实义近音仍需谨慎。‘只能→是能’、‘干劲来了→赶紧来啦’不得仅凭近音一概过。",
-    "readingUncertain/hardReadingRisk只判断当前候选稿与其ASR的读音证据，不把脚本相对原稿的省略/语义缺失误填成硬读音风险；脚本缺义写faithful=false及missingMeaning/changedMeaning。",
-    "读音证据低确定性时readingUncertain/needsHuman必须true，不宣称ASR证明音频错；不能靠改写原文掩盖随机漏读或读音风险。",
-    "保留JP拟声/环境片段不是中文body ASR，不能混入核字或当丢失正文借口；fullCandidateChinese用于检查最后恢复的完整字幕。",
-    "只输出完整JSON：meaningReference为上述三项之一；faithful,readingEquivalent,needsHuman,readingUncertain,hardReadingRisk,negationChanged,questionChanged,entityChanged为布尔；missingMeaning,addedMeaning,changedMeaning为字符串数组；reason为非空证据说明。没有风险数组必须[]。只有全部语义忠实、实际ASR可等价且无不确定/风险才允许通过。",
-  ].join("\n")},{role:"user" as const,content:JSON.stringify(reviewInput)}];
+  const inputJson=JSON.stringify(reviewInput);
+  return [
+    {role:"system" as const,content:"",promptKey:input.checkOriginalMeaning===false?"casual-semantic-review.no-original.system":"casual-semantic-review.system"},
+    {role:"user" as const,content:inputJson,promptKey:"casual-semantic-review.input",promptValues:{input_json:inputJson}},
+  ];
 }
 
 /** Fail closed for missing schema, uncertainty, semantic loss, or substantive reading risk. */
